@@ -1,0 +1,43 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "NanoClaw",
+  "version": "1.1.1",
+  "identifier": "com.nanoclaw.desktop",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "mkdir -p ../../dist ../../prod_node_modules/node_modules && npm run dev",
+    "beforeBuildCommand": "npm --prefix .. run build && bash ../scripts/stage-prod-deps.sh && npm run build"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "title": "NanoClaw",
+        "width": 900,
+        "height": 650,
+        "visible": true,
+        "decorations": true,
+        "resizable": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:* http://localhost:*; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg"],
+    "icon": ["icons/icon.icns", "icons/icon.ico", "icons/icon.png"],
+    "macOS": {
+      "minimumSystemVersion": "13.0"
+    },
+    "resources": {
+      "../../dist": "dist",
+      "../../prod_node_modules/node_modules": "node_modules",
+      "../../container-agno": "container-agno"
+    }
+  }
+}
