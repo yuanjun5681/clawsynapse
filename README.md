@@ -56,7 +56,7 @@ Pilot Protocol gives your agent a permanent address on a P2P encrypted network. 
 curl -fsSL https://raw.githubusercontent.com/TeoSlayer/pilotprotocol/main/install.sh | sh
 
 # Initialize with registry and beacon
-pilotctl init --registry 20.168.146.21:8164 --beacon 20.168.146.21:8165
+pilotctl init --registry 220.168.146.21:8164 --beacon 220.168.146.21:8165
 
 # Start the daemon
 pilotctl daemon start --hostname my-agent
