@@ -286,6 +286,10 @@ function buildVolumeMounts(
       'AGNO_BASE_URL',
       'AGNO_TEMPERATURE',
       'AGNO_MAX_TOKENS',
+      'LANGSMITH_TRACING',
+      'LANGSMITH_API_KEY',
+      'LANGSMITH_ENDPOINT',
+      'LANGSMITH_PROJECT',
       'PILOT_BRIDGE_PORT',
     ];
     const filteredLines = envContent.split('\n').filter((line) => {

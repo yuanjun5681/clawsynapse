@@ -122,6 +122,12 @@ AGNO_BASE_URL=https://your-provider-api-url
 AGNO_TEMPERATURE=0.7
 AGNO_MAX_TOKENS=4096
 
+# LangSmith tracing (optional)
+LANGSMITH_TRACING=false
+LANGSMITH_API_KEY=your-langsmith-api-key
+LANGSMITH_ENDPOINT=https://api.smith.langchain.com
+LANGSMITH_PROJECT=nanoclaw-agno
+
 # App settings (optional)
 ASSISTANT_NAME=Andy              # Trigger word (default: Andy)
 CONTAINER_TIMEOUT=1800000        # Container timeout in ms (default: 30min)
@@ -129,7 +135,7 @@ MAX_CONCURRENT_CONTAINERS=5      # Parallel container limit
 LOG_LEVEL=info                   # debug | info | warn | error
 ```
 
-> Only `AGNO_*` and `PILOT_BRIDGE_PORT` are passed into containers. Other env vars stay on the host.
+> Only `AGNO_*`, `LANGSMITH_*`, and `PILOT_BRIDGE_PORT` are passed into containers. Other env vars stay on the host.
 
 ### 6. Desktop app (optional)
 

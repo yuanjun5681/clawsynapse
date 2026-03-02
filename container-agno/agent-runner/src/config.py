@@ -23,6 +23,14 @@ class NanoClawConfig:
     is_scheduled_task: bool = False
 
 
+@dataclass
+class LangSmithConfig:
+    enabled: bool
+    api_key: str | None = None
+    endpoint: str = "https://api.smith.langchain.com"
+    project: str = "nanoclaw-agno"
+
+
 # Path constants (inside container)
 IPC_DIR = "/workspace/ipc"
 IPC_MESSAGES_DIR = os.path.join(IPC_DIR, "messages")
@@ -78,4 +86,25 @@ def load_nanoclaw_config(stdin_data: dict) -> NanoClawConfig:
         is_main=stdin_data["isMain"],
         session_id=stdin_data.get("sessionId"),
         is_scheduled_task=stdin_data.get("isScheduledTask", False),
+    )
+
+
+def load_langsmith_config() -> LangSmithConfig:
+    """Load LangSmith tracing settings from environment variables."""
+    enabled = os.environ.get("LANGSMITH_TRACING", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    endpoint = os.environ.get("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
+    project = os.environ.get("LANGSMITH_PROJECT", "nanoclaw-agno")
+    api_key = os.environ.get("LANGSMITH_API_KEY")
+
+    return LangSmithConfig(
+        enabled=enabled,
+        api_key=api_key,
+        endpoint=endpoint,
+        project=project,
     )

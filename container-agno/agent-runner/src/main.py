@@ -19,6 +19,7 @@ import sys
 import uuid
 
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 from agno.agent import Agent
 from agno.compression.manager import CompressionManager
@@ -26,7 +27,11 @@ from agno.db.sqlite import SqliteDb
 from agno.models.openai.like import OpenAILike
 from agno.skills import Skills, LocalSkills
 from agno.tools.duckduckgo import DuckDuckGoTools
-from pathlib import Path
+from openinference.instrumentation.agno import AgnoInstrumentor
+from opentelemetry import trace as trace_api
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 from agno.tools.file import FileTools
 from agno.tools.python import PythonTools
@@ -36,6 +41,8 @@ from .config import (
     GROUP_DIR,
     SESSION_DB_PATH,
     SKILLS_DIR,
+    LangSmithConfig,
+    load_langsmith_config,
     load_model_config,
     load_nanoclaw_config,
 )
@@ -48,6 +55,42 @@ OUTPUT_START_MARKER = "---NANOCLAW_OUTPUT_START---"
 OUTPUT_END_MARKER = "---NANOCLAW_OUTPUT_END---"
 STREAM_FLUSH_INTERVAL_SEC = 0.08
 STREAM_FLUSH_MIN_CHARS = 120
+
+
+def _langsmith_trace_endpoint(base_endpoint: str) -> str:
+    """Build LangSmith OTLP trace endpoint from base endpoint."""
+    stripped = base_endpoint.rstrip("/")
+    if stripped.endswith("/otel/v1/traces"):
+        return stripped
+    return f"{stripped}/otel/v1/traces"
+
+
+def setup_langsmith_tracing(config: LangSmithConfig) -> None:
+    """Initialize OpenTelemetry tracing for LangSmith when enabled."""
+    if not config.enabled:
+        return
+
+    if not config.api_key:
+        log("LangSmith tracing enabled but LANGSMITH_API_KEY is not set; skipping tracing setup")
+        return
+
+    try:
+        endpoint = _langsmith_trace_endpoint(config.endpoint)
+        headers = {
+            "x-api-key": config.api_key,
+            "Langsmith-Project": config.project,
+        }
+        tracer_provider = TracerProvider()
+        tracer_provider.add_span_processor(
+            BatchSpanProcessor(
+                OTLPSpanExporter(endpoint=endpoint, headers=headers),
+            )
+        )
+        trace_api.set_tracer_provider(tracer_provider=tracer_provider)
+        AgnoInstrumentor().instrument()
+        log(f"LangSmith tracing enabled (project: {config.project}, endpoint: {endpoint})")
+    except Exception as e:
+        log(f"Failed to initialize LangSmith tracing: {e}")
 
 
 def write_output(status: str, result: str | None, new_session_id: str | None = None, error: str | None = None) -> None:
@@ -277,6 +320,8 @@ async def main() -> None:
     except ValueError as e:
         write_output("error", None, error=str(e))
         sys.exit(1)
+
+    setup_langsmith_tracing(load_langsmith_config())
 
     # Set IPC tool context
     set_context(nc_config.chat_jid, nc_config.group_folder, nc_config.is_main)

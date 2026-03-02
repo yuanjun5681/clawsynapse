@@ -122,6 +122,12 @@ AGNO_BASE_URL=https://your-provider-api-url
 AGNO_TEMPERATURE=0.7
 AGNO_MAX_TOKENS=4096
 
+# LangSmith tracing（可选）
+LANGSMITH_TRACING=false
+LANGSMITH_API_KEY=your-langsmith-api-key
+LANGSMITH_ENDPOINT=https://api.smith.langchain.com
+LANGSMITH_PROJECT=nanoclaw-agno
+
 # 应用设置（可选）
 ASSISTANT_NAME=Andy              # 触发词（默认：Andy）
 CONTAINER_TIMEOUT=1800000        # 容器超时时间，毫秒（默认：30 分钟）
@@ -129,7 +135,7 @@ MAX_CONCURRENT_CONTAINERS=5      # 最大并行容器数
 LOG_LEVEL=info                   # debug | info | warn | error
 ```
 
-> 只有 `AGNO_*` 和 `PILOT_BRIDGE_PORT` 会传入容器，其他环境变量仅在宿主机使用。
+> 只有 `AGNO_*`、`LANGSMITH_*` 和 `PILOT_BRIDGE_PORT` 会传入容器，其他环境变量仅在宿主机使用。
 
 ### 6. 桌面应用（可选）
 
