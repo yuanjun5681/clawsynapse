@@ -9,8 +9,27 @@
   import Input from "./lib/Input.svelte";
   import Setup from "./lib/Setup.svelte";
   import Settings from "./lib/Settings.svelte";
-  import Avatar from "./lib/Avatar.svelte";
-  import { streamChat, checkHealth, configureApi } from "./lib/api";
+  import CanvasView from "./lib/canvas/CanvasView.svelte";
+  import type {
+    MonitorStatus,
+    ContainerInfo,
+    TaskInfo,
+    PilotInfo,
+    PeerInfo,
+  } from "./lib/canvas/CanvasView.svelte";
+  import DetailPanel from "./lib/panels/DetailPanel.svelte";
+  import LocalDetail from "./lib/panels/LocalDetail.svelte";
+  import PeerDetail from "./lib/panels/PeerDetail.svelte";
+  import ContainerDetail from "./lib/panels/ContainerDetail.svelte";
+  import {
+    streamChat,
+    checkHealth,
+    configureApi,
+    fetchMonitorStatus,
+    fetchMonitorContainers,
+    fetchMonitorTasks,
+    fetchMonitorPilot,
+  } from "./lib/api";
 
   interface SetupStatus {
     nodeInstalled: boolean;
@@ -52,12 +71,46 @@
   );
 
   let appVersion = $state("");
+  let isMac = $state(navigator.platform.toUpperCase().includes("MAC"));
 
   let disposed = false;
   let healthCheck: ReturnType<typeof setInterval> | null = null;
   let unlistenReady: (() => void) | null = null;
   let unlistenStopped: (() => void) | null = null;
 
+  // --- Monitor state ---
+  let monitorStatus = $state<MonitorStatus | null>(null);
+  let monitorContainers = $state<ContainerInfo[]>([]);
+  let monitorTasks = $state<TaskInfo[]>([]);
+  let monitorPilot = $state<PilotInfo | null>(null);
+
+  let monitorTimers: ReturnType<typeof setInterval>[] = [];
+
+  // --- Panel state ---
+  type PanelView =
+    | { type: "none" }
+    | { type: "local" }
+    | { type: "peer"; peer: PeerInfo }
+    | { type: "container"; container: ContainerInfo };
+
+  let panelView = $state<PanelView>({ type: "none" });
+  function openLocalPanel() {
+    panelView = { type: "local" };
+  }
+
+  function openPeerPanel(peer: PeerInfo) {
+    panelView = { type: "peer", peer };
+  }
+
+  function openContainerPanel(container: ContainerInfo) {
+    panelView = { type: "container", container };
+  }
+
+  function closePanel() {
+    panelView = { type: "none" };
+  }
+
+  // --- Health check ---
   async function probeHealth() {
     const healthy = await checkHealth();
     if (healthy) {
@@ -84,6 +137,56 @@
     );
   }
 
+  // --- Monitor polling ---
+  function startMonitorPolling() {
+    // Status: every 3s
+    const pollStatus = async () => {
+      if (!backendReady) return;
+      try {
+        monitorStatus = await fetchMonitorStatus();
+      } catch { /* ignore */ }
+    };
+    pollStatus();
+    monitorTimers.push(setInterval(pollStatus, 3000));
+
+    // Containers: every 5s
+    const pollContainers = async () => {
+      if (!backendReady) return;
+      try {
+        monitorContainers = await fetchMonitorContainers();
+      } catch { /* ignore */ }
+    };
+    pollContainers();
+    monitorTimers.push(setInterval(pollContainers, 5000));
+
+    // Tasks: every 10s
+    const pollTasks = async () => {
+      if (!backendReady) return;
+      try {
+        const result = await fetchMonitorTasks();
+        monitorTasks = result.tasks;
+      } catch { /* ignore */ }
+    };
+    pollTasks();
+    monitorTimers.push(setInterval(pollTasks, 10000));
+
+    // Pilot: every 15s
+    const pollPilot = async () => {
+      if (!backendReady) return;
+      try {
+        monitorPilot = await fetchMonitorPilot();
+      } catch { /* ignore */ }
+    };
+    pollPilot();
+    monitorTimers.push(setInterval(pollPilot, 15000));
+  }
+
+  function stopMonitorPolling() {
+    for (const t of monitorTimers) clearInterval(t);
+    monitorTimers = [];
+  }
+
+  // --- Init ---
   async function init() {
     backendStarting = true;
     failedHealthChecks = 0;
@@ -102,11 +205,13 @@
         backendReady = true;
         backendStarting = false;
         failedHealthChecks = 0;
+        startMonitorPolling();
       });
 
       unlistenStopped = await listen("backend-stopped", () => {
         backendReady = false;
         backendStarting = false;
+        stopMonitorPolling();
       });
 
       if (disposed) {
@@ -123,6 +228,7 @@
       if (backendReady) {
         backendStarting = false;
         failedHealthChecks = 0;
+        startMonitorPolling();
       }
     } catch {
       backendReady = false;
@@ -130,10 +236,19 @@
 
     if (!backendReady) {
       await probeHealth();
+      if (backendReady) {
+        startMonitorPolling();
+      }
     }
 
     healthCheck = setInterval(async () => {
+      const wasBefore = backendReady;
       await probeHealth();
+      if (!wasBefore && backendReady) {
+        startMonitorPolling();
+      } else if (wasBefore && !backendReady) {
+        stopMonitorPolling();
+      }
     }, 2000);
   }
 
@@ -171,9 +286,11 @@
       if (unlistenStopped) {
         unlistenStopped();
       }
+      stopMonitorPolling();
     };
   });
 
+  // --- Chat ---
   async function handleSend(text: string) {
     if (streaming || !backendReady) return;
 
@@ -228,25 +345,18 @@
     });
   }
 
-  async function restartBackend() {
-    try {
-      backendReady = false;
-      backendStarting = true;
-      failedHealthChecks = 0;
-      await invoke("restart_backend");
-    } catch (e: unknown) {
-      console.error("Failed to restart:", e);
-      backendStarting = false;
-    }
-  }
-
   function handleDrag(e: MouseEvent) {
+    // Don't drag when clicking buttons or interactive elements
+    const target = e.target as HTMLElement;
+    if (target.closest("button, a, input, [data-no-drag]")) return;
     if (e.button === 0 && e.detail === 1) {
       getCurrentWindow().startDragging();
     }
   }
 
-  function handleDragDblClick() {
+  function handleDragDblClick(e: MouseEvent) {
+    const target = e.target as HTMLElement;
+    if (target.closest("button, a, input, [data-no-drag]")) return;
     getCurrentWindow().toggleMaximize();
   }
 </script>
@@ -260,19 +370,14 @@
 {:else if showSettings}
   <Settings onClose={() => { showSettings = false; backendStarting = true; failedHealthChecks = 0; }} />
 {:else}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="app" onclick={() => inputRef?.focus()}>
+  <div class="app">
+    <!-- Top bar: drag region + controls -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="drag-region" onmousedown={handleDrag} ondblclick={handleDragDblClick} onclick={() => inputRef?.focus()}></div>
-
-    <div class="header">
-      <button class="logo-btn" onclick={restartBackend} title="Restart backend">
-        <Avatar state={chatState} backendStatus={status} />
-      </button>
-      <button class="gear-btn" onclick={() => { showSettings = true; }} title="Settings">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <div class="topbar" class:macos={isMac} class:windows={!isMac} onmousedown={handleDrag} ondblclick={handleDragDblClick}>
+      <span class="topbar-title">NanoClaw</span>
+      <div class="topbar-spacer"></div>
+      <button class="gear-btn" onclick={() => { showSettings = true; }} title="Settings" >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
           <circle cx="12" cy="12" r="3"/>
         </svg>
@@ -280,11 +385,42 @@
       {#if appVersion}<span class="version">v{appVersion}</span>{/if}
     </div>
 
-    <div class="content">
-      <Chat {userText} {agentText} {streaming} {streamText}>
-        <Input bind:this={inputRef} disabled={!backendReady || streaming} onSend={handleSend} />
-      </Chat>
+    <!-- Canvas (always full-width; panel floats on top) -->
+    <div class="canvas-area">
+      <CanvasView
+        status={monitorStatus}
+        containers={monitorContainers}
+        tasks={monitorTasks}
+        pilot={monitorPilot}
+        selectedId={panelView.type === 'local' ? 'local' : panelView.type === 'peer' ? panelView.peer.id : panelView.type === 'container' ? panelView.container.name : null}
+        onSelectLocal={openLocalPanel}
+        onSelectPeer={openPeerPanel}
+        onSelectContainer={openContainerPanel}
+        onCanvasClick={closePanel}
+      />
     </div>
+
+    <!-- Detail Panel (slides from right) -->
+    {#if panelView.type !== "none"}
+      <DetailPanel onClose={closePanel}>
+        {#if panelView.type === "local"}
+          <LocalDetail
+            status={monitorStatus}
+            containers={monitorContainers}
+            backendStatus={status}
+            {chatState}
+          >
+            <Chat {userText} {agentText} {streaming} {streamText}>
+              <Input bind:this={inputRef} disabled={!backendReady || streaming} onSend={handleSend} />
+            </Chat>
+          </LocalDetail>
+        {:else if panelView.type === "peer"}
+          <PeerDetail peer={panelView.peer} />
+        {:else if panelView.type === "container"}
+          <ContainerDetail container={panelView.container} />
+        {/if}
+      </DetailPanel>
+    {/if}
   </div>
 {/if}
 
@@ -301,33 +437,48 @@
     display: flex;
     flex-direction: column;
     height: 100%;
+    position: relative;
   }
 
-  .drag-region {
+  .topbar {
     height: 40px;
     min-height: 40px;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    gap: 8px;
+    z-index: 5;
     -webkit-app-region: drag;
+    cursor: default;
+    user-select: none;
   }
 
-  .header {
-    padding: 8px 24px 12px;
-    display: flex;
-    align-items: center;
+  /* macOS: traffic lights on the left (~78px) */
+  .topbar.macos {
+    padding-left: 78px;
   }
 
-  .logo-btn {
-    position: relative;
-    width: 64px;
-    height: 64px;
-    padding: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 50%;
+  /* Windows: native controls on the right (~140px) */
+  .topbar.windows {
+    padding-right: 140px;
+  }
+
+  .topbar-title {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text);
+    opacity: 0.5;
+    pointer-events: none;
+  }
+
+  .topbar-spacer {
+    flex: 1;
   }
 
   .gear-btn {
-    margin-left: auto;
     padding: 6px;
     border-radius: 6px;
     color: var(--text-muted);
@@ -335,6 +486,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    -webkit-app-region: no-drag;
   }
 
   .gear-btn:hover {
@@ -343,21 +495,15 @@
   }
 
   .version {
-    margin-left: 8px;
     font-size: 11px;
     color: var(--text-muted);
-    opacity: 0.8;
+    opacity: 0.6;
     user-select: none;
+    -webkit-app-region: no-drag;
   }
 
-  .logo-btn:hover {
-    background: rgba(255, 255, 255, 0.06);
-  }
-
-  .content {
+  .canvas-area {
     flex: 1;
-    display: flex;
-    flex-direction: column;
     min-height: 0;
   }
 </style>

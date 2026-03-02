@@ -19,6 +19,7 @@ import {
 } from './config.js';
 import { logger } from './logger.js';
 import { validateAdditionalMounts } from './mount-security.js';
+import { emitMonitorEvent } from './monitor-events.js';
 import { RegisteredGroup } from './types.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
@@ -416,6 +417,11 @@ export async function runContainerAgent(
     });
 
     onProcess(container, containerName);
+    emitMonitorEvent('container.start', {
+      containerName,
+      groupFolder: group.folder,
+      groupName: group.name,
+    });
 
     let stdout = '';
     let stderr = '';
@@ -535,6 +541,13 @@ export async function runContainerAgent(
     container.on('close', (code) => {
       clearTimeout(timeout);
       const duration = Date.now() - startTime;
+      emitMonitorEvent('container.stop', {
+        containerName,
+        groupFolder: group.folder,
+        groupName: group.name,
+        exitCode: code,
+        durationMs: duration,
+      });
 
       if (timedOut) {
         const ts = new Date().toISOString().replace(/[:.]/g, '-');

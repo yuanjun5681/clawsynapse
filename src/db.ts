@@ -410,6 +410,14 @@ export function logTaskRun(log: TaskRunLog): void {
   );
 }
 
+export function getRecentTaskRuns(limit: number = 20): TaskRunLog[] {
+  return db
+    .prepare(
+      `SELECT * FROM task_run_logs ORDER BY run_at DESC LIMIT ?`,
+    )
+    .all(limit) as TaskRunLog[];
+}
+
 // --- Router state accessors ---
 
 export function getRouterState(key: string): string | undefined {

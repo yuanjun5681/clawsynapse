@@ -34,6 +34,7 @@ import {
   getAllRegisteredGroups,
   getAllSessions,
   getAllTasks,
+  getRecentTaskRuns,
   getRouterState,
   getTaskById,
   initDatabase,
@@ -43,6 +44,7 @@ import {
   updateTask,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
+import { monitorBus, type MonitorEvent, emitMonitorEvent } from './monitor-events.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
@@ -1083,6 +1085,7 @@ async function handlePilotWebhook(
   const data = payload.data || {};
 
   logger.info({ event, nodeId: payload.node_id }, 'Pilot webhook received');
+  emitMonitorEvent('pilot.message', { event, nodeId: payload.node_id, data });
 
   let prompt: string | null = null;
 
@@ -1151,11 +1154,157 @@ function handleHealth(
   jsonResponse(res, 200, { status: 'ok' });
 }
 
+// --- Monitor API handlers ---
+
+function handleMonitorStatus(
+  _req: http.IncomingMessage,
+  res: http.ServerResponse,
+): void {
+  const mem = process.memoryUsage();
+  const stats = queue.getStats();
+  jsonResponse(res, 200, {
+    uptime: process.uptime(),
+    memoryMB: Math.round(mem.rss / 1024 / 1024),
+    activeContainers: stats.activeContainers,
+    maxContainers: stats.maxContainers,
+    waitingGroups: stats.waitingGroups,
+    registeredGroups: Object.keys(registeredGroups).length,
+    pid: process.pid,
+  });
+}
+
+function handleMonitorContainers(
+  _req: http.IncomingMessage,
+  res: http.ServerResponse,
+): void {
+  try {
+    const output = execSync(
+      `docker ps --filter "name=nanoclaw-" --format '{"name":"{{.Names}}","status":"{{.Status}}","created":"{{.CreatedAt}}","image":"{{.Image}}"}'`,
+      { encoding: 'utf-8', timeout: 5000 },
+    );
+    const containers = output
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        const c = JSON.parse(line);
+        const match = c.name.match(/^nanoclaw-([^-]+)/);
+        return { ...c, groupFolder: match ? match[1] : null };
+      });
+    jsonResponse(res, 200, containers);
+  } catch {
+    jsonResponse(res, 200, []);
+  }
+}
+
+function handleMonitorTasks(
+  _req: http.IncomingMessage,
+  res: http.ServerResponse,
+): void {
+  const tasks = getAllTasks();
+  const recentRuns = getRecentTaskRuns(20);
+  jsonResponse(res, 200, { tasks, recentRuns });
+}
+
+function handleMonitorPilot(
+  _req: http.IncomingMessage,
+  res: http.ServerResponse,
+): void {
+  try {
+    const infoOutput = execSync('pilotctl --json info', {
+      encoding: 'utf-8',
+      timeout: 5000,
+    });
+    const info = JSON.parse(infoOutput);
+
+    let trustedPeers: unknown[] = [];
+    try {
+      const trustOutput = execSync('pilotctl --json trust', {
+        encoding: 'utf-8',
+        timeout: 5000,
+      });
+      trustedPeers = JSON.parse(trustOutput);
+    } catch {
+      // trust list may fail if no peers yet
+    }
+
+    let pendingHandshakes: unknown[] = [];
+    try {
+      const pendingOutput = execSync('pilotctl --json pending', {
+        encoding: 'utf-8',
+        timeout: 5000,
+      });
+      pendingHandshakes = JSON.parse(pendingOutput);
+    } catch {
+      // no pending handshakes
+    }
+
+    jsonResponse(res, 200, {
+      available: true,
+      node: info,
+      trustedPeers: Array.isArray(trustedPeers) ? trustedPeers : [],
+      pendingHandshakes: Array.isArray(pendingHandshakes)
+        ? pendingHandshakes
+        : [],
+    });
+  } catch {
+    jsonResponse(res, 200, { available: false });
+  }
+}
+
+function handleMonitorPilotInbox(
+  _req: http.IncomingMessage,
+  res: http.ServerResponse,
+): void {
+  try {
+    const output = execSync('pilotctl --json inbox', {
+      encoding: 'utf-8',
+      timeout: 5000,
+    });
+    const messages = JSON.parse(output);
+    jsonResponse(res, 200, {
+      messages: Array.isArray(messages) ? messages : [],
+    });
+  } catch {
+    jsonResponse(res, 200, { messages: [] });
+  }
+}
+
+function handleMonitorEvents(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): void {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  });
+
+  const handler = (event: MonitorEvent) => {
+    if (res.writableEnded || res.destroyed) return;
+    res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+  };
+
+  monitorBus.onMonitor(handler);
+
+  req.on('close', () => {
+    monitorBus.removeListener('monitor', handler);
+  });
+}
+
 function isAuthorized(req: http.IncomingMessage): boolean {
   if (!API_AUTH_TOKEN) return true;
 
   const auth = req.headers.authorization;
-  return auth === `Bearer ${API_AUTH_TOKEN}`;
+  if (auth === `Bearer ${API_AUTH_TOKEN}`) return true;
+
+  // Support ?token= query param (for EventSource which cannot set headers)
+  try {
+    const url = new URL(req.url || '/', `http://localhost`);
+    if (url.searchParams.get('token') === API_AUTH_TOKEN) return true;
+  } catch { /* ignore */ }
+
+  return false;
 }
 
 function startHttpServer(): void {
@@ -1240,6 +1389,32 @@ function startHttpServer(): void {
       // GET /api/health
       if (method === 'GET' && pathname === '/api/health') {
         handleHealth(req, res);
+        return;
+      }
+
+      // --- Monitor API ---
+      if (method === 'GET' && pathname === '/api/monitor/status') {
+        handleMonitorStatus(req, res);
+        return;
+      }
+      if (method === 'GET' && pathname === '/api/monitor/containers') {
+        handleMonitorContainers(req, res);
+        return;
+      }
+      if (method === 'GET' && pathname === '/api/monitor/tasks') {
+        handleMonitorTasks(req, res);
+        return;
+      }
+      if (method === 'GET' && pathname === '/api/monitor/pilot') {
+        handleMonitorPilot(req, res);
+        return;
+      }
+      if (method === 'GET' && pathname === '/api/monitor/pilot/inbox') {
+        handleMonitorPilotInbox(req, res);
+        return;
+      }
+      if (method === 'GET' && pathname === '/api/monitor/events') {
+        handleMonitorEvents(req, res);
         return;
       }
 

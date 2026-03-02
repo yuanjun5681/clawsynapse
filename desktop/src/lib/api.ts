@@ -125,3 +125,104 @@ export async function checkHealth(): Promise<boolean> {
     return false;
   }
 }
+
+// --- Monitor API ---
+
+async function monitorFetch<T>(endpoint: string): Promise<T> {
+  const res = await fetch(`${apiBase}/api/monitor/${endpoint}`, {
+    headers: buildHeaders(),
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export interface MonitorStatus {
+  uptime: number;
+  memoryMB: number;
+  activeContainers: number;
+  maxContainers: number;
+  waitingGroups: number;
+  registeredGroups: number;
+  pid: number;
+}
+
+export interface ContainerInfo {
+  name: string;
+  status: string;
+  created: string;
+  image: string;
+  groupFolder: string | null;
+}
+
+export interface TaskInfo {
+  id: string;
+  group_folder: string;
+  prompt: string;
+  schedule_type: string;
+  schedule_value: string;
+  status: string;
+  next_run: string | null;
+}
+
+export interface TaskRunLog {
+  task_id: string;
+  run_at: string;
+  duration_ms: number;
+  status: string;
+  result: string | null;
+  error: string | null;
+}
+
+export interface PilotInfo {
+  available: boolean;
+  node?: Record<string, unknown>;
+  trustedPeers: Array<{
+    id: string;
+    name: string;
+    address: string;
+    status: 'online' | 'offline';
+  }>;
+  pendingHandshakes: Array<{
+    id: string;
+    name: string;
+    justification?: string;
+  }>;
+}
+
+export interface PilotInbox {
+  messages: Array<{
+    from: string;
+    content: string;
+    timestamp: string;
+  }>;
+}
+
+export function fetchMonitorStatus(): Promise<MonitorStatus> {
+  return monitorFetch<MonitorStatus>('status');
+}
+
+export function fetchMonitorContainers(): Promise<ContainerInfo[]> {
+  return monitorFetch<ContainerInfo[]>('containers');
+}
+
+export function fetchMonitorTasks(): Promise<{ tasks: TaskInfo[]; recentRuns: TaskRunLog[] }> {
+  return monitorFetch<{ tasks: TaskInfo[]; recentRuns: TaskRunLog[] }>('tasks');
+}
+
+export function fetchMonitorPilot(): Promise<PilotInfo> {
+  return monitorFetch<PilotInfo>('pilot');
+}
+
+export function fetchMonitorPilotInbox(): Promise<PilotInbox> {
+  return monitorFetch<PilotInbox>('pilot/inbox');
+}
+
+/** Build SSE URL with token query param (EventSource cannot set headers) */
+export function getMonitorEventsUrl(): string {
+  const url = new URL(`${apiBase}/api/monitor/events`);
+  if (apiToken) {
+    url.searchParams.set('token', apiToken);
+  }
+  return url.toString();
+}

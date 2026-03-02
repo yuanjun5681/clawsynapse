@@ -24,6 +24,13 @@ interface GroupState {
   retryCount: number;
 }
 
+export interface QueueStats {
+  activeContainers: number;
+  maxContainers: number;
+  waitingGroups: number;
+  registeredGroups: number;
+}
+
 export class GroupQueue {
   private groups = new Map<string, GroupState>();
   private activeCount = 0;
@@ -31,6 +38,15 @@ export class GroupQueue {
   private processMessagesFn: ((groupJid: string) => Promise<boolean>) | null =
     null;
   private shuttingDown = false;
+
+  getStats(): QueueStats {
+    return {
+      activeContainers: this.activeCount,
+      maxContainers: MAX_CONCURRENT_CONTAINERS,
+      waitingGroups: this.waitingGroups.length,
+      registeredGroups: this.groups.size,
+    };
+  }
 
   private getGroup(groupJid: string): GroupState {
     let state = this.groups.get(groupJid);

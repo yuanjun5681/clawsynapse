@@ -27,6 +27,7 @@ import {
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { logger } from './logger.js';
+import { emitMonitorEvent } from './monitor-events.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 
 export interface SchedulerDependencies {
@@ -119,6 +120,11 @@ async function runTask(
     { taskId: task.id, group: task.group_folder },
     'Running scheduled task',
   );
+  emitMonitorEvent('task.run', {
+    taskId: task.id,
+    groupFolder: task.group_folder,
+    prompt: task.prompt.slice(0, 100),
+  });
 
   const groups = deps.registeredGroups();
   const group = Object.values(groups).find(
@@ -327,6 +333,14 @@ async function runTask(
         : 'Completed',
     chatOutput,
     error,
+  });
+
+  emitMonitorEvent('task.complete', {
+    taskId: task.id,
+    groupFolder: task.group_folder,
+    success: !error,
+    durationMs,
+    nextRun,
   });
 
   // Keep container task snapshots aligned with DB after status transitions.
