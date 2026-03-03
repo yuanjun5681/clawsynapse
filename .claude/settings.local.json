@@ -35,7 +35,8 @@
       "WebFetch(domain:docs.polymarket.com)",
       "WebFetch(domain:infinite-canvas.org)",
       "Bash(npx vite:*)",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "WebFetch(domain:thegridcn.com)"
     ]
   }
 }

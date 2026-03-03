@@ -106,10 +106,37 @@
     position: absolute;
     bottom: 12px;
     right: 12px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
+    border: 1px solid rgba(var(--accent-rgb), 0.2);
+    border-radius: 2px;
     overflow: hidden;
     pointer-events: none;
     opacity: 0.7;
+    box-shadow: 0 0 var(--glow-spread) rgba(var(--accent-rgb), calc(var(--glow-opacity) * 0.15));
+  }
+
+  .minimap::before {
+    content: '';
+    position: absolute;
+    top: -1px;
+    left: -1px;
+    width: 8px;
+    height: 8px;
+    border-top: 1px solid var(--accent);
+    border-left: 1px solid var(--accent);
+    opacity: var(--glow-opacity);
+    z-index: 1;
+  }
+
+  .minimap::after {
+    content: '';
+    position: absolute;
+    bottom: -1px;
+    right: -1px;
+    width: 8px;
+    height: 8px;
+    border-bottom: 1px solid var(--accent);
+    border-right: 1px solid var(--accent);
+    opacity: var(--glow-opacity);
+    z-index: 1;
   }
 </style>

@@ -30,6 +30,8 @@
     fetchMonitorTasks,
     fetchMonitorPilot,
   } from "./lib/api";
+  // Initialize theme system (side effect: sets data-theme/data-intensity on <html>)
+  import "./lib/theme.svelte";
 
   interface SetupStatus {
     nodeInstalled: boolean;
@@ -454,6 +456,8 @@
     -webkit-app-region: drag;
     cursor: default;
     user-select: none;
+    border-bottom: 1px solid rgba(var(--accent-rgb), 0.2);
+    box-shadow: 0 1px var(--glow-spread) rgba(var(--accent-rgb), calc(var(--glow-opacity) * 0.2));
   }
 
   /* macOS: traffic lights on the left (~78px) */
@@ -471,10 +475,13 @@
     left: 50%;
     transform: translateX(-50%);
     font-size: 12px;
-    font-weight: 500;
-    color: var(--text);
-    opacity: 0.5;
+    font-weight: 600;
+    color: var(--accent);
+    opacity: 0.7;
     pointer-events: none;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    text-shadow: 0 0 var(--glow-spread) rgba(var(--accent-rgb), var(--glow-opacity));
   }
 
   .topbar-spacer {

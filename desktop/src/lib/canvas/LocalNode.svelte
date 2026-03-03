@@ -29,7 +29,7 @@
   <circle cx={x} cy={y} r="38" fill="none" stroke="var(--accent)" stroke-width="1.5" opacity="0.3" class="glow-ring" />
 
   <!-- Main circle -->
-  <circle cx={x} cy={y} r="32" fill="#111" stroke="var(--accent)" stroke-width="2" />
+  <circle cx={x} cy={y} r="32" fill="#111" stroke="var(--accent)" stroke-width="2" class="main-circle" />
 
   <!-- Inner icon -->
   <text
@@ -72,6 +72,10 @@
 <style>
   .local-node {
     cursor: pointer;
+  }
+
+  .main-circle {
+    filter: drop-shadow(0 0 var(--glow-spread) rgba(var(--accent-rgb), var(--glow-opacity)));
   }
 
   .local-node:hover circle {

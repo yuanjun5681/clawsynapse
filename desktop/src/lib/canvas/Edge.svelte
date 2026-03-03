@@ -27,6 +27,7 @@
     stroke-width={isOnline ? 1.5 : 1}
     stroke-dasharray={isOnline ? "none" : "6 4"}
     opacity={isOnline ? 0.5 : 0.25}
+    class:glow-line={isOnline}
   />
 
   <!-- Particle animation (online only) -->
@@ -43,3 +44,9 @@
     </circle>
   {/if}
 </g>
+
+<style>
+  .glow-line {
+    filter: drop-shadow(0 0 var(--glow-spread) rgba(var(--accent-rgb), calc(var(--glow-opacity) * 0.3)));
+  }
+</style>

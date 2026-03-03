@@ -77,8 +77,22 @@
     color: var(--text-agent);
   }
 
+  .agent-text pre {
+    text-shadow: 0 0 var(--glow-spread) rgba(var(--accent-rgb), calc(var(--glow-opacity) * 0.4));
+  }
+
   .thinking {
     opacity: 0.9;
+    animation: hud-flicker 3s linear infinite;
+  }
+
+  @keyframes hud-flicker {
+    0%, 100% { opacity: 0.9; }
+    92% { opacity: 0.9; }
+    93% { opacity: 0.5; }
+    94% { opacity: 0.9; }
+    96% { opacity: 0.6; }
+    97% { opacity: 0.9; }
   }
 
   pre {
@@ -93,9 +107,10 @@
     display: inline-block;
     width: 8px;
     height: 1.1em;
-    background: var(--text-agent);
+    background: var(--accent);
     vertical-align: text-bottom;
     animation: blink 1s step-end infinite;
+    box-shadow: 0 0 var(--glow-spread) rgba(var(--accent-rgb), var(--glow-opacity));
   }
 
   @keyframes blink {

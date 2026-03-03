@@ -1,0 +1,177 @@
+/* ============================================================
+   TRON HUD Theme System
+   6 themes × 4 intensity levels
+   ============================================================ */
+
+/* --- Theme color definitions --- */
+
+:root[data-theme="tron"] {
+  --accent: #00D4FF;
+  --accent-rgb: 0, 212, 255;
+  --glow: #00D4FF;
+  --glow-muted: rgba(0, 212, 255, 0.3);
+  --text-agent: #00D4FF;
+}
+
+:root[data-theme="ares"] {
+  --accent: #FF3333;
+  --accent-rgb: 255, 51, 51;
+  --glow: #FF3333;
+  --glow-muted: rgba(255, 51, 51, 0.3);
+  --text-agent: #FF3333;
+}
+
+:root[data-theme="clu"] {
+  --accent: #FF6600;
+  --accent-rgb: 255, 102, 0;
+  --glow: #FF6600;
+  --glow-muted: rgba(255, 102, 0, 0.3);
+  --text-agent: #FF6600;
+}
+
+:root[data-theme="athena"] {
+  --accent: #FFD700;
+  --accent-rgb: 255, 215, 0;
+  --glow: #FFD700;
+  --glow-muted: rgba(255, 215, 0, 0.3);
+  --text-agent: #FFD700;
+}
+
+:root[data-theme="aphrodite"] {
+  --accent: #FF1493;
+  --accent-rgb: 255, 20, 147;
+  --glow: #FF1493;
+  --glow-muted: rgba(255, 20, 147, 0.3);
+  --text-agent: #FF1493;
+}
+
+:root[data-theme="poseidon"] {
+  --accent: #0066FF;
+  --accent-rgb: 0, 102, 255;
+  --glow: #0066FF;
+  --glow-muted: rgba(0, 102, 255, 0.3);
+  --text-agent: #0066FF;
+}
+
+/* --- Intensity levels --- */
+
+:root[data-intensity="off"] {
+  --glow-spread: 0px;
+  --glow-opacity: 0;
+  --scanline-opacity: 0;
+  --grid-opacity: 0;
+}
+
+:root[data-intensity="light"] {
+  --glow-spread: 4px;
+  --glow-opacity: 0.3;
+  --scanline-opacity: 0.02;
+  --grid-opacity: 0.03;
+}
+
+:root[data-intensity="medium"] {
+  --glow-spread: 8px;
+  --glow-opacity: 0.5;
+  --scanline-opacity: 0.04;
+  --grid-opacity: 0.05;
+}
+
+:root[data-intensity="heavy"] {
+  --glow-spread: 16px;
+  --glow-opacity: 0.8;
+  --scanline-opacity: 0.06;
+  --grid-opacity: 0.08;
+}
+
+/* --- HUD utility classes --- */
+
+/* Corner bracket panel border */
+.hud-panel {
+  border: 1px solid rgba(var(--accent-rgb), 0.2);
+  box-shadow:
+    inset 1px 0 var(--glow-spread) rgba(var(--accent-rgb), calc(var(--glow-opacity) * 0.3)),
+    0 0 var(--glow-spread) rgba(var(--accent-rgb), calc(var(--glow-opacity) * 0.15));
+  position: relative;
+}
+
+.hud-panel::before,
+.hud-panel::after {
+  content: '';
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-color: var(--accent);
+  border-style: solid;
+  opacity: var(--glow-opacity);
+}
+
+.hud-panel::before {
+  top: -1px;
+  left: -1px;
+  border-width: 1px 0 0 1px;
+}
+
+.hud-panel::after {
+  bottom: -1px;
+  right: -1px;
+  border-width: 0 1px 1px 0;
+}
+
+/* Glow text */
+.hud-glow-text {
+  text-shadow:
+    0 0 var(--glow-spread) rgba(var(--accent-rgb), var(--glow-opacity)),
+    0 0 calc(var(--glow-spread) * 2) rgba(var(--accent-rgb), calc(var(--glow-opacity) * 0.3));
+}
+
+/* Scanlines overlay (applied via ::after pseudo on containers) */
+.hud-scanlines::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, var(--scanline-opacity)) 2px,
+    rgba(0, 0, 0, var(--scanline-opacity)) 4px
+  );
+  pointer-events: none;
+  z-index: 100;
+}
+
+/* Grid background pattern */
+.hud-grid-bg {
+  background-image:
+    linear-gradient(rgba(var(--accent-rgb), var(--grid-opacity)) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(var(--accent-rgb), var(--grid-opacity)) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+/* Flicker animation */
+.hud-flicker {
+  animation: hud-flicker 3s linear infinite;
+}
+
+@keyframes hud-flicker {
+  0%, 100% { opacity: 1; }
+  92% { opacity: 1; }
+  93% { opacity: 0.7; }
+  94% { opacity: 1; }
+  96% { opacity: 0.8; }
+  97% { opacity: 1; }
+}
+
+/* Pulse glow animation */
+.hud-pulse {
+  animation: hud-pulse-glow 2s ease-in-out infinite;
+}
+
+@keyframes hud-pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 var(--glow-spread) rgba(var(--accent-rgb), var(--glow-opacity));
+  }
+  50% {
+    box-shadow: 0 0 calc(var(--glow-spread) * 2) rgba(var(--accent-rgb), var(--glow-opacity));
+  }
+}

@@ -98,6 +98,7 @@
   textarea:focus {
     outline: none;
     border-bottom-color: var(--accent);
+    box-shadow: 0 1px var(--glow-spread) rgba(var(--accent-rgb), calc(var(--glow-opacity) * 0.4));
   }
 
   textarea::placeholder {

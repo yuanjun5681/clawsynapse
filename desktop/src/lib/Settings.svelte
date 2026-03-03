@@ -1,6 +1,11 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
+  import {
+    THEMES, THEME_NAMES, INTENSITIES,
+    getTheme, getIntensity, setTheme, setIntensity,
+    type ThemeName, type Intensity
+  } from "./theme.svelte";
 
   interface Props {
     onClose: () => void;
@@ -19,6 +24,20 @@
   // Advanced
   let temperature = $state("");
   let maxTokens = $state("");
+
+  // Appearance
+  let currentTheme = $state<ThemeName>(getTheme());
+  let currentIntensity = $state<Intensity>(getIntensity());
+
+  function pickTheme(t: ThemeName) {
+    currentTheme = t;
+    setTheme(t);
+  }
+
+  function pickIntensity(i: Intensity) {
+    currentIntensity = i;
+    setIntensity(i);
+  }
 
   function maskKey(key: string): string {
     if (!key || key.length <= 4) return key;
@@ -156,6 +175,46 @@
             </label>
           </div>
         </details>
+      </div>
+
+      <!-- Appearance -->
+      <div class="appearance-section">
+        <h2>Appearance</h2>
+        <div class="appearance-row">
+          <span class="appearance-label">THEME</span>
+          <div class="theme-dots">
+            {#each THEME_NAMES as t}
+              <button
+                class="theme-dot"
+                class:active={currentTheme === t}
+                style="--dot-color: {THEMES[t].color}"
+                onclick={() => pickTheme(t)}
+                title={THEMES[t].label}
+              >
+                <span class="dot-inner"></span>
+              </button>
+            {/each}
+          </div>
+        </div>
+        <div class="theme-labels">
+          {#each THEME_NAMES as t}
+            <span class="theme-label" class:active={currentTheme === t}>{THEMES[t].label}</span>
+          {/each}
+        </div>
+        <div class="appearance-row">
+          <span class="appearance-label">GLOW</span>
+          <div class="intensity-btns">
+            {#each INTENSITIES as i}
+              <button
+                class="intensity-btn"
+                class:active={currentIntensity === i}
+                onclick={() => pickIntensity(i)}
+              >
+                {i.charAt(0).toUpperCase() + i.slice(1)}
+              </button>
+            {/each}
+          </div>
+        </div>
       </div>
 
       <div class="actions">
@@ -298,5 +357,117 @@
   .save-btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+  }
+
+  /* --- Appearance --- */
+  .appearance-section {
+    margin-bottom: 2rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .appearance-section h2 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: 1rem;
+    color: var(--text);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+
+  .appearance-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 6px;
+  }
+
+  .appearance-label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    letter-spacing: 1px;
+    width: 52px;
+    flex-shrink: 0;
+  }
+
+  .theme-dots {
+    display: flex;
+    gap: 8px;
+  }
+
+  .theme-dot {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+
+  .theme-dot .dot-inner {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--dot-color);
+  }
+
+  .theme-dot:hover {
+    border-color: var(--dot-color);
+  }
+
+  .theme-dot.active {
+    border-color: var(--dot-color);
+    box-shadow: 0 0 8px var(--dot-color);
+  }
+
+  .theme-labels {
+    display: flex;
+    gap: 8px;
+    margin-left: 64px;
+    margin-bottom: 12px;
+  }
+
+  .theme-label {
+    width: 24px;
+    text-align: center;
+    font-size: 7px;
+    color: var(--text-muted);
+    letter-spacing: 0.5px;
+    opacity: 0.5;
+  }
+
+  .theme-label.active {
+    color: var(--accent);
+    opacity: 1;
+  }
+
+  .intensity-btns {
+    display: flex;
+    gap: 4px;
+  }
+
+  .intensity-btn {
+    padding: 4px 10px;
+    font-size: 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-muted);
+    transition: all 0.15s;
+    letter-spacing: 0.5px;
+  }
+
+  .intensity-btn:hover {
+    border-color: var(--accent);
+    color: var(--text);
+  }
+
+  .intensity-btn.active {
+    border-color: var(--accent);
+    color: var(--accent);
+    box-shadow: 0 0 var(--glow-spread) rgba(var(--accent-rgb), var(--glow-opacity));
   }
 </style>
