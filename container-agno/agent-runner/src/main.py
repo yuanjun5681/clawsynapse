@@ -37,6 +37,27 @@ from agno.tools.file import FileTools
 from agno.tools.python import PythonTools
 from agno.tools.shell import ShellTools
 
+# Max characters for a single shell command output (~30k chars ≈ ~8k tokens).
+# Prevents a single large response (e.g. unfiltered API dump) from blowing up
+# the context window beyond what compression can recover from.
+SHELL_OUTPUT_MAX_CHARS = 30_000
+
+
+class SafeShellTools(ShellTools):
+    """ShellTools with character-level output truncation."""
+
+    def run_shell_command(self, args: list[str], tail: int = 100) -> str:
+        result = super().run_shell_command(args, tail)
+        if len(result) > SHELL_OUTPUT_MAX_CHARS:
+            half = SHELL_OUTPUT_MAX_CHARS // 2
+            truncated_chars = len(result) - SHELL_OUTPUT_MAX_CHARS
+            result = (
+                result[:half]
+                + f"\n\n... [TRUNCATED {truncated_chars:,} characters] ...\n\n"
+                + result[-half:]
+            )
+        return result
+
 from .config import (
     GROUP_DIR,
     SESSION_DB_PATH,
@@ -161,7 +182,7 @@ def create_agent(
         tools=[
             FileTools(base_dir=Path(GROUP_DIR)),
             PythonTools(base_dir=Path(GROUP_DIR)),
-            ShellTools(base_dir=GROUP_DIR),
+            SafeShellTools(base_dir=GROUP_DIR),
             DuckDuckGoTools(),
             *ipc_tools,
         ],
