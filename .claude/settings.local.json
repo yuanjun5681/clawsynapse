@@ -34,7 +34,8 @@
       "Bash(uv run:*)",
       "WebFetch(domain:docs.polymarket.com)",
       "WebFetch(domain:infinite-canvas.org)",
-      "Bash(npx vite:*)"
+      "Bash(npx vite:*)",
+      "Bash(npx tsc:*)"
     ]
   }
 }

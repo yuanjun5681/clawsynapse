@@ -12,10 +12,18 @@
   let { userText, agentText, streaming, streamText, children }: Props = $props();
 
   let container: HTMLDivElement;
+  let userAtBottom = true;
+
+  function checkIfAtBottom() {
+    if (!container) return;
+    const threshold = 30;
+    userAtBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
+  }
 
   async function scrollToBottom() {
     await tick();
-    if (container) {
+    if (container && userAtBottom) {
       container.scrollTop = container.scrollHeight;
     }
   }
@@ -27,7 +35,7 @@
   });
 </script>
 
-<div class="chat" bind:this={container}>
+<div class="chat" bind:this={container} onscroll={checkIfAtBottom}>
   {#if userText}
     <div class="user-text">{userText}</div>
   {/if}

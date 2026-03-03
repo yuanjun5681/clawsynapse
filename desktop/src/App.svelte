@@ -120,10 +120,13 @@
       return;
     }
 
-    backendReady = false;
     failedHealthChecks += 1;
-    if (backendStarting && failedHealthChecks >= 3) {
-      backendStarting = false;
+    // Only mark as down after 3 consecutive failures to avoid flicker
+    if (failedHealthChecks >= 3) {
+      backendReady = false;
+      if (backendStarting) {
+        backendStarting = false;
+      }
     }
   }
 

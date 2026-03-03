@@ -9,7 +9,6 @@
   let { disabled, onSend }: Props = $props();
   let text = $state("");
   let textarea: HTMLTextAreaElement;
-  let focused = $state(false);
   let composing = $state(false);
   let compositionJustEnded = $state(false);
 
@@ -42,7 +41,12 @@
     if (!trimmed || disabled) return;
     onSend(trimmed);
     text = "";
-    if (textarea) textarea.style.height = "auto";
+    resetHeight();
+  }
+
+  function resetHeight() {
+    if (!textarea) return;
+    textarea.style.height = "auto";
   }
 
   function autoResize() {
@@ -53,24 +57,20 @@
 </script>
 
 <div class="input-area">
-  <div class="input-wrapper">
-    <div class="input-display" aria-hidden="true">
-      <span>{text}</span>{#if focused}<span class="block-cursor"></span>{/if}
-    </div>
-    <textarea
-      bind:this={textarea}
-      bind:value={text}
-      oninput={autoResize}
-      onkeydown={handleKeydown}
-      onfocus={() => focused = true}
-      onblur={() => focused = false}
-      oncompositionstart={() => composing = true}
-      oncompositionend={handleCompositionEnd}
-      {disabled}
-      rows="1"
-      aria-label="Message input"
-    ></textarea>
-  </div>
+  <textarea
+    bind:this={textarea}
+    bind:value={text}
+    oninput={autoResize}
+    onkeydown={handleKeydown}
+    onfocus={() => {}}
+    onblur={() => {}}
+    oncompositionstart={() => composing = true}
+    oncompositionend={handleCompositionEnd}
+    {disabled}
+    rows="1"
+    placeholder={disabled ? "" : "Send a message..."}
+    aria-label="Message input"
+  ></textarea>
 </div>
 
 <style>
@@ -78,52 +78,35 @@
     padding: 8px 0 24px;
   }
 
-  .input-wrapper {
-    position: relative;
-    min-height: 24px;
-  }
-
-  .input-display {
-    padding: 8px 0;
-    font-size: 14px;
-    line-height: 1.5;
-    color: var(--text);
-    white-space: pre-wrap;
-    word-break: break-word;
-    pointer-events: none;
-  }
-
-  .block-cursor {
-    display: inline-block;
-    width: 8px;
-    height: 1.1em;
-    background: #ddd;
-    vertical-align: text-bottom;
-    animation: blink 1s step-end infinite;
-  }
-
-  @keyframes blink {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0; }
-  }
-
   textarea {
-    position: absolute;
-    inset: 0;
+    display: block;
     width: 100%;
-    height: 100%;
     resize: none;
     border: none;
+    border-bottom: 1px solid var(--border);
     padding: 8px 0;
     background: transparent;
-    color: transparent;
-    caret-color: transparent;
+    color: var(--text);
+    caret-color: var(--accent);
     font-size: 14px;
     line-height: 1.5;
-    overflow: hidden;
+    max-height: 120px;
+    overflow-y: auto;
+    transition: border-color 0.15s;
   }
 
   textarea:focus {
     outline: none;
+    border-bottom-color: var(--accent);
+  }
+
+  textarea::placeholder {
+    color: var(--text-muted);
+    opacity: 0.6;
+  }
+
+  textarea:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
   }
 </style>
