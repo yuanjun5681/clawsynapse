@@ -17,28 +17,51 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="detail-panel">
-  <div class="panel-header">
-    <button class="close-btn" onclick={onClose} title="Close">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <line x1="18" y1="6" x2="6" y2="18"/>
-        <line x1="6" y1="6" x2="18" y2="18"/>
-      </svg>
-    </button>
-  </div>
-  <div class="panel-body">
-    {@render children()}
+<div class="panel-wrapper">
+  <div class="panel-overlay" onclick={onClose} role="presentation"></div>
+  <div class="detail-panel">
+    <div class="panel-header">
+      <button class="close-btn" onclick={onClose} title="Close">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"/>
+          <line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+    <div class="panel-body">
+      {@render children()}
+    </div>
   </div>
 </div>
 
 <style>
-  .detail-panel {
+  .panel-wrapper {
     position: fixed;
+    inset: 0;
+    z-index: 29;
+  }
+
+  .panel-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.3);
+    animation: fade-in 0.2s ease;
+  }
+
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  .detail-panel {
+    position: absolute;
     top: 0;
     right: 0;
     bottom: 0;
     width: var(--panel-width);
     background: var(--panel-bg);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     border-left: 1px solid rgba(var(--accent-rgb), 0.2);
     box-shadow: inset 1px 0 var(--glow-spread) rgba(var(--accent-rgb), calc(var(--glow-opacity) * 0.2));
     z-index: 30;

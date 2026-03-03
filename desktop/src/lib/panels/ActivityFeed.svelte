@@ -91,8 +91,15 @@
 </script>
 
 <div class="activity-feed">
+  <div class="corner corner-tl"></div>
+  <div class="corner corner-tr"></div>
+  <div class="corner corner-bl"></div>
+  <div class="corner corner-br"></div>
+  <div class="scanline-overlay"></div>
+
   <div class="feed-header">
     <span class="feed-title">Activity</span>
+    <span class="feed-counter">{events.length}</span>
     <span class="feed-status" class:connected></span>
   </div>
 
@@ -121,20 +128,83 @@
 
 <style>
   .activity-feed {
-    padding: 0;
+    padding: 8px;
+    border: 1px solid rgba(var(--accent-rgb), 0.2);
+    border-radius: 4px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* Corner brackets */
+  .corner {
+    position: absolute;
+    width: 8px;
+    height: 8px;
+    z-index: 1;
+  }
+
+  .corner-tl {
+    top: -1px;
+    left: -1px;
+    border-top: 1px solid var(--accent);
+    border-left: 1px solid var(--accent);
+  }
+
+  .corner-tr {
+    top: -1px;
+    right: -1px;
+    border-top: 1px solid var(--accent);
+    border-right: 1px solid var(--accent);
+  }
+
+  .corner-bl {
+    bottom: -1px;
+    left: -1px;
+    border-bottom: 1px solid var(--accent);
+    border-left: 1px solid var(--accent);
+  }
+
+  .corner-br {
+    bottom: -1px;
+    right: -1px;
+    border-bottom: 1px solid var(--accent);
+    border-right: 1px solid var(--accent);
+  }
+
+  /* Scanline overlay */
+  .scanline-overlay {
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 0, 0, 0.03) 2px,
+      rgba(0, 0, 0, 0.03) 4px
+    );
+    pointer-events: none;
+    z-index: 2;
   }
 
   .feed-header {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 8px 0;
+    padding: 4px 0 8px;
   }
 
   .feed-title {
-    font-size: 12px;
+    font-size: 10px;
     font-weight: 600;
     color: var(--text);
+    text-transform: uppercase;
+    letter-spacing: 2px;
+  }
+
+  .feed-counter {
+    font-size: 9px;
+    color: var(--text-muted);
+    margin-left: auto;
   }
 
   .feed-status {
@@ -146,6 +216,12 @@
 
   .feed-status.connected {
     background: var(--green);
+    animation: pulse-dot 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
   }
 
   .feed-empty {
@@ -157,7 +233,6 @@
   .feed-list {
     display: flex;
     flex-direction: column;
-    gap: 2px;
     max-height: 200px;
     overflow-y: auto;
   }
@@ -166,8 +241,13 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 3px 0;
+    padding: 4px 0;
     font-size: 10px;
+    border-bottom: 1px solid rgba(var(--accent-rgb), 0.08);
+  }
+
+  .feed-item:last-child {
+    border-bottom: none;
   }
 
   .feed-dot {

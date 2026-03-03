@@ -123,7 +123,7 @@
   }
 
   .section-title {
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
     color: var(--accent);
     margin-bottom: 8px;
@@ -201,7 +201,15 @@
     align-items: center;
     gap: 6px;
     font-size: 11px;
-    padding: 4px 0;
+    padding: 6px 8px;
+    border-radius: 4px;
+    border: 1px solid transparent;
+    transition: background 0.15s, border-color 0.15s;
+  }
+
+  .container-item:hover {
+    background: var(--bg-muted);
+    border-color: var(--border);
   }
 
   .container-dot {

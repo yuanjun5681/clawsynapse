@@ -68,7 +68,7 @@
   }
 
   .user-text {
-    color: #ddd;
+    color: var(--text);
     font-size: 13px;
     line-height: 1.5;
   }
@@ -78,7 +78,7 @@
   }
 
   .agent-text pre {
-    text-shadow: 0 0 var(--glow-spread) rgba(var(--accent-rgb), calc(var(--glow-opacity) * 0.4));
+    text-shadow: 0 0 var(--glow-spread) rgba(var(--accent-rgb), calc(var(--glow-opacity) * 0.25));
   }
 
   .thinking {
@@ -99,7 +99,7 @@
     white-space: pre-wrap;
     font-family: inherit;
     margin: 0;
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1.6;
   }
 

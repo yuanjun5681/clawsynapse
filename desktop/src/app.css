@@ -1,12 +1,15 @@
 :root {
-  --bg: #000;
-  --bg-input: #111;
+  --bg: #0a0a0a;
+  --bg-input: #0f0f0f;
+  --bg-card: rgba(15, 15, 15, 0.8);
+  --bg-muted: rgba(255, 255, 255, 0.04);
   --text: #e5e5e5;
-  --text-muted: #555;
+  --text-muted: #666;
   --text-agent: #e07a2f;
-  --border: #222;
+  --border: #1a1a1a;
   --accent: #e07a2f;
   --accent-rgb: 224, 122, 47;
+  --ring: rgba(var(--accent-rgb), 0.5);
   --glow: #e07a2f;
   --glow-muted: rgba(224, 122, 47, 0.3);
   --glow-spread: 8px;
@@ -17,7 +20,7 @@
   --yellow: #eab308;
   --red: #ef4444;
   --blue: #3b82f6;
-  --panel-bg: rgba(10, 10, 10, 0.95);
+  --panel-bg: rgba(8, 8, 8, 0.92);
   --panel-width: 360px;
 }
 
@@ -37,7 +40,7 @@ body {
   font-family: 'Rajdhani', 'Courier New', 'Courier', monospace;
   background: var(--bg);
   color: var(--text);
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.5;
   position: relative;
 }
@@ -100,6 +103,7 @@ input, textarea {
 ::-webkit-scrollbar-thumb {
   background: #333;
   border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 ::-webkit-scrollbar-thumb:hover {

@@ -75,30 +75,30 @@
 
 <style>
   .input-area {
-    padding: 8px 0 24px;
+    padding: 8px 0 16px;
   }
 
   textarea {
     display: block;
     width: 100%;
     resize: none;
-    border: none;
-    border-bottom: 1px solid var(--border);
-    padding: 8px 0;
-    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 12px;
+    background: var(--bg-input);
     color: var(--text);
     caret-color: var(--accent);
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1.5;
     max-height: 120px;
     overflow-y: auto;
-    transition: border-color 0.15s;
+    transition: border-color 0.15s, box-shadow 0.15s;
   }
 
   textarea:focus {
     outline: none;
-    border-bottom-color: var(--accent);
-    box-shadow: 0 1px var(--glow-spread) rgba(var(--accent-rgb), calc(var(--glow-opacity) * 0.4));
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--ring);
   }
 
   textarea::placeholder {
