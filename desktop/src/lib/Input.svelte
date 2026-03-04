@@ -82,28 +82,35 @@
     display: block;
     width: 100%;
     resize: none;
-    border: 1px solid var(--border);
-    border-radius: 6px;
+    border: 1px solid var(--tron-border-color, var(--border));
+    border-radius: var(--border-radius, 6px);
     padding: 8px 12px;
     background: var(--bg-input);
     color: var(--text);
     caret-color: var(--accent);
     font-size: 13px;
     line-height: 1.5;
+    letter-spacing: 0.05em;
     max-height: 120px;
     overflow-y: auto;
-    transition: border-color 0.15s, box-shadow 0.15s;
+    transition: border-color 0.25s ease-out, box-shadow 0.25s ease-out, background-color 0.25s ease-out;
   }
 
   textarea:focus {
     outline: none;
     border-color: var(--accent);
-    box-shadow: 0 0 0 3px var(--ring);
+    background: color-mix(in srgb, var(--accent) 5%, var(--bg-input));
+    box-shadow:
+      0 0 var(--glow-spread) rgba(var(--accent-rgb), calc(var(--glow-opacity) * 0.4)),
+      inset 0 0 calc(var(--glow-spread) * 0.5) rgba(var(--accent-rgb), calc(var(--glow-opacity) * 0.1));
   }
 
   textarea::placeholder {
     color: var(--text-muted);
     opacity: 0.6;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: 0.85em;
   }
 
   textarea:disabled {

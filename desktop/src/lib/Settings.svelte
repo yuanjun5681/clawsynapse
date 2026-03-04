@@ -251,6 +251,9 @@
     font-size: 1.4rem;
     font-weight: 600;
     margin-bottom: 1.5rem;
+    font-family: var(--font-display);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
   }
 
   .muted {
@@ -280,26 +283,34 @@
 
   .key-form select {
     background: var(--bg-input);
-    border: 1px solid var(--border);
-    border-radius: 4px;
+    border: 1px solid var(--tron-border-color, var(--border));
+    border-radius: var(--border-radius, 4px);
     padding: 0.45rem 0.55rem;
     color: var(--text);
     font-size: 0.85rem;
+    letter-spacing: 0.05em;
+    transition: border-color 0.25s ease-out, box-shadow 0.25s ease-out, background-color 0.25s ease-out;
   }
 
   .key-form input {
     background: var(--bg-input);
-    border: 1px solid var(--border);
-    border-radius: 4px;
+    border: 1px solid var(--tron-border-color, var(--border));
+    border-radius: var(--border-radius, 4px);
     padding: 0.45rem 0.55rem;
     width: 100%;
     font-size: 0.85rem;
+    letter-spacing: 0.05em;
+    transition: border-color 0.25s ease-out, box-shadow 0.25s ease-out, background-color 0.25s ease-out;
   }
 
   .key-form select:focus,
   .key-form input:focus {
-    outline: 1px solid color-mix(in srgb, var(--accent) 75%, #fff 25%);
-    outline-offset: 0;
+    outline: none;
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 5%, var(--bg-input));
+    box-shadow:
+      0 0 var(--glow-spread) rgba(var(--accent-rgb), calc(var(--glow-opacity) * 0.4)),
+      inset 0 0 calc(var(--glow-spread) * 0.5) rgba(var(--accent-rgb), calc(var(--glow-opacity) * 0.1));
   }
 
   .advanced {
@@ -328,30 +339,42 @@
 
   .cancel-btn {
     background: var(--bg-input);
-    border: 1px solid var(--border);
-    border-radius: 6px;
+    border: 1px solid var(--tron-border-color, var(--border));
+    border-radius: var(--border-radius, 6px);
     padding: 0.5rem 1rem;
     font-size: 0.9rem;
     color: var(--text);
     cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-family: var(--font-display);
+    transition: border-color 0.25s ease-out, box-shadow 0.25s ease-out, background-color 0.25s ease-out;
   }
 
   .cancel-btn:hover:not(:disabled) {
-    background: var(--border);
+    border-color: var(--tron-border-hover, var(--border));
+    box-shadow: 0 0 var(--glow-spread) rgba(var(--accent-rgb), calc(var(--glow-opacity) * 0.3));
   }
 
   .save-btn {
-    background: var(--accent);
-    border-radius: 6px;
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
+    border: 2px solid var(--accent);
+    border-radius: var(--border-radius, 6px);
     padding: 0.5rem 1.25rem;
     font-size: 0.9rem;
-    color: #fff;
-    font-weight: 500;
+    color: var(--accent);
+    font-weight: 600;
     cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-family: var(--font-display);
+    transition: all 0.25s ease-out;
   }
 
   .save-btn:hover:not(:disabled) {
-    filter: brightness(1.1);
+    background: var(--accent);
+    color: #000;
+    box-shadow: 0 0 calc(var(--glow-spread) * 2) rgba(var(--accent-rgb), var(--glow-opacity));
   }
 
   .save-btn:disabled {
@@ -371,8 +394,9 @@
     font-weight: 600;
     margin-bottom: 1rem;
     color: var(--text);
-    letter-spacing: 1px;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
+    font-family: var(--font-display);
   }
 
   .appearance-row {
@@ -453,11 +477,14 @@
     padding: 4px 10px;
     font-size: 0.75rem;
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: var(--border-radius, 4px);
     background: transparent;
     color: var(--text-muted);
-    transition: all 0.15s;
-    letter-spacing: 0.5px;
+    transition: all 0.25s ease-out;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    font-family: var(--font-display);
+    font-size: 0.7rem;
   }
 
   .intensity-btn:hover {

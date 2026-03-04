@@ -1,12 +1,12 @@
 :root {
-  --bg: #0a0a0a;
-  --bg-input: #0f0f0f;
-  --bg-card: rgba(15, 15, 15, 0.8);
+  --bg: #111114;
+  --bg-input: #161619;
+  --bg-card: rgba(20, 20, 24, 0.8);
   --bg-muted: rgba(255, 255, 255, 0.04);
   --text: #e5e5e5;
   --text-muted: #666;
   --text-agent: #e07a2f;
-  --border: #1a1a1a;
+  --border: #222228;
   --accent: #e07a2f;
   --accent-rgb: 224, 122, 47;
   --ring: rgba(var(--accent-rgb), 0.5);
@@ -20,8 +20,10 @@
   --yellow: #eab308;
   --red: #ef4444;
   --blue: #3b82f6;
-  --panel-bg: rgba(8, 8, 8, 0.92);
+  --panel-bg: rgba(14, 14, 18, 0.92);
   --panel-width: 360px;
+  --font-display: 'Orbitron', 'Rajdhani', monospace;
+  --font-body: 'Rajdhani', 'Courier New', 'Courier', monospace;
 }
 
 * {
@@ -37,7 +39,7 @@ html, body, #app {
 }
 
 body {
-  font-family: 'Rajdhani', 'Courier New', 'Courier', monospace;
+  font-family: var(--font-body);
   background: var(--bg);
   color: var(--text);
   font-size: 13px;

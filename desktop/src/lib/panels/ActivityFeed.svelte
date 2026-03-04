@@ -129,10 +129,11 @@
 <style>
   .activity-feed {
     padding: 8px;
-    border: 1px solid rgba(var(--accent-rgb), 0.2);
-    border-radius: 4px;
+    border: 1px solid var(--tron-border-color, rgba(var(--accent-rgb), 0.2));
+    border-radius: var(--border-radius, 4px);
     position: relative;
     overflow: hidden;
+    transition: border-color 0.25s ease-out, box-shadow 0.25s ease-out;
   }
 
   /* Corner brackets */
@@ -198,7 +199,8 @@
     font-weight: 600;
     color: var(--text);
     text-transform: uppercase;
-    letter-spacing: 2px;
+    letter-spacing: 0.1em;
+    font-family: var(--font-display);
   }
 
   .feed-counter {

@@ -36,7 +36,9 @@
       "WebFetch(domain:infinite-canvas.org)",
       "Bash(npx vite:*)",
       "Bash(npx tsc:*)",
-      "WebFetch(domain:thegridcn.com)"
+      "WebFetch(domain:thegridcn.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(grep:*)"
     ]
   }
 }

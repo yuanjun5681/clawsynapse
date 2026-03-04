@@ -131,9 +131,22 @@
     align-items: center;
     gap: 6px;
     text-transform: uppercase;
-    letter-spacing: 2px;
-    font-family: 'Rajdhani', 'Courier New', monospace;
+    letter-spacing: 0.1em;
+    font-family: var(--font-display);
     text-shadow: 0 0 var(--glow-spread) rgba(var(--accent-rgb), calc(var(--glow-opacity) * 0.5));
+    padding-left: 12px;
+    position: relative;
+  }
+
+  .section-title::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: var(--accent);
+    box-shadow: 0 0 var(--glow-spread) rgba(var(--accent-rgb), var(--glow-opacity));
   }
 
   .status-dot {
@@ -154,9 +167,15 @@
     flex-direction: column;
     gap: 2px;
     padding: 6px 8px;
-    border: 1px solid rgba(var(--accent-rgb), 0.15);
-    border-radius: 2px;
+    border: 1px solid var(--tron-border-color, rgba(var(--accent-rgb), 0.15));
+    border-radius: var(--border-radius, 2px);
     position: relative;
+    transition: border-color 0.25s ease-out, box-shadow 0.25s ease-out;
+  }
+
+  .stat:hover {
+    border-color: var(--tron-border-hover, var(--accent));
+    box-shadow: 0 0 var(--glow-spread) rgba(var(--accent-rgb), calc(var(--glow-opacity) * 0.3));
   }
 
   .stat::before {
@@ -202,9 +221,9 @@
     gap: 6px;
     font-size: 11px;
     padding: 6px 8px;
-    border-radius: 4px;
+    border-radius: var(--border-radius, 4px);
     border: 1px solid transparent;
-    transition: background 0.15s, border-color 0.15s;
+    transition: background 0.25s ease-out, border-color 0.25s ease-out;
   }
 
   .container-item:hover {
