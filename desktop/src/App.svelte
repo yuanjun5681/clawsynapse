@@ -51,10 +51,14 @@
 
   let backendReady = $state(false);
   let backendStarting = $state(true);
+  interface Message {
+    role: 'user' | 'agent';
+    text: string;
+  }
+
   let streaming = $state(false);
   let streamText = $state("");
-  let userText = $state("");
-  let agentText = $state("");
+  let messages = $state<Message[]>([]);
   let inputRef = $state<ReturnType<typeof Input> | undefined>(undefined);
   let failedHealthChecks = 0;
 
@@ -299,11 +303,12 @@
   async function handleSend(text: string) {
     if (streaming || !backendReady) return;
 
-    // Clear previous round, start new one
-    userText = text;
-    agentText = "";
+    // Push user message to history
+    messages = [...messages, { role: 'user', text }];
     streaming = true;
     streamText = "";
+
+    let agentReply = "";
 
     try {
       for await (const event of streamChat(text, groupId)) {
@@ -311,11 +316,9 @@
           streamText += event.data.text;
         } else if (event.type === "error") {
           const errorText = event.data.error || "An error occurred";
-          if (streamText) {
-            agentText = streamText + `\n\nError: ${errorText}`;
-          } else {
-            agentText = `Error: ${errorText}`;
-          }
+          agentReply = streamText
+            ? streamText + `\n\nError: ${errorText}`
+            : `Error: ${errorText}`;
           streamText = "";
           break;
         } else if (event.type === "done") {
@@ -324,7 +327,7 @@
       }
     } catch (e: unknown) {
       const errorText = e instanceof Error ? e.message : "Connection failed";
-      agentText = `Error: ${errorText}`;
+      agentReply = `Error: ${errorText}`;
       const healthy = await checkHealth();
       backendReady = healthy;
       backendStarting = false;
@@ -332,7 +335,12 @@
 
     // Commit streamed text as complete
     if (streamText) {
-      agentText = streamText;
+      agentReply = streamText;
+    }
+
+    // Push agent reply to history
+    if (agentReply) {
+      messages = [...messages, { role: 'agent', text: agentReply }];
     }
 
     streaming = false;
@@ -414,11 +422,13 @@
             containers={monitorContainers}
             backendStatus={status}
             {chatState}
-          >
-            <Chat {userText} {agentText} {streaming} {streamText}>
-              <Input bind:this={inputRef} disabled={!backendReady || streaming} onSend={handleSend} />
-            </Chat>
-          </LocalDetail>
+            {messages}
+            {streaming}
+            {streamText}
+            disabled={!backendReady || streaming}
+            onSend={handleSend}
+            bind:inputRef
+          />
         {:else if panelView.type === "peer"}
           <PeerDetail peer={panelView.peer} />
         {:else if panelView.type === "container"}

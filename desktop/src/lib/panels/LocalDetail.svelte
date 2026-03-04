@@ -1,17 +1,39 @@
 <script lang="ts">
-  import type { Snippet } from "svelte";
   import type { MonitorStatus, ContainerInfo } from "../canvas/CanvasView.svelte";
   import ActivityFeed from "./ActivityFeed.svelte";
+  import Chat from "../Chat.svelte";
+  import Input from "../Input.svelte";
+
+  interface Message {
+    role: 'user' | 'agent';
+    text: string;
+  }
 
   interface Props {
     status: MonitorStatus | null;
     containers: ContainerInfo[];
     backendStatus: "running" | "starting" | "stopped";
     chatState: "idle" | "thinking" | "streaming" | "done";
-    children: Snippet;
+    messages: Message[];
+    streaming: boolean;
+    streamText: string;
+    disabled: boolean;
+    onSend: (text: string) => void;
+    inputRef?: ReturnType<typeof Input>;
   }
 
-  let { status, containers, backendStatus, chatState, children }: Props = $props();
+  let {
+    status,
+    containers,
+    backendStatus,
+    chatState,
+    messages,
+    streaming,
+    streamText,
+    disabled,
+    onSend,
+    inputRef = $bindable(),
+  }: Props = $props();
 
   let uptimeStr = $derived.by(() => {
     if (!status) return "--";
@@ -87,14 +109,17 @@
     </div>
   </div>
 
+  <!-- Divider -->
+  <div class="divider"></div>
+
   <!-- Chat section (fixed at bottom) -->
   <div class="chat-fixed">
-    <div class="divider"></div>
-    <div class="section chat-section">
-      <div class="section-title">Chat</div>
-      <div class="chat-wrapper">
-        {@render children()}
-      </div>
+    <div class="section-title chat-title">Terminal</div>
+    <div class="chat-wrapper">
+      <Chat {messages} {streaming} {streamText} {chatState} />
+    </div>
+    <div class="input-fixed">
+      <Input bind:this={inputRef} {disabled} {streaming} {onSend} />
     </div>
   </div>
 </div>
@@ -116,6 +141,11 @@
     min-height: 200px;
     display: flex;
     flex-direction: column;
+    padding: 0 16px;
+  }
+
+  .chat-title {
+    padding: 12px 0 8px;
   }
 
   .section {
@@ -264,18 +294,16 @@
     box-shadow: 0 0 var(--glow-spread) rgba(var(--accent-rgb), calc(var(--glow-opacity) * 0.3));
   }
 
-  .chat-section {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-  }
-
   .chat-wrapper {
     flex: 1;
     display: flex;
     flex-direction: column;
     min-height: 0;
     overflow: hidden;
+  }
+
+  .input-fixed {
+    flex-shrink: 0;
+    padding: 8px 0 12px;
   }
 </style>
