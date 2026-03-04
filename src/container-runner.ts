@@ -25,6 +25,7 @@ import { RegisteredGroup } from './types.js';
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
+const CONTAINER_HOME_DIR = '/home/agent';
 
 // Pilot Protocol: socat bridge from Unix socket to TCP so Docker containers can connect.
 // macOS Docker runs in a Linux VM, so Unix sockets can't cross the VM boundary.
@@ -171,6 +172,7 @@ function buildVolumeMounts(
   const homeDir = getHomeDir();
   const dataRoot = process.cwd(); // In packaged builds, Rust sets cwd to user data dir
   const bundleRoot = BUNDLE_ROOT;
+  const pilotDir = path.join(homeDir, '.pilot');
 
   if (isMain) {
     const groupWorkspaceDir = path.join(GROUPS_DIR, group.folder);
@@ -254,9 +256,19 @@ function buildVolumeMounts(
   }
   mounts.push({
     hostPath: groupSessionsDir,
-    containerPath: '/home/node/.claude',
+    containerPath: `${CONTAINER_HOME_DIR}/.claude`,
     readonly: false,
   });
+
+  // Pilot Protocol local state (config, inbox, received, etc.).
+  // Without this mount, pilotctl in container cannot access host-persisted pilot data.
+  if (fs.existsSync(pilotDir) && fs.statSync(pilotDir).isDirectory()) {
+    mounts.push({
+      hostPath: pilotDir,
+      containerPath: `${CONTAINER_HOME_DIR}/.pilot`,
+      readonly: false,
+    });
+  }
 
   // Per-group IPC namespace: each group gets its own IPC directory
   // This prevents cross-group privilege escalation via IPC
