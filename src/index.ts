@@ -44,7 +44,11 @@ import {
   updateTask,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
-import { monitorBus, type MonitorEvent, emitMonitorEvent } from './monitor-events.js';
+import {
+  monitorBus,
+  type MonitorEvent,
+  emitMonitorEvent,
+} from './monitor-events.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
@@ -1211,30 +1215,89 @@ function handleMonitorPilot(
   res: http.ServerResponse,
 ): void {
   try {
+    interface PilotTrustPeer {
+      node_id?: number;
+      public_key?: string;
+      mutual?: boolean;
+    }
+
+    interface PilotTrustResponse {
+      data?: {
+        trusted?: PilotTrustPeer[];
+      };
+      status?: string;
+    }
+
+    interface PilotPendingPeer {
+      node_id?: number;
+      public_key?: string;
+      name?: string;
+      justification?: string;
+    }
+
+    interface PilotPendingResponse {
+      data?: {
+        pending?: PilotPendingPeer[];
+      };
+      status?: string;
+    }
+
     const infoOutput = execSync('pilotctl --json info', {
       encoding: 'utf-8',
       timeout: 5000,
     });
     const info = JSON.parse(infoOutput);
 
-    let trustedPeers: unknown[] = [];
+    let trustedPeers: Array<{
+      id: string;
+      name: string;
+      address: string;
+      status: 'online' | 'offline';
+    }> = [];
     try {
       const trustOutput = execSync('pilotctl --json trust', {
         encoding: 'utf-8',
         timeout: 5000,
       });
-      trustedPeers = JSON.parse(trustOutput);
+      const trustPayload = JSON.parse(trustOutput) as PilotTrustResponse;
+      const trusted = trustPayload.data?.trusted ?? [];
+      trustedPeers = trusted
+        .filter((peer) => peer.node_id !== undefined)
+        .map((peer) => {
+          const nodeId = String(peer.node_id);
+          return {
+            id: nodeId,
+            name: `node-${nodeId}`,
+            address: peer.public_key ?? '',
+            status: peer.mutual ? 'online' : 'offline',
+          };
+        });
     } catch {
       // trust list may fail if no peers yet
     }
 
-    let pendingHandshakes: unknown[] = [];
+    let pendingHandshakes: Array<{
+      id: string;
+      name: string;
+      justification?: string;
+    }> = [];
     try {
       const pendingOutput = execSync('pilotctl --json pending', {
         encoding: 'utf-8',
         timeout: 5000,
       });
-      pendingHandshakes = JSON.parse(pendingOutput);
+      const pendingPayload = JSON.parse(pendingOutput) as PilotPendingResponse;
+      const pending = pendingPayload.data?.pending ?? [];
+      pendingHandshakes = pending
+        .filter((peer) => peer.node_id !== undefined)
+        .map((peer) => {
+          const nodeId = String(peer.node_id);
+          return {
+            id: nodeId,
+            name: peer.name || `node-${nodeId}`,
+            justification: peer.justification,
+          };
+        });
     } catch {
       // no pending handshakes
     }
@@ -1242,10 +1305,8 @@ function handleMonitorPilot(
     jsonResponse(res, 200, {
       available: true,
       node: info,
-      trustedPeers: Array.isArray(trustedPeers) ? trustedPeers : [],
-      pendingHandshakes: Array.isArray(pendingHandshakes)
-        ? pendingHandshakes
-        : [],
+      trustedPeers,
+      pendingHandshakes,
     });
   } catch {
     jsonResponse(res, 200, { available: false });
@@ -1302,7 +1363,9 @@ function isAuthorized(req: http.IncomingMessage): boolean {
   try {
     const url = new URL(req.url || '/', `http://localhost`);
     if (url.searchParams.get('token') === API_AUTH_TOKEN) return true;
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   return false;
 }
