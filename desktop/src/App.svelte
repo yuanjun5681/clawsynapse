@@ -30,6 +30,10 @@
     fetchMonitorTasks,
     fetchMonitorPilot,
   } from "./lib/api";
+  import { pilotEventStore } from "./lib/state/pilotEventStore";
+  import { pilotGraphStore } from "./lib/state/pilotGraphStore";
+  import { monitorStreamStore } from "./lib/state/monitorStreamStore";
+  import { canonicalizeNodeId } from "./lib/domain/pilot/pilot-events";
   // Initialize theme system (side effect: sets data-theme/data-intensity on <html>)
   import "./lib/theme.svelte";
 
@@ -91,6 +95,7 @@
   let monitorPilot = $state<PilotInfo | null>(null);
 
   let monitorTimers: ReturnType<typeof setInterval>[] = [];
+  let monitorPollingActive = $state(false);
 
   // --- Panel state ---
   type PanelView =
@@ -101,18 +106,24 @@
 
   let panelView = $state<PanelView>({ type: "none" });
   function openLocalPanel() {
+    pilotGraphStore.setSelectedNode("local");
     panelView = { type: "local" };
   }
 
   function openPeerPanel(peer: PeerInfo) {
+    const peerNodeId = canonicalizeNodeId(peer.id);
+    pilotGraphStore.setSelectedNode(peerNodeId);
+    pilotEventStore.markNodeRead(peerNodeId);
     panelView = { type: "peer", peer };
   }
 
   function openContainerPanel(container: ContainerInfo) {
+    pilotGraphStore.setSelectedNode(container.name);
     panelView = { type: "container", container };
   }
 
   function closePanel() {
+    pilotGraphStore.setSelectedNode(null);
     panelView = { type: "none" };
   }
 
@@ -148,6 +159,10 @@
 
   // --- Monitor polling ---
   function startMonitorPolling() {
+    if (monitorPollingActive) return;
+    monitorPollingActive = true;
+    monitorStreamStore.start();
+
     // Status: every 3s
     const pollStatus = async () => {
       if (!backendReady) return;
@@ -184,6 +199,9 @@
       if (!backendReady) return;
       try {
         monitorPilot = await fetchMonitorPilot();
+        const trustedIds = monitorPilot.trustedPeers.map((peer) => canonicalizeNodeId(peer.id));
+        const pendingIds = monitorPilot.pendingHandshakes.map((peer) => canonicalizeNodeId(peer.id));
+        pilotGraphStore.syncKnownNodes([...trustedIds, ...pendingIds]);
       } catch { /* ignore */ }
     };
     pollPilot();
@@ -191,8 +209,12 @@
   }
 
   function stopMonitorPolling() {
+    if (!monitorPollingActive) return;
+    monitorPollingActive = false;
+
     for (const t of monitorTimers) clearInterval(t);
     monitorTimers = [];
+    monitorStreamStore.stop();
   }
 
   // --- Init ---
@@ -405,7 +427,7 @@
         containers={monitorContainers}
         tasks={monitorTasks}
         pilot={monitorPilot}
-        selectedId={panelView.type === 'local' ? 'local' : panelView.type === 'peer' ? panelView.peer.id : panelView.type === 'container' ? panelView.container.name : null}
+        selectedId={panelView.type === 'local' ? 'local' : panelView.type === 'peer' ? canonicalizeNodeId(panelView.peer.id) : panelView.type === 'container' ? panelView.container.name : null}
         onSelectLocal={openLocalPanel}
         onSelectPeer={openPeerPanel}
         onSelectContainer={openContainerPanel}

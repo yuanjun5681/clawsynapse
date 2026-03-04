@@ -195,8 +195,12 @@ export interface PilotInbox {
     from: string;
     content: string;
     timestamp: string;
+    type?: string;
+    raw?: Record<string, unknown>;
   }>;
 }
+
+export type PilotHandshakeAction = 'approve' | 'reject';
 
 export function fetchMonitorStatus(): Promise<MonitorStatus> {
   return monitorFetch<MonitorStatus>('status');
@@ -218,11 +222,31 @@ export function fetchMonitorPilotInbox(): Promise<PilotInbox> {
   return monitorFetch<PilotInbox>('pilot/inbox');
 }
 
+export async function actOnPilotHandshake(
+  nodeId: string,
+  action: PilotHandshakeAction,
+): Promise<void> {
+  const res = await fetch(`${apiBase}/api/monitor/pilot/handshake`, {
+    method: 'POST',
+    headers: buildHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ nodeId, action }),
+    signal: AbortSignal.timeout(5000),
+  });
+
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || `HTTP ${res.status}`);
+  }
+}
+
 /** Build SSE URL with token query param (EventSource cannot set headers) */
-export function getMonitorEventsUrl(): string {
+export function getMonitorEventsUrl(lastEventId?: string | null): string {
   const url = new URL(`${apiBase}/api/monitor/events`);
   if (apiToken) {
     url.searchParams.set('token', apiToken);
+  }
+  if (lastEventId) {
+    url.searchParams.set('lastEventId', lastEventId);
   }
   return url.toString();
 }

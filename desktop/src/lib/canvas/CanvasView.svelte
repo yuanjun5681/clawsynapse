@@ -8,6 +8,8 @@
   import TaskNode from "./TaskNode.svelte";
   import Edge from "./Edge.svelte";
   import Minimap from "./Minimap.svelte";
+  import { pilotEventStore } from "../state/pilotEventStore";
+  import { canonicalizeNodeId } from "../domain/pilot/pilot-events";
 
   interface Props {
     status: MonitorStatus | null;
@@ -110,6 +112,8 @@
   let activeTasks = $derived(
     tasks.filter((t) => t.status === "active" || t.status === "running")
   );
+  let unreadByNodeId = $derived($pilotEventStore.unreadByNodeId);
+  let eventsByNodeId = $derived($pilotEventStore.eventsByNodeId);
 
   // Peer positions
   function peerPosition(index: number, total: number): { x: number; y: number } {
@@ -334,10 +338,18 @@
       <!-- Peer nodes -->
       {#each trustedPeers as peer, i}
         {@const pos = peerPosition(i, trustedPeers.length)}
+        {@const peerNodeId = canonicalizeNodeId(peer.id)}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <g data-node onclick={(e: MouseEvent) => { e.stopPropagation(); onSelectPeer(peer); }}>
-          <PeerNode x={pos.x} y={pos.y} info={peer} selected={selectedId === peer.id} />
+          <PeerNode
+            x={pos.x}
+            y={pos.y}
+            info={peer}
+            selected={selectedId === peerNodeId}
+            unreadCount={unreadByNodeId[peerNodeId] ?? 0}
+            lastEventKind={eventsByNodeId[peerNodeId]?.[0]?.kind ?? null}
+          />
         </g>
       {/each}
 

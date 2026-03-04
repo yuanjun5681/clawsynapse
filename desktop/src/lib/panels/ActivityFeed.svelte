@@ -1,20 +1,12 @@
 <script lang="ts">
-  import { onMount } from "svelte";
-  import { getMonitorEventsUrl } from "../api";
+  import type { NodeEvent } from '../domain/pilot/pilot-events';
+  import { pilotEventStore } from '../state/pilotEventStore';
+  import { monitorStreamStore } from '../state/monitorStreamStore';
 
-  interface MonitorEvent {
-    type: string;
-    timestamp: string;
-    data: Record<string, unknown>;
-  }
-
-  let events = $state<MonitorEvent[]>([]);
-  let connected = $state(false);
   const MAX_EVENTS = 50;
 
-  function addEvent(ev: MonitorEvent) {
-    events = [ev, ...events].slice(0, MAX_EVENTS);
-  }
+  let events = $derived($pilotEventStore.globalRecentEvents.slice(0, MAX_EVENTS));
+  let connected = $derived($monitorStreamStore.connected);
 
   function formatTime(ts: string): string {
     try {
@@ -24,70 +16,18 @@
     }
   }
 
-  function eventLabel(type: string): string {
-    switch (type) {
-      case 'container.start': return 'Container started';
-      case 'container.stop': return 'Container stopped';
-      case 'task.run': return 'Task running';
-      case 'task.complete': return 'Task complete';
-      case 'pilot.message': return 'Pilot message';
-      case 'ipc.activity': return 'IPC activity';
-      default: return type;
-    }
+  function eventLabel(event: NodeEvent): string {
+    if (event.kind === 'message.received') return 'Message received';
+    if (event.kind === 'data.file') return 'File received';
+    if (event.kind === 'handshake.received') return 'Handshake request';
+    return 'Pilot event';
   }
 
-  function eventColor(type: string): string {
-    if (type.startsWith('container.start')) return 'var(--green)';
-    if (type.startsWith('container.stop')) return 'var(--text-muted)';
-    if (type.startsWith('task.run')) return 'var(--accent)';
-    if (type.startsWith('task.complete')) return 'var(--green)';
-    if (type.startsWith('pilot')) return 'var(--blue)';
-    return 'var(--text-muted)';
+  function eventColor(event: NodeEvent): string {
+    if (event.severity === 'warn') return 'var(--yellow)';
+    if (event.kind === 'data.file') return 'var(--blue)';
+    return 'var(--green)';
   }
-
-  onMount(() => {
-    let eventSource: EventSource | null = null;
-
-    function connect() {
-      eventSource = new EventSource(getMonitorEventsUrl());
-
-      eventSource.onopen = () => {
-        connected = true;
-      };
-
-      eventSource.onerror = () => {
-        connected = false;
-        eventSource?.close();
-        // Reconnect after 5s
-        setTimeout(connect, 5000);
-      };
-
-      // Listen to all event types
-      const eventTypes = [
-        'container.start',
-        'container.stop',
-        'task.run',
-        'task.complete',
-        'pilot.message',
-        'ipc.activity',
-      ];
-
-      for (const type of eventTypes) {
-        eventSource.addEventListener(type, (e: MessageEvent) => {
-          try {
-            const data = JSON.parse(e.data) as MonitorEvent;
-            addEvent(data);
-          } catch { /* ignore */ }
-        });
-      }
-    }
-
-    connect();
-
-    return () => {
-      eventSource?.close();
-    };
-  });
 </script>
 
 <div class="activity-feed">
@@ -109,17 +49,13 @@
     <div class="feed-list">
       {#each events as ev}
         <div class="feed-item">
-          <span class="feed-dot" style="background:{eventColor(ev.type)}"></span>
+          <span class="feed-dot" style="background:{eventColor(ev)}"></span>
           <div class="feed-content">
-            <span class="feed-label">{eventLabel(ev.type)}</span>
-            {#if ev.data.groupFolder}
-              <span class="feed-detail">{ev.data.groupFolder}</span>
-            {/if}
-            {#if ev.data.containerName}
-              <span class="feed-detail">{ev.data.containerName}</span>
-            {/if}
+            <span class="feed-label">{eventLabel(ev)}</span>
+            <span class="feed-detail">node {ev.nodeIdForCanvas}</span>
+            <span class="feed-detail">{ev.summary}</span>
           </div>
-          <span class="feed-time">{formatTime(ev.timestamp)}</span>
+          <span class="feed-time">{formatTime(ev.ts)}</span>
         </div>
       {/each}
     </div>
@@ -136,7 +72,6 @@
     transition: border-color 0.25s ease-out, box-shadow 0.25s ease-out;
   }
 
-  /* Corner brackets */
   .corner {
     position: absolute;
     width: 8px;
@@ -172,7 +107,6 @@
     border-right: 1px solid var(--accent);
   }
 
-  /* Scanline overlay */
   .scanline-overlay {
     position: absolute;
     inset: 0;
@@ -241,7 +175,7 @@
 
   .feed-item {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 6px;
     padding: 4px 0;
     font-size: 10px;
@@ -257,31 +191,29 @@
     height: 4px;
     border-radius: 50%;
     flex-shrink: 0;
+    margin-top: 4px;
   }
 
   .feed-content {
-    flex: 1;
     display: flex;
-    gap: 4px;
-    align-items: center;
+    flex-direction: column;
     min-width: 0;
+    flex: 1;
+    gap: 2px;
   }
 
   .feed-label {
     color: var(--text);
-    white-space: nowrap;
   }
 
   .feed-detail {
     color: var(--text-muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    line-height: 1.3;
+    word-break: break-word;
   }
 
   .feed-time {
     color: var(--text-muted);
     flex-shrink: 0;
-    font-size: 9px;
   }
 </style>
