@@ -28,6 +28,25 @@
     if (event.kind === 'data.file') return 'var(--blue)';
     return 'var(--green)';
   }
+
+  function extractMessageText(event: NodeEvent): string {
+    const data = event.raw.data as Record<string, unknown> | undefined;
+    if (!data) return '';
+    for (const key of ['content', 'message', 'text', 'body', 'value']) {
+      const value = data[key];
+      if (typeof value === 'string' && value.trim().length > 0) {
+        return value;
+      }
+    }
+    return '';
+  }
+
+  function eventDetail(event: NodeEvent): string {
+    if (event.kind === 'message.received') {
+      return extractMessageText(event) || '(no message content)';
+    }
+    return event.summary;
+  }
 </script>
 
 <div class="activity-feed">
@@ -53,7 +72,7 @@
           <div class="feed-content">
             <span class="feed-label">{eventLabel(ev)}</span>
             <span class="feed-detail">node {ev.nodeIdForCanvas}</span>
-            <span class="feed-detail">{ev.summary}</span>
+            <span class="feed-detail">{eventDetail(ev)}</span>
           </div>
           <span class="feed-time">{formatTime(ev.ts)}</span>
         </div>
