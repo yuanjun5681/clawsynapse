@@ -80,6 +80,11 @@ export function startIpcWatcher(deps: IpcWatcherDeps): void {
                     `${ASSISTANT_NAME}: ${data.text}`,
                     { dropIfNoListener: true },
                   );
+                  emitMonitorEvent('agent.ipc_message', {
+                    chatJid: data.chatJid,
+                    sourceGroup,
+                    text: data.text,
+                  });
                   logger.info(
                     { chatJid: data.chatJid, sourceGroup },
                     'IPC message sent',

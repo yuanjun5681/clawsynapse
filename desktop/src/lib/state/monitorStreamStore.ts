@@ -3,6 +3,33 @@ import { writable } from 'svelte/store';
 import { getMonitorEventsUrl } from '../api';
 import { pilotEventStore, type MonitorSseEvent } from './pilotEventStore';
 
+export interface AgentIpcMessage {
+  sourceGroup: string;
+  text: string;
+  timestamp: string;
+}
+
+const ipcMessageStore = writable<AgentIpcMessage[]>([]);
+
+function handleIpcMessage(event: MessageEvent): void {
+  try {
+    const payload = JSON.parse(event.data) as MonitorSseEvent;
+    const data = payload.data ?? {};
+    if (typeof data.text === 'string' && data.text.length > 0) {
+      ipcMessageStore.update((msgs) => [
+        ...msgs,
+        {
+          sourceGroup: (data.sourceGroup as string) ?? '',
+          text: data.text as string,
+          timestamp: payload.timestamp,
+        },
+      ]);
+    }
+  } catch {
+    // ignore
+  }
+}
+
 interface MonitorStreamState {
   connected: boolean;
   reconnecting: boolean;
@@ -42,6 +69,7 @@ function handleMessage(event: MessageEvent): void {
 
 function attachPilotListeners(nextSource: EventSource): void {
   nextSource.addEventListener('pilot.node_event', handleMessage as EventListener);
+  nextSource.addEventListener('agent.ipc_message', handleIpcMessage as EventListener);
 }
 
 function clearReconnectTimer(): void {
@@ -95,6 +123,13 @@ function stopInternal(): void {
 
   store.set(initialState);
 }
+
+export const agentIpcMessages = {
+  subscribe: ipcMessageStore.subscribe,
+  clear(): void {
+    ipcMessageStore.set([]);
+  },
+};
 
 export const monitorStreamStore = {
   subscribe: store.subscribe,

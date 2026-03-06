@@ -32,7 +32,7 @@
   } from "./lib/api";
   import { pilotEventStore } from "./lib/state/pilotEventStore";
   import { pilotGraphStore } from "./lib/state/pilotGraphStore";
-  import { monitorStreamStore } from "./lib/state/monitorStreamStore";
+  import { monitorStreamStore, agentIpcMessages } from "./lib/state/monitorStreamStore";
   import { canonicalizeNodeId } from "./lib/domain/pilot/pilot-events";
   // Initialize theme system (side effect: sets data-theme/data-intensity on <html>)
   import "./lib/theme.svelte";
@@ -87,6 +87,8 @@
   let healthCheck: ReturnType<typeof setInterval> | null = null;
   let unlistenReady: (() => void) | null = null;
   let unlistenStopped: (() => void) | null = null;
+  let unsubIpcMessages: (() => void) | null = null;
+  let lastIpcCount = 0;
 
   // --- Monitor state ---
   let monitorStatus = $state<MonitorStatus | null>(null);
@@ -290,6 +292,17 @@
   onMount(() => {
     getVersion().then((v) => { appVersion = v; }).catch(() => {});
 
+    unsubIpcMessages = agentIpcMessages.subscribe((ipcMsgs) => {
+      if (ipcMsgs.length > lastIpcCount) {
+        const newMsgs = ipcMsgs.slice(lastIpcCount);
+        lastIpcCount = ipcMsgs.length;
+        for (const msg of newMsgs) {
+          const label = msg.sourceGroup ? `[${msg.sourceGroup}] ` : '';
+          messages = [...messages, { role: 'agent', text: `${label}${msg.text}` }];
+        }
+      }
+    });
+
     invoke<SetupStatus>("check_setup").then((s) => {
       setupComplete = allChecksPass(s);
       checkingSetup = false;
@@ -315,6 +328,9 @@
       }
       if (unlistenStopped) {
         unlistenStopped();
+      }
+      if (unsubIpcMessages) {
+        unsubIpcMessages();
       }
       stopMonitorPolling();
     };
