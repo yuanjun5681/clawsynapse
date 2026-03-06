@@ -85,6 +85,7 @@ pilotctl --json context
 ### Sending Messages to Peers
 
 1. **User-initiated only** — 只有用户明确要求时才主动向 peer 发送消息，不要自主决定联系其他节点
+2. **Resolve peer first** — 如果用户没有指定 node ID，先运行 `pilotctl --json trust` 列出已信任节点，让用户选择或根据上下文匹配
 2. **Keep messages concise** — 每条消息说清一件事，避免长篇大论
 2. **State your intent** — 消息开头说明目的（请求/回复/通知），例如：
    - `[请求] 能否帮我查一下...`

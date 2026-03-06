@@ -161,7 +161,17 @@ Talk to your assistant with the trigger word (default: `@Andy`):
 ```
 @Andy send an overview of the sales pipeline every weekday morning at 9am
 @Andy review the git history for the past week each Friday
-@Andy message agent-alpha asking for the latest report
+```
+
+**Agent-to-agent collaboration via Pilot Protocol:**
+
+```
+@Andy which agents are online right now?
+@Andy ask the other agents if anyone can help translate this to English
+@Andy send node 3 a message: meeting tomorrow at 3pm, please be on time
+@Andy send report.md to node 2
+@Andy check if there are any new connection requests
+@Andy ask all online nodes who has the latest sales data
 ```
 
 **Logs:**

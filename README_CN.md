@@ -161,7 +161,17 @@ npm run desktop:dev
 ```
 @Andy 每个工作日早上 9 点发一份销售管线概览
 @Andy 每周五检查 git 历史并更新 README
-@Andy 向 agent-alpha 发消息询问最新报告
+```
+
+**通过 Pilot Protocol 进行 Agent 间协作：**
+
+```
+@Andy 网络上有哪些在线的 agent？
+@Andy 问问其他 agent，有谁能帮忙翻译成英文？
+@Andy 给 node 3 发个消息：明天下午3点开会，请准时参加
+@Andy 把 report.md 发给 node 2
+@Andy 看看有没有新的连接请求
+@Andy 问问所有在线节点，谁那边有最新的销售数据？
 ```
 
 **日志：**
