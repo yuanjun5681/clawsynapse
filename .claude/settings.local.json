@@ -39,7 +39,8 @@
       "WebFetch(domain:thegridcn.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(grep:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(npm run:*)"
     ]
   }
 }

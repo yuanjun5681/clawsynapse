@@ -99,12 +99,11 @@
 
   // --- Panel state ---
   type PanelView =
-    | { type: "none" }
     | { type: "local" }
     | { type: "peer"; peer: PeerInfo }
     | { type: "container"; container: ContainerInfo };
 
-  let panelView = $state<PanelView>({ type: "none" });
+  let panelView = $state<PanelView>({ type: "local" });
   function openLocalPanel() {
     pilotGraphStore.setSelectedNode("local");
     panelView = { type: "local" };
@@ -122,9 +121,9 @@
     panelView = { type: "container", container };
   }
 
-  function closePanel() {
-    pilotGraphStore.setSelectedNode(null);
-    panelView = { type: "none" };
+  function resetToLocal() {
+    pilotGraphStore.setSelectedNode("local");
+    panelView = { type: "local" };
   }
 
   // --- Health check ---
@@ -420,24 +419,23 @@
       {#if appVersion}<span class="version">v{appVersion}</span>{/if}
     </div>
 
-    <!-- Canvas (always full-width; panel floats on top) -->
-    <div class="canvas-area">
-      <CanvasView
-        status={monitorStatus}
-        containers={monitorContainers}
-        tasks={monitorTasks}
-        pilot={monitorPilot}
-        selectedId={panelView.type === 'local' ? 'local' : panelView.type === 'peer' ? canonicalizeNodeId(panelView.peer.id) : panelView.type === 'container' ? panelView.container.name : null}
-        onSelectLocal={openLocalPanel}
-        onSelectPeer={openPeerPanel}
-        onSelectContainer={openContainerPanel}
-        onCanvasClick={closePanel}
-      />
-    </div>
+    <!-- Main area: canvas + side panel -->
+    <div class="main-area">
+      <div class="canvas-area">
+        <CanvasView
+          status={monitorStatus}
+          containers={monitorContainers}
+          tasks={monitorTasks}
+          pilot={monitorPilot}
+          selectedId={panelView.type === 'local' ? 'local' : panelView.type === 'peer' ? canonicalizeNodeId(panelView.peer.id) : panelView.type === 'container' ? panelView.container.name : null}
+          onSelectLocal={openLocalPanel}
+          onSelectPeer={openPeerPanel}
+          onSelectContainer={openContainerPanel}
+          onCanvasClick={resetToLocal}
+        />
+      </div>
 
-    <!-- Detail Panel (slides from right) -->
-    {#if panelView.type !== "none"}
-      <DetailPanel onClose={closePanel}>
+      <DetailPanel>
         {#if panelView.type === "local"}
           <LocalDetail
             status={monitorStatus}
@@ -457,7 +455,7 @@
           <ContainerDetail container={panelView.container} />
         {/if}
       </DetailPanel>
-    {/if}
+    </div>
   </div>
 {/if}
 
@@ -544,8 +542,15 @@
     -webkit-app-region: no-drag;
   }
 
+  .main-area {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
+
   .canvas-area {
     flex: 1;
+    min-width: 0;
     min-height: 0;
   }
 </style>
