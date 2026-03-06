@@ -409,6 +409,7 @@
     if (target.closest("button, a, input, [data-no-drag]")) return;
     getCurrentWindow().toggleMaximize();
   }
+
 </script>
 
 {#if checkingSetup}

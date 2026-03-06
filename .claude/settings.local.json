@@ -40,7 +40,11 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(grep:*)",
       "Bash(wc:*)",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "Read(//Volumes/UWorks/Projects/clawsynapse/desktop/src-tauri/$HOME/.cargo/bin/**)",
+      "Read(//opt/homebrew/bin/**)",
+      "Read(//usr/local/bin/**)",
+      "Bash(PATH=\"$HOME/.cargo/bin:$PATH\" cargo check:*)"
     ]
   }
 }
