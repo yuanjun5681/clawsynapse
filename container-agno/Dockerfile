@@ -15,8 +15,10 @@ RUN apt-get update && apt-get install -y \
     socat \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy pilotctl binary from build stage
-COPY --from=pilot-build /go/bin/pilotctl /usr/local/bin/pilotctl
+# Copy pilotctl binary from build stage (as pilotctl-bin, wrapped by pilotctl-wrapper)
+COPY --from=pilot-build /go/bin/pilotctl /usr/local/bin/pilotctl-bin
+COPY pilotctl-wrapper.sh /usr/local/bin/pilotctl
+RUN chmod +x /usr/local/bin/pilotctl
 
 # Install uv for fast dependency management
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
@@ -35,7 +37,8 @@ COPY agent-runner/src/ ./src/
 
 # Create workspace directories (matching existing container layout)
 RUN mkdir -p /workspace/group /workspace/global /workspace/extra \
-    /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/input
+    /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/input \
+    /workspace/ipc/pilot-events
 
 # Copy entrypoint
 COPY agent-runner/entrypoint.sh /app/entrypoint.sh

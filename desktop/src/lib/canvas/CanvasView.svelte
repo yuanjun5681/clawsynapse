@@ -6,9 +6,11 @@
   import PendingNode from "./PendingNode.svelte";
   import ContainerNode from "./ContainerNode.svelte";
   import TaskNode from "./TaskNode.svelte";
+  import ChatBubble from "./ChatBubble.svelte";
   import Edge from "./Edge.svelte";
   import Minimap from "./Minimap.svelte";
   import { pilotEventStore } from "../state/pilotEventStore";
+  import { chatBubbleStore } from "../state/chatBubbleStore";
   import { canonicalizeNodeId } from "../domain/pilot/pilot-events";
 
   interface Props {
@@ -114,6 +116,18 @@
   );
   let unreadByNodeId = $derived($pilotEventStore.unreadByNodeId);
   let eventsByNodeId = $derived($pilotEventStore.eventsByNodeId);
+  let bubbles = $derived($chatBubbleStore);
+
+  // Map peer nodeId to its position for chat bubbles
+  let peerPositionMap = $derived.by(() => {
+    const map: Record<string, { x: number; y: number }> = {};
+    const total = trustedPeers.length;
+    trustedPeers.forEach((peer, i) => {
+      const pos = peerPosition(i, total);
+      map[canonicalizeNodeId(peer.id)] = pos;
+    });
+    return map;
+  });
 
   // Peer positions
   function peerPosition(index: number, total: number): { x: number; y: number } {
@@ -365,6 +379,19 @@
       <g data-node onclick={(e: MouseEvent) => { e.stopPropagation(); onSelectLocal(); }}>
         <LocalNode x={cx} y={cy} {status} containerCount={containers.length} selected={selectedId === 'local'} />
       </g>
+
+      <!-- Chat bubbles -->
+      {#each bubbles as bubble (bubble.id)}
+        {#if bubble.direction === 'sent'}
+          <ChatBubble x={cx} y={cy} {bubble} />
+        {:else if peerPositionMap[bubble.nodeId]}
+          <ChatBubble
+            x={peerPositionMap[bubble.nodeId].x}
+            y={peerPositionMap[bubble.nodeId].y}
+            {bubble}
+          />
+        {/if}
+      {/each}
     </g>
 
     <!-- Pilot unavailable overlay -->

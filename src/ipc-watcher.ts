@@ -17,6 +17,7 @@ import {
   getTaskById,
   updateTask,
 } from './db.js';
+import { emitMonitorEvent } from './monitor-events.js';
 import { RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 
@@ -140,6 +141,47 @@ export function startIpcWatcher(deps: IpcWatcherDeps): void {
         }
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error reading IPC tasks directory');
+      }
+
+      // Process pilot events from this group's IPC directory
+      const pilotEventsDir = path.join(ipcBaseDir, sourceGroup, 'pilot-events');
+      try {
+        if (fs.existsSync(pilotEventsDir)) {
+          const pilotFiles = fs
+            .readdirSync(pilotEventsDir)
+            .filter((f) => f.endsWith('.json'));
+          for (const file of pilotFiles) {
+            const filePath = path.join(pilotEventsDir, file);
+            try {
+              const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+              if (data.type === 'pilot_message_sent' && data.targetNode && data.message) {
+                emitMonitorEvent('pilot.node_event', {
+                  event: 'message.sent',
+                  node_id: data.targetNode,
+                  timestamp: data.timestamp,
+                  data: {
+                    peer_node_id: data.targetNode,
+                    content: data.message,
+                    messageType: data.messageType || 'text',
+                  },
+                });
+                logger.info(
+                  { targetNode: data.targetNode, sourceGroup },
+                  'Pilot outbound message event emitted',
+                );
+              }
+              fs.unlinkSync(filePath);
+            } catch (err) {
+              logger.error(
+                { file, sourceGroup, err },
+                'Error processing pilot event',
+              );
+              fs.unlinkSync(filePath);
+            }
+          }
+        }
+      } catch (err) {
+        logger.error({ err, sourceGroup }, 'Error reading pilot events directory');
       }
     }
 

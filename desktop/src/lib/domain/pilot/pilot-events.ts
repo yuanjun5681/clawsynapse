@@ -8,6 +8,7 @@ import {
 export type NodeEventKind =
   | 'handshake.received'
   | 'message.received'
+  | 'message.sent'
   | 'data.file'
   | 'unknown';
 

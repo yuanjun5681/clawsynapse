@@ -18,6 +18,7 @@
 
   function eventLabel(event: NodeEvent): string {
     if (event.kind === 'message.received') return 'Message received';
+    if (event.kind === 'message.sent') return 'Message sent';
     if (event.kind === 'data.file') return 'File received';
     if (event.kind === 'handshake.received') return 'Handshake request';
     return 'Pilot event';
@@ -25,6 +26,7 @@
 
   function eventColor(event: NodeEvent): string {
     if (event.severity === 'warn') return 'var(--yellow)';
+    if (event.kind === 'message.sent') return 'var(--accent)';
     if (event.kind === 'data.file') return 'var(--blue)';
     return 'var(--green)';
   }
@@ -42,7 +44,7 @@
   }
 
   function eventDetail(event: NodeEvent): string {
-    if (event.kind === 'message.received') {
+    if (event.kind === 'message.received' || event.kind === 'message.sent') {
       return extractMessageText(event) || '(no message content)';
     }
     return event.summary;

@@ -3,6 +3,7 @@ import type { NodeEventKind, PilotWebhookData } from './pilot-events';
 export function classifyPilotEventKind(eventName: string | undefined): NodeEventKind {
   if (eventName === 'handshake.received') return 'handshake.received';
   if (eventName === 'message.received' || eventName === 'data.message') return 'message.received';
+  if (eventName === 'message.sent') return 'message.sent';
   if (eventName === 'file.received' || eventName === 'data.file') return 'data.file';
   return 'unknown';
 }
@@ -48,6 +49,12 @@ export function buildPilotEventSummary(kind: NodeEventKind, data: PilotWebhookDa
     const content = extractMessageContent(data);
     if (content) return `Message from node ${String(peerNodeId)}: ${content}`;
     return `Message from node ${String(peerNodeId)} (no message text field in webhook payload)`;
+  }
+
+  if (kind === 'message.sent') {
+    const content = extractMessageContent(data);
+    if (content) return `Sent to node ${String(peerNodeId)}: ${content}`;
+    return `Sent message to node ${String(peerNodeId)}`;
   }
 
   if (kind === 'data.file') {

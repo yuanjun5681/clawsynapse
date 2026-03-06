@@ -12,7 +12,7 @@
     peer: PeerInfo;
   }
 
-  type EventFilter = 'all' | NodeEventKind;
+  type EventFilter = 'all' | 'messages' | NodeEventKind;
 
   let { peer }: Props = $props();
 
@@ -34,7 +34,9 @@
   let filteredEvents = $derived(
     filter === 'all'
       ? nodeEvents
-      : nodeEvents.filter((event) => event.kind === filter)
+      : filter === 'messages'
+        ? nodeEvents.filter((event) => event.kind === 'message.received' || event.kind === 'message.sent')
+        : nodeEvents.filter((event) => event.kind === filter)
   );
 
   $effect(() => {
@@ -85,7 +87,8 @@
   }
 
   function kindLabel(kind: NodeEventKind): string {
-    if (kind === 'message.received') return 'Message';
+    if (kind === 'message.received') return `node-${canonicalPeerId}`;
+    if (kind === 'message.sent') return 'NanoClaw';
     if (kind === 'data.file') return 'File';
     if (kind === 'handshake.received') return 'Handshake';
     return 'Unknown';
@@ -118,7 +121,7 @@
   }
 
   function resolveMessageDisplay(event: NodeEvent): string {
-    if (event.kind !== 'message.received') return event.summary;
+    if (event.kind !== 'message.received' && event.kind !== 'message.sent') return event.summary;
 
     const rawText = extractRawMessageText(event);
     if (rawText) {
@@ -201,7 +204,7 @@
     {/if}
     <div class="filters">
       <button class:active={filter === 'all'} onclick={() => { filter = 'all'; }}>All</button>
-      <button class:active={filter === 'message.received'} onclick={() => { filter = 'message.received'; }}>Message</button>
+      <button class:active={filter === 'messages'} onclick={() => { filter = 'messages'; }}>Message</button>
       <button class:active={filter === 'data.file'} onclick={() => { filter = 'data.file'; }}>File</button>
       <button class:active={filter === 'handshake.received'} onclick={() => { filter = 'handshake.received'; }}>Handshake</button>
     </div>
@@ -211,7 +214,7 @@
     {:else}
       <div class="message-list">
         {#each filteredEvents as event}
-          <div class="message-item" class:warn={event.severity === 'warn'} class:info={event.severity !== 'warn'}>
+          <div class="message-item" class:warn={event.severity === 'warn'} class:sent={event.kind === 'message.sent'} class:info={event.severity !== 'warn' && event.kind !== 'message.sent'}>
             <div class="message-meta">
               <span class="message-from">{kindLabel(event.kind)}</span>
               <span class="message-time">{formatTime(event.ts)}</span>
@@ -369,6 +372,10 @@
 
   .message-item.info {
     border-left-color: var(--blue);
+  }
+
+  .message-item.sent {
+    border-left-color: var(--accent);
   }
 
   .message-meta {

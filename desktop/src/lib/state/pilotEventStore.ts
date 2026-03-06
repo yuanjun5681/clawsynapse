@@ -6,6 +6,7 @@ import {
   type NodeEvent,
   type PilotWebhookPayload,
 } from '../domain/pilot/pilot-events';
+import { chatBubbleStore } from './chatBubbleStore';
 import { pilotGraphStore } from './pilotGraphStore';
 
 export interface MonitorSseEvent {
@@ -133,6 +134,17 @@ function normalizeStateKeys(state: PilotEventState): PilotEventState {
   };
 }
 
+function extractBubbleText(event: NodeEvent): string {
+  const data = event.raw.data ?? {};
+  for (const key of ['content', 'message', 'text', 'body', 'value']) {
+    const value = data[key];
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value;
+    }
+  }
+  return '';
+}
+
 export const pilotEventStore = {
   subscribe: store.subscribe,
 
@@ -144,6 +156,15 @@ export const pilotEventStore = {
     pilotGraphStore.ensureNodeExists(normalized.nodeIdForCanvas);
 
     store.update((state) => upsertEvent(state, normalized));
+
+    // Trigger chat bubble for message events
+    if (normalized.kind === 'message.sent' || normalized.kind === 'message.received') {
+      const direction = normalized.kind === 'message.sent' ? 'sent' : 'received';
+      const content = extractBubbleText(normalized);
+      if (content) {
+        chatBubbleStore.add(normalized.nodeIdForCanvas, content, direction);
+      }
+    }
   },
 
   markNodeRead(nodeId: string): void {

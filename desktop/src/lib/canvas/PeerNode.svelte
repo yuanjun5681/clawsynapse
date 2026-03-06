@@ -24,6 +24,7 @@
 
   function eventBadge(kind: NodeEventKind | null): string {
     if (kind === 'message.received') return 'M';
+    if (kind === 'message.sent') return 'S';
     if (kind === 'data.file') return 'F';
     if (kind === 'handshake.received') return 'H';
     return '';
