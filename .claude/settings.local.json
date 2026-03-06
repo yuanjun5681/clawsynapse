@@ -38,7 +38,8 @@
       "Bash(npx tsc:*)",
       "WebFetch(domain:thegridcn.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(wc:*)"
     ]
   }
 }

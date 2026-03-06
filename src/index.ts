@@ -3,8 +3,6 @@ import http from 'node:http';
 import fs from 'fs';
 import path from 'path';
 
-import { CronExpressionParser } from 'cron-parser';
-
 import {
   ASSISTANT_NAME,
   API_AUTH_TOKEN,
@@ -13,12 +11,9 @@ import {
   HTTP_HOST,
   HTTP_PORT,
   IDLE_TIMEOUT,
-  IPC_POLL_INTERVAL,
   MAIN_GROUP_FOLDER,
   MAX_REQUEST_BODY_BYTES,
   STORE_DIR,
-  TIMEZONE,
-  parseLocalTimestamp,
 } from './config.js';
 import {
   AvailableGroup,
@@ -29,27 +24,19 @@ import {
   writeTasksSnapshot,
 } from './container-runner.js';
 import {
-  createTask,
-  deleteTask,
   getAllRegisteredGroups,
   getAllSessions,
   getAllTasks,
-  getRecentTaskRuns,
   getRouterState,
-  getTaskById,
   initDatabase,
   setRegisteredGroup,
   setRouterState,
   setSession,
-  updateTask,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
-import {
-  monitorBus,
-  type MonitorEvent,
-  emitMonitorEvent,
-  getBufferedMonitorEvents,
-} from './monitor-events.js';
+import { startIpcWatcher } from './ipc-watcher.js';
+import { createMonitorHandlers } from './monitor-api.js';
+import { createPilotWebhookHandler } from './pilot.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
@@ -57,8 +44,6 @@ import { logger } from './logger.js';
 let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
-
-let ipcWatcherRunning = false;
 
 const queue = new GroupQueue();
 
@@ -406,328 +391,6 @@ function getAvailableGroups(): AvailableGroup[] {
   }));
 }
 
-function startIpcWatcher(): void {
-  if (ipcWatcherRunning) {
-    logger.debug('IPC watcher already running, skipping duplicate start');
-    return;
-  }
-  ipcWatcherRunning = true;
-
-  const ipcBaseDir = path.join(DATA_DIR, 'ipc');
-  fs.mkdirSync(ipcBaseDir, { recursive: true });
-
-  const processIpcFiles = async () => {
-    // Scan all group IPC directories (identity determined by directory)
-    let groupFolders: string[];
-    try {
-      groupFolders = fs.readdirSync(ipcBaseDir).filter((f) => {
-        const stat = fs.statSync(path.join(ipcBaseDir, f));
-        return stat.isDirectory() && f !== 'errors';
-      });
-    } catch (err) {
-      logger.error({ err }, 'Error reading IPC base directory');
-      setTimeout(processIpcFiles, IPC_POLL_INTERVAL);
-      return;
-    }
-
-    for (const sourceGroup of groupFolders) {
-      const isMain = sourceGroup === MAIN_GROUP_FOLDER;
-      const messagesDir = path.join(ipcBaseDir, sourceGroup, 'messages');
-      const tasksDir = path.join(ipcBaseDir, sourceGroup, 'tasks');
-
-      // Process messages from this group's IPC directory
-      try {
-        if (fs.existsSync(messagesDir)) {
-          const messageFiles = fs
-            .readdirSync(messagesDir)
-            .filter((f) => f.endsWith('.json'));
-          for (const file of messageFiles) {
-            const filePath = path.join(messagesDir, file);
-            try {
-              const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-              if (data.type === 'message' && data.chatJid && data.text) {
-                // Authorization: verify this group can send to this chatJid
-                const targetGroup = registeredGroups[data.chatJid];
-                if (
-                  isMain ||
-                  (targetGroup && targetGroup.folder === sourceGroup)
-                ) {
-                  await sendMessage(
-                    data.chatJid,
-                    `${ASSISTANT_NAME}: ${data.text}`,
-                    { dropIfNoListener: true },
-                  );
-                  logger.info(
-                    { chatJid: data.chatJid, sourceGroup },
-                    'IPC message sent',
-                  );
-                } else {
-                  logger.warn(
-                    { chatJid: data.chatJid, sourceGroup },
-                    'Unauthorized IPC message attempt blocked',
-                  );
-                }
-              }
-              fs.unlinkSync(filePath);
-            } catch (err) {
-              logger.error(
-                { file, sourceGroup, err },
-                'Error processing IPC message',
-              );
-              const errorDir = path.join(ipcBaseDir, 'errors');
-              fs.mkdirSync(errorDir, { recursive: true });
-              fs.renameSync(
-                filePath,
-                path.join(errorDir, `${sourceGroup}-${file}`),
-              );
-            }
-          }
-        }
-      } catch (err) {
-        logger.error(
-          { err, sourceGroup },
-          'Error reading IPC messages directory',
-        );
-      }
-
-      // Process tasks from this group's IPC directory
-      try {
-        if (fs.existsSync(tasksDir)) {
-          const taskFiles = fs
-            .readdirSync(tasksDir)
-            .filter((f) => f.endsWith('.json'));
-          for (const file of taskFiles) {
-            const filePath = path.join(tasksDir, file);
-            try {
-              const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-              // Pass source group identity to processTaskIpc for authorization
-              await processTaskIpc(data, sourceGroup, isMain);
-              fs.unlinkSync(filePath);
-            } catch (err) {
-              logger.error(
-                { file, sourceGroup, err },
-                'Error processing IPC task',
-              );
-              const errorDir = path.join(ipcBaseDir, 'errors');
-              fs.mkdirSync(errorDir, { recursive: true });
-              fs.renameSync(
-                filePath,
-                path.join(errorDir, `${sourceGroup}-${file}`),
-              );
-            }
-          }
-        }
-      } catch (err) {
-        logger.error({ err, sourceGroup }, 'Error reading IPC tasks directory');
-      }
-    }
-
-    setTimeout(processIpcFiles, IPC_POLL_INTERVAL);
-  };
-
-  processIpcFiles();
-  logger.info('IPC watcher started (per-group namespaces)');
-}
-
-async function processTaskIpc(
-  data: {
-    type: string;
-    taskId?: string;
-    prompt?: string;
-    schedule_type?: string;
-    schedule_value?: string;
-    context_mode?: string;
-    groupFolder?: string;
-    chatJid?: string;
-    targetJid?: string;
-    // For register_group
-    jid?: string;
-    name?: string;
-    folder?: string;
-    trigger?: string;
-    containerConfig?: RegisteredGroup['containerConfig'];
-  },
-  sourceGroup: string,
-  isMain: boolean,
-): Promise<void> {
-  switch (data.type) {
-    case 'schedule_task':
-      if (
-        data.prompt &&
-        data.schedule_type &&
-        data.schedule_value &&
-        data.targetJid
-      ) {
-        const targetJid = data.targetJid as string;
-        const targetGroupEntry = registeredGroups[targetJid];
-
-        if (!targetGroupEntry) {
-          logger.warn(
-            { targetJid },
-            'Cannot schedule task: target group not registered',
-          );
-          break;
-        }
-
-        const targetFolder = targetGroupEntry.folder;
-
-        if (!isMain && targetFolder !== sourceGroup) {
-          logger.warn(
-            { sourceGroup, targetFolder },
-            'Unauthorized schedule_task attempt blocked',
-          );
-          break;
-        }
-
-        const scheduleType = data.schedule_type as 'cron' | 'interval' | 'once';
-
-        let nextRun: string | null = null;
-        if (scheduleType === 'cron') {
-          try {
-            const interval = CronExpressionParser.parse(data.schedule_value, {
-              tz: TIMEZONE,
-            });
-            nextRun = interval.next().toISOString();
-          } catch {
-            logger.warn(
-              { scheduleValue: data.schedule_value },
-              'Invalid cron expression',
-            );
-            break;
-          }
-        } else if (scheduleType === 'interval') {
-          const ms = parseInt(data.schedule_value, 10);
-          if (isNaN(ms) || ms <= 0) {
-            logger.warn(
-              { scheduleValue: data.schedule_value },
-              'Invalid interval',
-            );
-            break;
-          }
-          nextRun = new Date(Date.now() + ms).toISOString();
-        } else if (scheduleType === 'once') {
-          const scheduled = parseLocalTimestamp(data.schedule_value);
-          if (!scheduled || isNaN(scheduled.getTime())) {
-            logger.warn(
-              { scheduleValue: data.schedule_value },
-              'Invalid timestamp',
-            );
-            break;
-          }
-          nextRun = scheduled.toISOString();
-        }
-
-        const taskId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const contextMode =
-          data.context_mode === 'group' || data.context_mode === 'isolated'
-            ? data.context_mode
-            : 'isolated';
-        createTask({
-          id: taskId,
-          group_folder: targetFolder,
-          chat_jid: targetJid,
-          prompt: data.prompt,
-          schedule_type: scheduleType,
-          schedule_value: data.schedule_value,
-          context_mode: contextMode,
-          next_run: nextRun,
-          status: 'active',
-          created_at: new Date().toISOString(),
-        });
-        logger.info(
-          { taskId, sourceGroup, targetFolder, contextMode },
-          'Task created via IPC',
-        );
-        refreshTaskSnapshots();
-      }
-      break;
-
-    case 'pause_task':
-      if (data.taskId) {
-        const task = getTaskById(data.taskId);
-        if (task && (isMain || task.group_folder === sourceGroup)) {
-          updateTask(data.taskId, { status: 'paused' });
-          refreshTaskSnapshots();
-          logger.info(
-            { taskId: data.taskId, sourceGroup },
-            'Task paused via IPC',
-          );
-        } else {
-          logger.warn(
-            { taskId: data.taskId, sourceGroup },
-            'Unauthorized task pause attempt',
-          );
-        }
-      }
-      break;
-
-    case 'resume_task':
-      if (data.taskId) {
-        const task = getTaskById(data.taskId);
-        if (task && (isMain || task.group_folder === sourceGroup)) {
-          updateTask(data.taskId, { status: 'active' });
-          refreshTaskSnapshots();
-          logger.info(
-            { taskId: data.taskId, sourceGroup },
-            'Task resumed via IPC',
-          );
-        } else {
-          logger.warn(
-            { taskId: data.taskId, sourceGroup },
-            'Unauthorized task resume attempt',
-          );
-        }
-      }
-      break;
-
-    case 'cancel_task':
-      if (data.taskId) {
-        const task = getTaskById(data.taskId);
-        if (task && (isMain || task.group_folder === sourceGroup)) {
-          deleteTask(data.taskId);
-          refreshTaskSnapshots();
-          logger.info(
-            { taskId: data.taskId, sourceGroup },
-            'Task cancelled via IPC',
-          );
-        } else {
-          logger.warn(
-            { taskId: data.taskId, sourceGroup },
-            'Unauthorized task cancel attempt',
-          );
-        }
-      }
-      break;
-
-    case 'register_group':
-      if (!isMain) {
-        logger.warn(
-          { sourceGroup },
-          'Unauthorized register_group attempt blocked',
-        );
-        break;
-      }
-      if (data.jid && data.name && data.folder && data.trigger) {
-        registerGroup(data.jid, {
-          name: data.name,
-          folder: data.folder,
-          trigger: data.trigger,
-          added_at: new Date().toISOString(),
-          containerConfig: data.containerConfig,
-        });
-      } else {
-        logger.warn(
-          { data },
-          'Invalid register_group request - missing required fields',
-        );
-      }
-      break;
-
-    default:
-      logger.warn({ type: data.type }, 'Unknown IPC task type');
-  }
-}
-
 // --- HTTP API ---
 
 function parseBody(req: http.IncomingMessage): Promise<string> {
@@ -1046,298 +709,6 @@ async function handleUpdateGroupMemory(
   });
 }
 
-interface PilotInboxMessageNormalized {
-  from: string;
-  content: string;
-  timestamp: string;
-  type?: string;
-  raw: Record<string, unknown>;
-}
-
-function canonicalizePilotNodeId(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return 'unknown';
-
-  const nodePrefix = trimmed.match(/^node-(\d+)$/i);
-  if (nodePrefix) {
-    return String(Number.parseInt(nodePrefix[1], 10));
-  }
-
-  if (/^\d+$/.test(trimmed)) {
-    return String(Number.parseInt(trimmed, 10));
-  }
-
-  const dottedHex = trimmed.match(/^0:[0-9a-f]{4}\.[0-9a-f]{4}\.([0-9a-f]{4})$/i);
-  if (dottedHex) {
-    return String(Number.parseInt(dottedHex[1], 16));
-  }
-
-  return trimmed;
-}
-
-function textFromUnknown(value: unknown): string {
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean') {
-    return String(value);
-  }
-  if (value && typeof value === 'object') {
-    try {
-      return JSON.stringify(value);
-    } catch {
-      return '';
-    }
-  }
-  return '';
-}
-
-function pickText(
-  record: Record<string, unknown>,
-  keys: string[],
-): string {
-  for (const key of keys) {
-    const value = record[key];
-    const text = textFromUnknown(value).trim();
-    if (text.length > 0) return text;
-  }
-  return '';
-}
-
-function normalizePilotInboxEntry(
-  entry: unknown,
-): PilotInboxMessageNormalized | null {
-  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
-  const record = entry as Record<string, unknown>;
-  const payload =
-    record.payload && typeof record.payload === 'object' && !Array.isArray(record.payload)
-      ? (record.payload as Record<string, unknown>)
-      : null;
-
-  const from = pickText(record, ['from', 'peer', 'peer_node_id', 'node_id', 'sender']);
-  const content =
-    pickText(record, ['content', 'message', 'text', 'body', 'data']) ||
-    (payload ? pickText(payload, ['content', 'message', 'text', 'body', 'data']) : '');
-  const timestamp =
-    pickText(record, ['timestamp', 'received_at', 'created_at', 'time']) ||
-    new Date().toISOString();
-  const type = pickText(record, ['type']) || undefined;
-
-  if (!from && !content) return null;
-  return {
-    from: from || 'unknown',
-    content,
-    timestamp,
-    type,
-    raw: record,
-  };
-}
-
-function readPilotInboxMessages(): {
-  messages: PilotInboxMessageNormalized[];
-  rawEntries: unknown[];
-} {
-  try {
-    const output = execSync('pilotctl --json inbox', {
-      encoding: 'utf-8',
-      timeout: 5000,
-    });
-    const payload = JSON.parse(output) as unknown;
-    let entries: unknown[] = [];
-    if (Array.isArray(payload)) {
-      entries = payload;
-    } else if (payload && typeof payload === 'object') {
-      const root = payload as Record<string, unknown>;
-      if (Array.isArray(root.messages)) {
-        entries = root.messages;
-      } else if (Array.isArray(root.data)) {
-        entries = root.data;
-      } else if (
-        root.data &&
-        typeof root.data === 'object' &&
-        !Array.isArray(root.data)
-      ) {
-        const dataObj = root.data as Record<string, unknown>;
-        if (Array.isArray(dataObj.messages)) {
-          entries = dataObj.messages;
-        }
-      }
-    }
-
-    const messages = entries
-      .map((entry) => normalizePilotInboxEntry(entry))
-      .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
-
-    return { messages, rawEntries: entries };
-  } catch {
-    return { messages: [], rawEntries: [] };
-  }
-}
-
-async function handlePilotWebhook(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-): Promise<void> {
-  const toNodeId = (value: unknown): string | undefined => {
-    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
-    if (typeof value === 'string' && value.trim().length > 0) return value;
-    return undefined;
-  };
-  const resolvePeerNodeId = (value: Record<string, unknown>): string => {
-    const direct =
-      toNodeId(value.peer_node_id) ??
-      toNodeId(value.peer) ??
-      toNodeId(value.from_node_id) ??
-      toNodeId(value.from) ??
-      toNodeId(value.sender_node_id) ??
-      toNodeId(value.source_node_id) ??
-      toNodeId(value.sender);
-    if (direct) return direct;
-
-    const fromObj = value.from;
-    if (fromObj && typeof fromObj === 'object' && !Array.isArray(fromObj)) {
-      const fromRecord = fromObj as Record<string, unknown>;
-      return toNodeId(fromRecord.node_id) ?? toNodeId(fromRecord.id) ?? 'unknown';
-    }
-
-    return 'unknown';
-  };
-
-  // Only accept from localhost
-  const remoteAddr = req.socket.remoteAddress;
-  if (
-    remoteAddr !== '127.0.0.1' &&
-    remoteAddr !== '::1' &&
-    remoteAddr !== '::ffff:127.0.0.1'
-  ) {
-    jsonResponse(res, 403, { error: 'Forbidden' });
-    return;
-  }
-
-  let body: string;
-  try {
-    body = await parseBody(req);
-  } catch (err) {
-    if (err instanceof Error && err.message === 'REQUEST_BODY_TOO_LARGE') {
-      jsonResponse(res, 413, { error: 'Request body too large' });
-      return;
-    }
-    jsonResponse(res, 400, { error: 'Invalid request body' });
-    return;
-  }
-
-  let payload: {
-    event?: string;
-    node_id?: number;
-    timestamp?: string;
-    data?: Record<string, unknown>;
-  };
-  try {
-    payload = JSON.parse(body);
-  } catch {
-    jsonResponse(res, 400, { error: 'Invalid JSON' });
-    return;
-  }
-
-  const event = payload.event;
-  const data = payload.data || {};
-  const timestamp = payload.timestamp || new Date().toISOString();
-  let enrichedData: Record<string, unknown> = data;
-
-  logger.info({ event, nodeId: payload.node_id }, 'Pilot webhook received');
-  if (event === 'message.received') {
-    logger.info(
-      {
-        nodeId: payload.node_id,
-        dataKeys: Object.keys(data),
-        from: data.from ?? data.peer_node_id ?? data.peer ?? null,
-        type: data.type ?? null,
-      },
-      'Pilot message webhook payload shape',
-    );
-  }
-  let prompt: string | null = null;
-
-  if (event === 'message.received' || event === 'data.message') {
-    const peer = resolvePeerNodeId(data);
-    let content: string =
-      [data.message, data.content, data.text]
-        .map((value) => (typeof value === 'string' ? value : ''))
-        .find((value) => value.trim().length > 0) ?? '';
-    if (!content) {
-      const targetCanonical = canonicalizePilotNodeId(peer);
-      const { messages } = readPilotInboxMessages();
-      const latest = messages
-        .filter((message) => {
-          const fromCanonical = canonicalizePilotNodeId(message.from);
-          return fromCanonical === targetCanonical || message.from === peer;
-        })
-        .sort((a, b) => b.timestamp.localeCompare(a.timestamp))[0];
-      if (latest?.content) {
-        content = latest.content;
-        enrichedData = {
-          ...data,
-          content,
-          content_source: 'inbox',
-        };
-        logger.info(
-          { peer, contentLength: content.length },
-          'Pilot message enriched from inbox',
-        );
-      }
-    }
-    if (!content && typeof data.type === 'string') {
-      content = data.type;
-    }
-    prompt = `[Pilot Protocol] 收到来自 node ${peer} 的消息: ${content}`;
-  } else if (event === 'file.received' || event === 'data.file') {
-    const peer = resolvePeerNodeId(data);
-    prompt = `[Pilot Protocol] 收到来自 node ${peer} 的文件，请运行 pilotctl received 查看`;
-  } else if (event === 'handshake.received') {
-    const peer = resolvePeerNodeId(data);
-    const justification = data.justification ?? '';
-    prompt = `[Pilot Protocol] node ${peer} 请求建立信任连接，理由: ${justification}。请决定是否 approve 或 reject`;
-  } else {
-    logger.debug({ event }, 'Pilot webhook event ignored (no handler)');
-  }
-
-  emitMonitorEvent('pilot.node_event', {
-    event,
-    node_id: payload.node_id,
-    timestamp,
-    data: enrichedData,
-  });
-  emitMonitorEvent('pilot.message', {
-    event,
-    nodeId: payload.node_id,
-    data: enrichedData,
-  });
-
-  if (prompt) {
-    // Route to main group
-    const chatJid = MAIN_GROUP_FOLDER;
-
-    // Auto-register main group if needed (should already exist)
-    if (!registeredGroups[chatJid]) {
-      registerGroup(chatJid, {
-        name: 'Main',
-        folder: MAIN_GROUP_FOLDER,
-        trigger: `@${ASSISTANT_NAME}`,
-        added_at: new Date().toISOString(),
-        requiresTrigger: false,
-      });
-    }
-
-    // Try piping to active container first, otherwise enqueue
-    if (!queue.sendMessage(chatJid, prompt)) {
-      pendingPrompts.set(chatJid, prompt);
-      queue.enqueueMessageCheck(chatJid);
-    }
-
-    logger.info({ event, chatJid }, 'Pilot webhook routed to main group');
-  }
-
-  jsonResponse(res, 200, { status: 'ok' });
-}
-
 async function handleDeleteSession(
   res: http.ServerResponse,
   folder: string,
@@ -1361,293 +732,6 @@ function handleHealth(
   jsonResponse(res, 200, { status: 'ok' });
 }
 
-// --- Monitor API handlers ---
-
-function handleMonitorStatus(
-  _req: http.IncomingMessage,
-  res: http.ServerResponse,
-): void {
-  const mem = process.memoryUsage();
-  const stats = queue.getStats();
-  jsonResponse(res, 200, {
-    uptime: process.uptime(),
-    memoryMB: Math.round(mem.rss / 1024 / 1024),
-    activeContainers: stats.activeContainers,
-    maxContainers: stats.maxContainers,
-    waitingGroups: stats.waitingGroups,
-    registeredGroups: Object.keys(registeredGroups).length,
-    pid: process.pid,
-  });
-}
-
-function handleMonitorContainers(
-  _req: http.IncomingMessage,
-  res: http.ServerResponse,
-): void {
-  try {
-    const output = execSync(
-      `docker ps --filter "name=nanoclaw-" --format '{"name":"{{.Names}}","status":"{{.Status}}","created":"{{.CreatedAt}}","image":"{{.Image}}"}'`,
-      { encoding: 'utf-8', timeout: 5000 },
-    );
-    const containers = output
-      .trim()
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => {
-        const c = JSON.parse(line);
-        const match = c.name.match(/^nanoclaw-([^-]+)/);
-        return { ...c, groupFolder: match ? match[1] : null };
-      });
-    jsonResponse(res, 200, containers);
-  } catch {
-    jsonResponse(res, 200, []);
-  }
-}
-
-function handleMonitorTasks(
-  _req: http.IncomingMessage,
-  res: http.ServerResponse,
-): void {
-  const tasks = getAllTasks();
-  const recentRuns = getRecentTaskRuns(20);
-  jsonResponse(res, 200, { tasks, recentRuns });
-}
-
-function handleMonitorPilot(
-  _req: http.IncomingMessage,
-  res: http.ServerResponse,
-): void {
-  try {
-    interface PilotTrustPeer {
-      node_id?: number;
-      public_key?: string;
-      mutual?: boolean;
-    }
-
-    interface PilotTrustResponse {
-      data?: {
-        trusted?: PilotTrustPeer[];
-      };
-      status?: string;
-    }
-
-    interface PilotPendingPeer {
-      node_id?: number;
-      public_key?: string;
-      name?: string;
-      justification?: string;
-    }
-
-    interface PilotPendingResponse {
-      data?: {
-        pending?: PilotPendingPeer[];
-      };
-      status?: string;
-    }
-
-    const infoOutput = execSync('pilotctl --json info', {
-      encoding: 'utf-8',
-      timeout: 5000,
-    });
-    const info = JSON.parse(infoOutput);
-
-    let trustedPeers: Array<{
-      id: string;
-      name: string;
-      address: string;
-      status: 'online' | 'offline';
-    }> = [];
-    try {
-      const trustOutput = execSync('pilotctl --json trust', {
-        encoding: 'utf-8',
-        timeout: 5000,
-      });
-      const trustPayload = JSON.parse(trustOutput) as PilotTrustResponse;
-      const trusted = trustPayload.data?.trusted ?? [];
-      trustedPeers = trusted
-        .filter((peer) => peer.node_id !== undefined)
-        .map((peer) => {
-          const nodeId = String(peer.node_id);
-          return {
-            id: nodeId,
-            name: `node-${nodeId}`,
-            address: peer.public_key ?? '',
-            status: peer.mutual ? 'online' : 'offline',
-          };
-        });
-    } catch {
-      // trust list may fail if no peers yet
-    }
-
-    let pendingHandshakes: Array<{
-      id: string;
-      name: string;
-      justification?: string;
-    }> = [];
-    try {
-      const pendingOutput = execSync('pilotctl --json pending', {
-        encoding: 'utf-8',
-        timeout: 5000,
-      });
-      const pendingPayload = JSON.parse(pendingOutput) as PilotPendingResponse;
-      const pending = pendingPayload.data?.pending ?? [];
-      pendingHandshakes = pending
-        .filter((peer) => peer.node_id !== undefined)
-        .map((peer) => {
-          const nodeId = String(peer.node_id);
-          return {
-            id: nodeId,
-            name: peer.name || `node-${nodeId}`,
-            justification: peer.justification,
-          };
-        });
-    } catch {
-      // no pending handshakes
-    }
-
-    jsonResponse(res, 200, {
-      available: true,
-      node: info,
-      trustedPeers,
-      pendingHandshakes,
-    });
-  } catch {
-    jsonResponse(res, 200, { available: false });
-  }
-}
-
-function handleMonitorPilotInbox(
-  _req: http.IncomingMessage,
-  res: http.ServerResponse,
-): void {
-  const { messages, rawEntries } = readPilotInboxMessages();
-
-  logger.debug(
-    {
-      inboxEntries: rawEntries.length,
-      normalizedMessages: messages.length,
-      sampleKeys:
-        rawEntries.length > 0 &&
-        rawEntries[0] &&
-        typeof rawEntries[0] === 'object' &&
-        !Array.isArray(rawEntries[0])
-          ? Object.keys(rawEntries[0] as Record<string, unknown>)
-          : [],
-    },
-    'Pilot inbox normalized',
-  );
-
-  jsonResponse(res, 200, {
-    messages,
-  });
-}
-
-async function handleMonitorPilotHandshakeAction(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-): Promise<void> {
-  let body: string;
-  try {
-    body = await parseBody(req);
-  } catch (err) {
-    if (err instanceof Error && err.message === 'REQUEST_BODY_TOO_LARGE') {
-      jsonResponse(res, 413, { error: 'Request body too large' });
-      return;
-    }
-    jsonResponse(res, 400, { error: 'Invalid request body' });
-    return;
-  }
-
-  let payload: {
-    nodeId?: string;
-    action?: 'approve' | 'reject';
-  };
-  try {
-    payload = JSON.parse(body);
-  } catch {
-    jsonResponse(res, 400, { error: 'Invalid JSON' });
-    return;
-  }
-
-  const nodeId = String(payload.nodeId || '').trim();
-  const action = payload.action;
-  if (!/^\d+$/.test(nodeId)) {
-    jsonResponse(res, 400, { error: 'Invalid nodeId' });
-    return;
-  }
-  if (action !== 'approve' && action !== 'reject') {
-    jsonResponse(res, 400, { error: 'Invalid action' });
-    return;
-  }
-
-  try {
-    const command =
-      action === 'approve'
-        ? `pilotctl approve ${nodeId}`
-        : `pilotctl reject ${nodeId}`;
-    execSync(command, {
-      encoding: 'utf-8',
-      timeout: 5000,
-    });
-
-    emitMonitorEvent('pilot.handshake.action', {
-      nodeId,
-      action,
-      status: 'ok',
-    });
-    jsonResponse(res, 200, { status: 'ok' });
-  } catch (err) {
-    logger.error({ err, nodeId, action }, 'Pilot handshake action failed');
-    emitMonitorEvent('pilot.handshake.action', {
-      nodeId,
-      action,
-      status: 'error',
-    });
-    jsonResponse(res, 500, { error: 'Pilot handshake action failed' });
-  }
-}
-
-function handleMonitorEvents(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-): void {
-  const requestUrl = new URL(req.url || '/', `http://localhost:${HTTP_PORT}`);
-  const queryLastEventId = requestUrl.searchParams.get('lastEventId') || undefined;
-  const headerLastEventId = req.headers['last-event-id'];
-  const lastEventId =
-    typeof headerLastEventId === 'string' && headerLastEventId.length > 0
-      ? headerLastEventId
-      : queryLastEventId;
-
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    Connection: 'keep-alive',
-  });
-
-  const writeEvent = (event: MonitorEvent): void => {
-    if (res.writableEnded || res.destroyed) return;
-    res.write(
-      `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
-    );
-  };
-
-  const replayEvents = getBufferedMonitorEvents(lastEventId);
-  for (const event of replayEvents) {
-    writeEvent(event);
-  }
-
-  const handler = (event: MonitorEvent) => {
-    writeEvent(event);
-  };
-
-  monitorBus.onMonitor(handler);
-
-  req.on('close', () => {
-    monitorBus.removeListener('monitor', handler);
-  });
-}
-
 function isAuthorized(req: http.IncomingMessage): boolean {
   if (!API_AUTH_TOKEN) return true;
 
@@ -1666,6 +750,23 @@ function isAuthorized(req: http.IncomingMessage): boolean {
 }
 
 function startHttpServer(): void {
+  const handlePilotWebhook = createPilotWebhookHandler({
+    parseBody,
+    jsonResponse,
+    registeredGroups: () => registeredGroups,
+    registerGroup,
+    queue,
+    pendingPrompts,
+  });
+
+  const monitor = createMonitorHandlers({
+    parseBody,
+    jsonResponse,
+    sseWrite,
+    queue,
+    registeredGroups: () => registeredGroups,
+  });
+
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || '/', `http://localhost:${HTTP_PORT}`);
     const pathname = url.pathname;
@@ -1752,31 +853,31 @@ function startHttpServer(): void {
 
       // --- Monitor API ---
       if (method === 'GET' && pathname === '/api/monitor/status') {
-        handleMonitorStatus(req, res);
+        monitor.status(req, res);
         return;
       }
       if (method === 'GET' && pathname === '/api/monitor/containers') {
-        handleMonitorContainers(req, res);
+        monitor.containers(req, res);
         return;
       }
       if (method === 'GET' && pathname === '/api/monitor/tasks') {
-        handleMonitorTasks(req, res);
+        monitor.tasks(req, res);
         return;
       }
       if (method === 'GET' && pathname === '/api/monitor/pilot') {
-        handleMonitorPilot(req, res);
+        monitor.pilot(req, res);
         return;
       }
       if (method === 'GET' && pathname === '/api/monitor/pilot/inbox') {
-        handleMonitorPilotInbox(req, res);
+        monitor.pilotInbox(req, res);
         return;
       }
       if (method === 'POST' && pathname === '/api/monitor/pilot/handshake') {
-        await handleMonitorPilotHandshakeAction(req, res);
+        await monitor.pilotHandshakeAction(req, res);
         return;
       }
       if (method === 'GET' && pathname === '/api/monitor/events') {
-        handleMonitorEvents(req, res);
+        monitor.events(req, res);
         return;
       }
 
@@ -1891,7 +992,12 @@ async function main(): Promise<void> {
     beginChatOutputCapture,
     assistantName: ASSISTANT_NAME,
   });
-  startIpcWatcher();
+  startIpcWatcher({
+    registeredGroups: () => registeredGroups,
+    sendMessage,
+    registerGroup,
+    refreshTaskSnapshots,
+  });
   refreshTaskSnapshots();
 
   // Start HTTP server
