@@ -36,6 +36,7 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { startIpcWatcher } from './ipc-watcher.js';
 import { createMonitorHandlers } from './monitor-api.js';
+import { emitMonitorEvent } from './monitor-events.js';
 import { createPilotWebhookHandler } from './pilot.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { RegisteredGroup } from './types.js';
@@ -265,6 +266,13 @@ async function processPrompt(chatJid: string): Promise<boolean> {
           });
         } else {
           await sendMessage(chatJid, text);
+          // Emit monitor event so the desktop TERMINAL can display the output
+          // even when no active SSE chat listener exists (e.g. Pilot-triggered runs).
+          emitMonitorEvent('agent.ipc_message', {
+            chatJid,
+            sourceGroup: group.folder,
+            text,
+          });
         }
       }
       resetIdleTimer();

@@ -297,7 +297,7 @@
         const newMsgs = ipcMsgs.slice(lastIpcCount);
         lastIpcCount = ipcMsgs.length;
         for (const msg of newMsgs) {
-          const label = msg.sourceGroup ? `[${msg.sourceGroup}] ` : '';
+          const label = msg.sourceGroup && msg.sourceGroup !== groupId ? `[${msg.sourceGroup}] ` : '';
           messages = [...messages, { role: 'agent', text: `${label}${msg.text}` }];
         }
       }
