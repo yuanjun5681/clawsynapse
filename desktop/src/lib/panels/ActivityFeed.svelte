@@ -3,9 +3,24 @@
   import { pilotEventStore } from '../state/pilotEventStore';
   import { monitorStreamStore } from '../state/monitorStreamStore';
 
-  const MAX_EVENTS = 50;
+  const MAX_EVENTS = 20;
 
-  let events = $derived($pilotEventStore.globalRecentEvents.slice(0, MAX_EVENTS));
+  const VISIBLE_KINDS: Set<string> = new Set([
+    'message.received',
+    'message.sent',
+    'data.file',
+    'handshake.received',
+    'handshake.pending',
+    'trust.revoked_by_peer',
+    'security.syn_rate_limited',
+    'security.nonce_replay',
+  ]);
+
+  let events = $derived(
+    $pilotEventStore.globalRecentEvents
+      .filter(ev => VISIBLE_KINDS.has(ev.kind))
+      .slice(0, MAX_EVENTS)
+  );
   let connected = $derived($monitorStreamStore.connected);
 
   function formatTime(ts: string): string {
@@ -17,17 +32,49 @@
   }
 
   function eventLabel(event: NodeEvent): string {
-    if (event.kind === 'message.received') return 'Message received';
-    if (event.kind === 'message.sent') return 'Message sent';
-    if (event.kind === 'data.file') return 'File received';
-    if (event.kind === 'handshake.received') return 'Handshake request';
-    return 'Pilot event';
+    const labels: Partial<Record<string, string>> = {
+      'message.received': 'Message received',
+      'message.sent': 'Message sent',
+      'data.file': 'File received',
+      'data.datagram': 'Datagram',
+      'handshake.received': 'Handshake request',
+      'handshake.pending': 'Handshake pending',
+      'handshake.approved': 'Handshake approved',
+      'handshake.rejected': 'Handshake rejected',
+      'handshake.auto_approved': 'Auto-approved',
+      'trust.revoked': 'Trust revoked',
+      'trust.revoked_by_peer': 'Trust revoked by peer',
+      'node.registered': 'Node registered',
+      'node.reregistered': 'Node re-registered',
+      'node.deregistered': 'Node deregistered',
+      'conn.syn_received': 'Connection request',
+      'conn.established': 'Connected',
+      'conn.fin': 'Disconnected',
+      'conn.rst': 'Connection reset',
+      'conn.idle_timeout': 'Idle timeout',
+      'tunnel.peer_added': 'Tunnel peer',
+      'tunnel.established': 'Tunnel established',
+      'tunnel.relay_activated': 'Relay activated',
+      'pubsub.subscribed': 'Subscribed',
+      'pubsub.unsubscribed': 'Unsubscribed',
+      'pubsub.published': 'Published',
+      'security.syn_rate_limited': 'Rate limited',
+      'security.nonce_replay': 'Nonce replay',
+    };
+    return labels[event.kind] ?? 'Pilot event';
   }
 
   function eventColor(event: NodeEvent): string {
     if (event.severity === 'warn') return 'var(--yellow)';
-    if (event.kind === 'message.sent') return 'var(--accent)';
-    if (event.kind === 'data.file') return 'var(--blue)';
+    const kind = event.kind;
+    if (kind === 'message.sent') return 'var(--accent)';
+    if (kind === 'data.file' || kind === 'data.datagram') return 'var(--blue)';
+    if (kind.startsWith('conn.fin') || kind.startsWith('conn.rst') || kind.startsWith('conn.idle'))
+      return 'var(--yellow)';
+    if (kind.startsWith('security.') || kind === 'trust.revoked_by_peer')
+      return 'var(--red)';
+    if (kind === 'handshake.rejected' || kind === 'trust.revoked' || kind === 'node.deregistered')
+      return 'var(--yellow)';
     return 'var(--green)';
   }
 

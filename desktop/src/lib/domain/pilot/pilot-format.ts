@@ -1,15 +1,29 @@
 import type { NodeEventKind, PilotWebhookData } from './pilot-events';
 
+const KNOWN_EVENTS: Set<string> = new Set([
+  'handshake.received', 'handshake.pending', 'handshake.approved',
+  'handshake.rejected', 'handshake.auto_approved',
+  'message.received', 'message.sent',
+  'data.file', 'data.datagram',
+  'node.registered', 'node.reregistered', 'node.deregistered',
+  'conn.syn_received', 'conn.established', 'conn.fin', 'conn.rst', 'conn.idle_timeout',
+  'tunnel.peer_added', 'tunnel.established', 'tunnel.relay_activated',
+  'trust.revoked', 'trust.revoked_by_peer',
+  'pubsub.subscribed', 'pubsub.unsubscribed', 'pubsub.published',
+  'security.syn_rate_limited', 'security.nonce_replay',
+]);
+
 export function classifyPilotEventKind(eventName: string | undefined): NodeEventKind {
-  if (eventName === 'handshake.received') return 'handshake.received';
-  if (eventName === 'message.received' || eventName === 'data.message') return 'message.received';
-  if (eventName === 'message.sent') return 'message.sent';
-  if (eventName === 'file.received' || eventName === 'data.file') return 'data.file';
+  if (!eventName) return 'unknown';
+  // aliases
+  if (eventName === 'data.message') return 'message.received';
+  if (eventName === 'file.received') return 'data.file';
+  if (KNOWN_EVENTS.has(eventName)) return eventName as NodeEventKind;
   return 'unknown';
 }
 
 export function isPilotActionRequired(kind: NodeEventKind): boolean {
-  return kind === 'handshake.received';
+  return kind === 'handshake.received' || kind === 'handshake.pending';
 }
 
 function toNodeId(value: unknown): string | undefined {
@@ -68,12 +82,44 @@ export function buildPilotEventSummary(kind: NodeEventKind, data: PilotWebhookDa
     return `File from node ${String(peerNodeId)}: ${filename}`;
   }
 
-  if (kind === 'handshake.received') {
+  if (kind === 'handshake.received' || kind === 'handshake.pending') {
     const justification = typeof data.justification === 'string'
       ? data.justification
       : '';
     return `Handshake request from node ${String(peerNodeId)}${justification ? `: ${justification}` : ''}`;
   }
+
+  if (kind === 'handshake.approved' || kind === 'handshake.auto_approved')
+    return `Handshake approved with node ${String(peerNodeId)}`;
+  if (kind === 'handshake.rejected')
+    return `Handshake rejected for node ${String(peerNodeId)}`;
+  if (kind === 'trust.revoked')
+    return `Trust revoked for node ${String(peerNodeId)}`;
+  if (kind === 'trust.revoked_by_peer')
+    return `Trust revoked by node ${String(peerNodeId)}`;
+
+  if (kind === 'node.registered') return 'Node registered';
+  if (kind === 'node.reregistered') return 'Node re-registered';
+  if (kind === 'node.deregistered') return 'Node deregistered';
+
+  if (kind === 'conn.syn_received') return `Connection request from node ${String(peerNodeId)}`;
+  if (kind === 'conn.established') return `Connection established with node ${String(peerNodeId)}`;
+  if (kind === 'conn.fin') return `Connection closed with node ${String(peerNodeId)}`;
+  if (kind === 'conn.rst') return `Connection reset with node ${String(peerNodeId)}`;
+  if (kind === 'conn.idle_timeout') return `Connection idle timeout with node ${String(peerNodeId)}`;
+
+  if (kind === 'tunnel.peer_added') return `Tunnel peer discovered: node ${String(peerNodeId)}`;
+  if (kind === 'tunnel.established') return `Tunnel established with node ${String(peerNodeId)}`;
+  if (kind === 'tunnel.relay_activated') return `Relay activated for node ${String(peerNodeId)}`;
+
+  if (kind === 'data.datagram') return `Datagram from node ${String(peerNodeId)}`;
+
+  if (kind === 'pubsub.subscribed') return 'Subscribed to topic';
+  if (kind === 'pubsub.unsubscribed') return 'Unsubscribed from topic';
+  if (kind === 'pubsub.published') return 'Published to topic';
+
+  if (kind === 'security.syn_rate_limited') return 'SYN rate limiter triggered';
+  if (kind === 'security.nonce_replay') return 'Nonce replay detected';
 
   return 'Unsupported pilot event';
 }

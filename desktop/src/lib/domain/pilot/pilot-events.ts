@@ -10,6 +10,36 @@ export type NodeEventKind =
   | 'message.received'
   | 'message.sent'
   | 'data.file'
+  // node lifecycle
+  | 'node.registered'
+  | 'node.reregistered'
+  | 'node.deregistered'
+  // connections
+  | 'conn.syn_received'
+  | 'conn.established'
+  | 'conn.fin'
+  | 'conn.rst'
+  | 'conn.idle_timeout'
+  // tunnels
+  | 'tunnel.peer_added'
+  | 'tunnel.established'
+  | 'tunnel.relay_activated'
+  // trust & handshakes
+  | 'handshake.pending'
+  | 'handshake.approved'
+  | 'handshake.rejected'
+  | 'handshake.auto_approved'
+  | 'trust.revoked'
+  | 'trust.revoked_by_peer'
+  // data
+  | 'data.datagram'
+  // pubsub
+  | 'pubsub.subscribed'
+  | 'pubsub.unsubscribed'
+  | 'pubsub.published'
+  // security
+  | 'security.syn_rate_limited'
+  | 'security.nonce_replay'
   | 'unknown';
 
 export type NodeSeverity = 'info' | 'warn';
@@ -114,7 +144,7 @@ export function normalizePilotWebhookEvent(payload: PilotWebhookPayload): NodeEv
     receiverNodeId,
     peerNodeId,
     summary: buildPilotEventSummary(kind, data),
-    severity: kind === 'handshake.received' ? 'warn' : 'info',
+    severity: (kind === 'handshake.received' || kind === 'handshake.pending' || kind.startsWith('security.') || kind === 'trust.revoked_by_peer') ? 'warn' : 'info',
     actionRequired: isPilotActionRequired(kind),
     raw: payload,
     schemaVersion: 1,
