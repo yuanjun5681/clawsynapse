@@ -17,25 +17,39 @@
   let { messages, streaming, streamText, chatState }: Props = $props();
 
   let container: HTMLDivElement;
-  let userAtBottom = true;
+  let autoFollow = true;
+
+  function isNearBottom(): boolean {
+    if (!container) return true;
+    const threshold = 80;
+    return container.scrollHeight - container.scrollTop - container.clientHeight <= threshold;
+  }
 
   function checkIfAtBottom() {
-    if (!container) return;
-    const threshold = 30;
-    userAtBottom =
-      container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
+    autoFollow = isNearBottom();
   }
 
   async function scrollToBottom() {
     await tick();
-    if (container && userAtBottom) {
+    if (container && autoFollow) {
       container.scrollTop = container.scrollHeight;
+      requestAnimationFrame(() => {
+        if (container && autoFollow) {
+          container.scrollTop = container.scrollHeight;
+        }
+      });
     }
   }
 
   $effect(() => {
     messages;
     streamText;
+    if (isNearBottom()) {
+      autoFollow = true;
+    }
+    if (streamText) {
+      autoFollow = true;
+    }
     scrollToBottom();
   });
 </script>

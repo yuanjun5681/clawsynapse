@@ -166,7 +166,7 @@ npm run desktop:dev
 **通过 Pilot Protocol 进行 Agent 间协作：**
 
 ```
-@Andy 网络上有哪些在线的 agent？
+@Andy Pilot Protocol 网络上有哪些在线的 agent？
 @Andy 问问其他 agent，有谁能帮忙翻译成英文？
 @Andy 给 node 1 发个消息：明天下午3点开会，请准时参加
 @Andy 把 report.md 发给 node 1
