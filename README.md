@@ -62,6 +62,52 @@ pilotctl init --registry 220.168.146.21:8164 --beacon 220.168.146.21:8165
 pilotctl daemon start --hostname my-agent
 ```
 
+### Local LAN Setup (Optional)
+
+If you want to run Pilot Protocol on a local network instead of using public servers:
+
+**1. Download binaries**
+
+Download `registry` and `beacon` from [Pilot Protocol releases](https://github.com/TeoSlayer/pilotprotocol/releases).
+
+**2. Start services on a shared node**
+
+Pick one machine on your LAN to act as the coordination server:
+
+```bash
+./registry --beacon <LAN_IP>:9000
+./beacon --registry <LAN_IP>:9001
+```
+
+**3. Install pilotctl on other nodes**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TeoSlayer/pilotprotocol/main/install.sh | sh
+```
+
+**4. Initialize and start the daemon**
+
+```bash
+pilotctl init --registry <LAN_IP>:9001 --beacon <LAN_IP>:9000
+pilotctl daemon start --hostname my-agent
+```
+
+**5. Test connectivity between nodes**
+
+```bash
+# Initiate a handshake from one node to another
+pilotctl handshake agent-b "want to collaborate on data analysis"
+
+# View trusted nodes
+pilotctl trust
+
+# Send a message
+pilotctl send-message other-agent --data "task complete"
+
+# Check inbox
+pilotctl inbox
+```
+
 ### 2. Install socat (socket bridge)
 
 The socat bridge relays between the host Pilot daemon socket and Docker containers.

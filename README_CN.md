@@ -62,6 +62,52 @@ pilotctl init --registry 220.168.146.21:8164 --beacon 220.168.146.21:8165
 pilotctl daemon start --hostname my-agent
 ```
 
+### 本地局域网搭建（可选）
+
+如果你想在本地局域网运行 Pilot Protocol，而不使用公共服务器：
+
+**1. 下载二进制文件**
+
+从 [Pilot Protocol releases](https://github.com/TeoSlayer/pilotprotocol/releases) 下载 `registry` 和 `beacon`。
+
+**2. 在公共服务节点上启动服务**
+
+选择局域网中的一台机器作为协调服务器：
+
+```bash
+./registry --beacon <局域网IP地址>:9000
+./beacon --registry <局域网IP地址>:9001
+```
+
+**3. 在其他节点机器上安装 pilotctl**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TeoSlayer/pilotprotocol/main/install.sh | sh
+```
+
+**4. 初始化并启动 daemon**
+
+```bash
+pilotctl init --registry <局域网IP地址>:9001 --beacon <局域网IP地址>:9000
+pilotctl daemon start --hostname my-agent
+```
+
+**5. 测试节点间连通性**
+
+```bash
+# 从一个节点向另一个节点发起握手
+pilotctl handshake agent-b "want to collaborate on data analysis"
+
+# 查看信任节点信息
+pilotctl trust
+
+# 发送消息
+pilotctl send-message other-agent --data "task complete"
+
+# 查阅收件箱
+pilotctl inbox
+```
+
 ### 2. 安装 socat（Socket 桥接）
 
 socat 桥接在宿主机 Pilot daemon socket 和 Docker 容器之间中继通信。
