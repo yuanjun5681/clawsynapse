@@ -298,6 +298,7 @@ function buildVolumeMounts(
       'AGNO_BASE_URL',
       'AGNO_TEMPERATURE',
       'AGNO_MAX_TOKENS',
+      'AGNO_COMPRESS_TOOL_RESULTS_LIMIT',
       'LANGSMITH_TRACING',
       'LANGSMITH_API_KEY',
       'LANGSMITH_ENDPOINT',

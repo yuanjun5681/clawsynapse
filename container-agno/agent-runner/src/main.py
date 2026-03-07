@@ -42,6 +42,10 @@ from agno.tools.shell import ShellTools
 # the context window beyond what compression can recover from.
 SHELL_OUTPUT_MAX_CHARS = 30_000
 
+# Max number of tool results kept before compression starts dropping old ones.
+# Increase the default from 3 to reduce "Tool count limit hit" interruptions.
+COMPRESS_TOOL_RESULTS_LIMIT = int(os.environ.get("AGNO_COMPRESS_TOOL_RESULTS_LIMIT", "20"))
+
 
 class SafeShellTools(ShellTools):
     """ShellTools with character-level output truncation."""
@@ -174,7 +178,7 @@ def create_agent(
     compression_manager = CompressionManager(
         model=model,
         compress_token_limit=80000,
-        compress_tool_results_limit=3,
+        compress_tool_results_limit=COMPRESS_TOOL_RESULTS_LIMIT,
     )
 
     agent = Agent(
