@@ -1,0 +1,10 @@
+nodeId: node-alpha
+natsServers:
+  - nats://127.0.0.1:4222
+localApiAddr: 127.0.0.1:18080
+trustMode: tofu
+heartbeatInterval: 15s
+announceTtl: 30s
+dataDir: ~/.clawsynapse
+identityKeyPath: ~/.clawsynapse/identity.key
+identityPubPath: ~/.clawsynapse/identity.pub

@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"flag"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,6 +44,18 @@ type runtimeConfig struct {
 	CheckConfig     bool
 }
 
+type configValues struct {
+	NodeID          string
+	NATSServers     []string
+	LocalAPIAddr    string
+	DataDir         string
+	IdentityKeyPath string
+	IdentityPubPath string
+	Heartbeat       time.Duration
+	AnnounceTTL     time.Duration
+	TrustMode       string
+}
+
 func (c Config) Runtime() runtimeConfig {
 	h, _ := time.ParseDuration(c.HeartbeatInterval)
 	t, _ := time.ParseDuration(c.AnnounceTTL)
@@ -61,24 +74,39 @@ func (c Config) Runtime() runtimeConfig {
 }
 
 func LoadFromOS(args []string) (Config, error) {
+	configPath, explicitConfigPath, err := resolveConfigPath(args)
+	if err != nil {
+		return Config{}, err
+	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return Config{}, err
 	}
 
 	defaultDataDir := filepath.Join(home, ".clawsynapse")
+	defaults := defaultConfigValues(defaultDataDir)
+	loaded, err := loadConfigValues(configPath, explicitConfigPath)
+	if err != nil {
+		return Config{}, err
+	}
+	merged := mergeConfigValues(defaults, loaded)
+	merged = mergeConfigValues(merged, loadDotEnvValues())
+	merged = mergeConfigValues(merged, loadOSEnvValues())
 
 	fs := flag.NewFlagSet("clawsynapsed", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
 	var (
-		nodeID          = fs.String("node-id", envOr("NODE_ID", ""), "node id")
-		natsServers     = fs.String("nats-servers", envOr("NATS_SERVERS", defaultNATSServers), "comma separated nats servers")
-		apiAddr         = fs.String("local-api-addr", envOr("LOCAL_API_ADDR", defaultLocalAPIAddr), "http api address")
-		dataDir         = fs.String("data-dir", envOr("DATA_DIR", defaultDataDir), "state directory")
-		identityKeyPath = fs.String("identity-key-path", envOr("IDENTITY_KEY_PATH", filepath.Join(defaultDataDir, "identity.key")), "private key file path")
-		identityPubPath = fs.String("identity-pub-path", envOr("IDENTITY_PUB_PATH", filepath.Join(defaultDataDir, "identity.pub")), "public key file path")
-		heartbeat       = fs.Duration("heartbeat", envDuration("HEARTBEAT_INTERVAL_MS", defaultHeartbeatInterval), "announce heartbeat interval")
-		announceTTL     = fs.Duration("announce-ttl", envDuration("ANNOUNCE_TTL_MS", defaultAnnounceTTL), "announce ttl")
-		trustMode       = fs.String("trust-mode", envOr("TRUST_MODE", defaultTrustMode), "trust mode: open|tofu|explicit")
+		nodeID          = fs.String("node-id", merged.NodeID, "node id")
+		natsServers     = fs.String("nats-servers", strings.Join(merged.NATSServers, ","), "comma separated nats servers")
+		apiAddr         = fs.String("local-api-addr", merged.LocalAPIAddr, "http api address")
+		dataDir         = fs.String("data-dir", merged.DataDir, "state directory")
+		identityKeyPath = fs.String("identity-key-path", merged.IdentityKeyPath, "private key file path")
+		identityPubPath = fs.String("identity-pub-path", merged.IdentityPubPath, "public key file path")
+		heartbeat       = fs.Duration("heartbeat", merged.Heartbeat, "announce heartbeat interval")
+		announceTTL     = fs.Duration("announce-ttl", merged.AnnounceTTL, "announce ttl")
+		trustMode       = fs.String("trust-mode", merged.TrustMode, "trust mode: open|tofu|explicit")
+		_               = fs.String("config", configPath, "config file path")
 		checkConfig     = fs.Bool("check-config", false, "print config and exit")
 	)
 
@@ -125,6 +153,76 @@ func LoadFromOS(args []string) (Config, error) {
 		TrustMode:         mode,
 		CheckConfig:       *checkConfig,
 	}, nil
+}
+
+func defaultConfigValues(defaultDataDir string) configValues {
+	return configValues{
+		NATSServers:     []string{defaultNATSServers},
+		LocalAPIAddr:    defaultLocalAPIAddr,
+		DataDir:         defaultDataDir,
+		IdentityKeyPath: filepath.Join(defaultDataDir, "identity.key"),
+		IdentityPubPath: filepath.Join(defaultDataDir, "identity.pub"),
+		Heartbeat:       defaultHeartbeatInterval,
+		AnnounceTTL:     defaultAnnounceTTL,
+		TrustMode:       defaultTrustMode,
+	}
+}
+
+func mergeConfigValues(base, override configValues) configValues {
+	if strings.TrimSpace(override.NodeID) != "" {
+		base.NodeID = strings.TrimSpace(override.NodeID)
+	}
+	if len(override.NATSServers) > 0 {
+		base.NATSServers = append([]string(nil), override.NATSServers...)
+	}
+	if strings.TrimSpace(override.LocalAPIAddr) != "" {
+		base.LocalAPIAddr = strings.TrimSpace(override.LocalAPIAddr)
+	}
+	if strings.TrimSpace(override.DataDir) != "" {
+		base.DataDir = strings.TrimSpace(override.DataDir)
+	}
+	if strings.TrimSpace(override.IdentityKeyPath) != "" {
+		base.IdentityKeyPath = strings.TrimSpace(override.IdentityKeyPath)
+	}
+	if strings.TrimSpace(override.IdentityPubPath) != "" {
+		base.IdentityPubPath = strings.TrimSpace(override.IdentityPubPath)
+	}
+	if override.Heartbeat > 0 {
+		base.Heartbeat = override.Heartbeat
+	}
+	if override.AnnounceTTL > 0 {
+		base.AnnounceTTL = override.AnnounceTTL
+	}
+	if strings.TrimSpace(override.TrustMode) != "" {
+		base.TrustMode = strings.TrimSpace(override.TrustMode)
+	}
+	return base
+}
+
+func resolveConfigPath(args []string) (string, bool, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", false, err
+	}
+
+	defaultPath := filepath.Join(home, ".clawsynapse", "config.yaml")
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--config" {
+			if i+1 >= len(args) {
+				return "", false, errors.New("missing value for --config")
+			}
+			return args[i+1], true, nil
+		}
+		if value, ok := strings.CutPrefix(arg, "--config="); ok {
+			if strings.TrimSpace(value) == "" {
+				return "", false, errors.New("missing value for --config")
+			}
+			return value, true, nil
+		}
+	}
+
+	return defaultPath, false, nil
 }
 
 func splitCSV(v string) []string {

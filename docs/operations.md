@@ -51,17 +51,47 @@ pkg/types/
 
 ## 配置
 
+加载优先级如下：
+
+```text
+CLI 参数 > OS 环境变量 > 项目根目录 .env > ~/.clawsynapse/config.yaml > 默认值
+```
+
+推荐把长期稳定配置放到 `~/.clawsynapse/config.yaml`：
+
+```bash
+mkdir -p ~/.clawsynapse
+cp config.example.yaml ~/.clawsynapse/config.yaml
+```
+
+```yaml
+nodeId: node-alpha
+natsServers:
+  - nats://127.0.0.1:4222
+localApiAddr: 127.0.0.1:18080
+trustMode: tofu
+heartbeatInterval: 15s
+announceTtl: 30s
+dataDir: ~/.clawsynapse
+identityKeyPath: ~/.clawsynapse/identity.key
+identityPubPath: ~/.clawsynapse/identity.pub
+```
+
+项目根目录下的 `.env` 适合本地开发覆盖，例如：
+
+```bash
+cp .env.example .env
+```
+
 ```bash
 NATS_SERVERS=nats://127.0.0.1:4222
 NODE_ID=node-alpha
-NODE_CAPABILITIES=chat,tools
-AGENT_ADAPTER=openclaw
-GATEWAY_URL=ws://127.0.0.1:18789
-GATEWAY_TOKEN=xxx
 HEARTBEAT_INTERVAL_MS=15000
 ANNOUNCE_TTL_MS=30000
 TRUST_MODE=tofu
+DATA_DIR=~/.clawsynapse
 IDENTITY_KEY_PATH=~/.clawsynapse/identity.key
+IDENTITY_PUB_PATH=~/.clawsynapse/identity.pub
 LOCAL_API_ADDR=127.0.0.1:18080
 ```
 

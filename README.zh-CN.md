@@ -46,11 +46,22 @@ go test ./...
 
 ## 配置
 
+配置优先级：`CLI 参数 > OS 环境变量 > 项目根目录 .env > ~/.clawsynapse/config.yaml > 默认值`
+
+默认主配置文件：`~/.clawsynapse/config.yaml`
+
+项目根目录下的 `.env` 会在开发时自动加载。
+
+可直接参考仓库里的 `config.example.yaml` 和 `.env.example` 模板。
+
 常用环境变量：
 
 - `NATS_SERVERS`（逗号分隔）
 - `NODE_ID`
 - `LOCAL_API_ADDR`
+- `DATA_DIR`
+- `IDENTITY_KEY_PATH`
+- `IDENTITY_PUB_PATH`
 - `HEARTBEAT_INTERVAL_MS`
 - `ANNOUNCE_TTL_MS`
 - `TRUST_MODE`（`open` | `tofu` | `explicit`）

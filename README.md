@@ -46,11 +46,22 @@ go test ./...
 
 ## Configuration
 
+Configuration precedence: `CLI flags > OS environment variables > project-root .env > ~/.clawsynapse/config.yaml > defaults`
+
+Default main config file: `~/.clawsynapse/config.yaml`
+
+The project-root `.env` file is loaded automatically for local development.
+
+Starter templates are available at `config.example.yaml` and `.env.example`.
+
 Common environment variables:
 
 - `NATS_SERVERS` (comma-separated)
 - `NODE_ID`
 - `LOCAL_API_ADDR`
+- `DATA_DIR`
+- `IDENTITY_KEY_PATH`
+- `IDENTITY_PUB_PATH`
 - `HEARTBEAT_INTERVAL_MS`
 - `ANNOUNCE_TTL_MS`
 - `TRUST_MODE` (`open` | `tofu` | `explicit`)
