@@ -109,6 +109,37 @@ go run ./cmd/clawsynapse publish \
 POST /v1/publish
 ```
 
+普通输出会单独显示 `targetNode` 和 `messageId`；如果需要完整结构，使用 `--json`。
+
+### Request
+
+向目标节点发送请求并等待 reply：
+
+```bash
+go run ./cmd/clawsynapse request \
+  --target node-beta \
+  --message "当前状态如何？"
+```
+
+带会话键、元数据与自定义超时：
+
+```bash
+go run ./cmd/clawsynapse request \
+  --target node-beta \
+  --message "请返回最新处理结果" \
+  --session-key nats:node-alpha:node-beta \
+  --metadata priority=high \
+  --timeout-ms 15000
+```
+
+对应 API：
+
+```http
+POST /v1/request
+```
+
+普通输出会单独显示 `reply`、`runId`、`from` 和 `requestId`；如果需要完整结构，使用 `--json`。
+
 ### Auth Challenge
 
 对目标节点发起 challenge：
@@ -175,6 +206,8 @@ POST /v1/trust/reject
 POST /v1/trust/revoke
 ```
 
+`trust request`、`trust approve`、`trust reject`、`trust revoke` 的普通输出会单独显示关键字段，例如 `targetNode`、`requestId` 和 `decision`；如果需要完整结构，使用 `--json`。
+
 ## 命令与 API 对照
 
 | CLI | API |
@@ -183,6 +216,7 @@ POST /v1/trust/revoke
 | `clawsynapse peers` | `GET /v1/peers` |
 | `clawsynapse messages` | `GET /v1/messages` |
 | `clawsynapse publish` | `POST /v1/publish` |
+| `clawsynapse request` | `POST /v1/request` |
 | `clawsynapse auth challenge` | `POST /v1/auth/challenge` |
 | `clawsynapse trust pending` | `GET /v1/trust/pending` |
 | `clawsynapse trust request` | `POST /v1/trust/request` |
@@ -196,7 +230,6 @@ POST /v1/trust/revoke
 
 尚未纳入 CLI 的能力包括：
 
-- `request-reply` 风格的 `POST /v1/request`
 - 直接指定任意 `subject` 的发布
 - 更完整的管理命令集合
 

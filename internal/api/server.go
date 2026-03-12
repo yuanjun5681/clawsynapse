@@ -34,6 +34,7 @@ func NewServer(addr string, peers *discovery.Registry, authSvc *auth.Service, tr
 	mux.HandleFunc("POST /v1/trust/revoke", s.handleTrustRevoke)
 	mux.HandleFunc("GET /v1/trust/pending", s.handleTrustPending)
 	mux.HandleFunc("POST /v1/publish", s.handlePublish)
+	mux.HandleFunc("POST /v1/request", s.handleRequest)
 	mux.HandleFunc("GET /v1/messages", s.handleMessages)
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
 

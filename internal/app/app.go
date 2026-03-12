@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"clawsynapse/internal/adapter"
 	"clawsynapse/internal/api"
 	"clawsynapse/internal/auth"
 	"clawsynapse/internal/config"
@@ -75,6 +76,8 @@ func New(cfg config.Config) (*App, error) {
 		return nil, fmt.Errorf("init trust service: %w", err)
 	}
 	messagingSvc := messaging.NewService(log, peers, bus, cfg.NodeID, id, cfg.TrustMode)
+	defaultAdapter := adapter.NewDefaultAdapter(cfg.NodeID)
+	messagingSvc.SetRequestHandler(messaging.NewAdapterRequestHandler(defaultAdapter, 30*time.Second))
 	apiServer := api.NewServer(cfg.LocalAPIAddr, peers, authSvc, trustSvc, messagingSvc, bus)
 
 	return &App{

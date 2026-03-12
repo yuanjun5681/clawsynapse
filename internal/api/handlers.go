@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"clawsynapse/internal/messaging"
+	"clawsynapse/internal/protocol"
 	"clawsynapse/pkg/types"
 )
 
@@ -34,6 +35,14 @@ type publishReq struct {
 	Message    string         `json:"message"`
 	SessionKey string         `json:"sessionKey,omitempty"`
 	Metadata   map[string]any `json:"metadata,omitempty"`
+}
+
+type requestReq struct {
+	TargetNode string         `json:"targetNode"`
+	Message    string         `json:"message"`
+	SessionKey string         `json:"sessionKey,omitempty"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
+	TimeoutMs  int64          `json:"timeoutMs,omitempty"`
 }
 
 func (s *Server) handlePeers(w http.ResponseWriter, _ *http.Request) {
@@ -273,6 +282,54 @@ func (s *Server) handleMessages(w http.ResponseWriter, _ *http.Request) {
 		Message: "recent messages fetched",
 		Data: map[string]any{
 			"items": s.messaging.RecentMessages(100),
+		},
+		TS: time.Now().UnixMilli(),
+	})
+}
+
+func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
+	var req requestReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondJSON(w, http.StatusBadRequest, types.APIResult{OK: false, Code: "invalid_argument", Message: "invalid json payload", TS: time.Now().UnixMilli()})
+		return
+	}
+
+	result, err := s.messaging.Request(messaging.RequestRequest{
+		TargetNode: req.TargetNode,
+		Message:    req.Message,
+		SessionKey: req.SessionKey,
+		Metadata:   req.Metadata,
+		Timeout:    time.Duration(req.TimeoutMs) * time.Millisecond,
+	})
+	if err != nil {
+		code := "msg.request_failed"
+		if protocolErr, ok := err.(*protocol.Error); ok {
+			code = protocolErr.Code
+		}
+		respondJSON(w, http.StatusBadRequest, types.APIResult{
+			OK:      false,
+			Code:    code,
+			Message: err.Error(),
+			Data: map[string]any{
+				"targetNode": req.TargetNode,
+				"timeoutMs":  req.TimeoutMs,
+			},
+			TS: time.Now().UnixMilli(),
+		})
+		return
+	}
+
+	respondJSON(w, http.StatusOK, types.APIResult{
+		OK:      true,
+		Code:    "msg.replied",
+		Message: "reply received",
+		Data: map[string]any{
+			"targetNode": req.TargetNode,
+			"requestId":  result.RequestID,
+			"messageId":  result.MessageID,
+			"reply":      result.Reply,
+			"from":       result.From,
+			"runId":      result.RunID,
 		},
 		TS: time.Now().UnixMilli(),
 	})
