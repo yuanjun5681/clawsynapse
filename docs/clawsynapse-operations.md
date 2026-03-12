@@ -76,13 +76,15 @@ BRIDGE_EVENTS=agent_end,message_sent
 
 ## 启动流程
 
+具体的 subject 命名、认证消息与控制消息字段，以 `docs/clawsynapse-protocol.md` 为准。这里仅描述运行时订阅与启动行为。
+
 ```text
 1. 加载或生成 Ed25519 密钥对
 2. 连接 NATS
 3. 连接本地 Agent 网关
-4. 订阅 clawsynapse.agent.<nodeId>.inbox
-5. 订阅 clawsynapse.discovery.announce
-6. 订阅 clawsynapse.auth.<nodeId>.challenge.*
+4. 订阅本节点 inbox subject
+5. 订阅 discovery 相关 subject
+6. 订阅 auth / trust 所需控制 subject
 7. 发布初始注册信息
 8. 启动心跳定时器
 9. 开始处理入站消息
