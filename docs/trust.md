@@ -500,7 +500,7 @@ clawsynapse.trust.<targetNodeId>.revoke
 
 ## 协议实现约定
 
-`Trust` 相关的详细协议字段、subject、签名串规范、通用返回格式与错误码，统一定义在 `docs/clawsynapse-protocol.md`。
+`Trust` 相关的详细协议字段、subject、签名串规范、通用返回格式与错误码，统一定义在 `docs/protocol.md`。
 
 在 `Trust` 范畴内，本文只保留设计层约束：
 

@@ -13,8 +13,8 @@ title: "ClawSynapse Messaging"
 
 详细协议定义统一收敛到：
 
-- `docs/clawsynapse-protocol.md`：subject、Envelope、通用字段、签名规则、错误码
-- `docs/clawsynapse-trust.md`：认证与信任建立的设计动机、状态机与时序图
+- `docs/protocol.md`：subject、Envelope、通用字段、签名规则、错误码
+- `docs/trust.md`：认证与信任建立的设计动机、状态机与时序图
 
 因此本文只保留 Messaging 视角下的使用方式与数据流，不重复维护字段级协议表。
 
@@ -26,7 +26,7 @@ ClawSynapse Messaging 基于以下三类通道：
 - `broadcast`：面向 topic 的广播消息
 - `events`：系统事件、生命周期事件与审计事件
 
-协议层推荐的 subject 命名、Envelope 字段和消息类型，见 `docs/clawsynapse-protocol.md`。
+协议层推荐的 subject 命名、Envelope 字段和消息类型，见 `docs/protocol.md`。
 
 ## 节点发现与消息入口
 
@@ -39,7 +39,7 @@ ClawSynapse Messaging 基于以下三类通道：
 5. 周期性发送心跳 announce
 6. 维护本地 peer 表和 TTL 驱逐
 
-详细的 `discovery.announce` 与 `discovery.depart` 字段定义见 `docs/clawsynapse-protocol.md`。
+详细的 `discovery.announce` 与 `discovery.depart` 字段定义见 `docs/protocol.md`。
 
 在 Messaging 视角下，Discovery 主要提供两件事：
 

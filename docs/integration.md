@@ -11,7 +11,7 @@ title: "ClawSynapse Integration"
 
 `clawsynapsed` 暴露本地 API，供 Agent 或 Skill 调用。
 
-这里展示的是集成侧调用方式。涉及 subject 命名、Envelope 字段和消息语义时，以 `docs/clawsynapse-protocol.md` 为准。
+这里展示的是集成侧调用方式。涉及 subject 命名、Envelope 字段和消息语义时，以 `docs/protocol.md` 为准。
 
 接口：
 
@@ -52,7 +52,7 @@ POST /v1/request
 }
 ```
 
-其中 subject 命名只是示例，实际命名规范应遵循 `docs/clawsynapse-protocol.md`。
+其中 subject 命名只是示例，实际命名规范应遵循 `docs/protocol.md`。
 
 `GET /v1/peers` 响应示例：
 
@@ -71,7 +71,7 @@ POST /v1/request
 ]
 ```
 
-返回中的 `inbox`、`authStatus` 等字段可视为集成层投影；其底层命名与状态值应与 `docs/clawsynapse-protocol.md` 保持一致。
+返回中的 `inbox`、`authStatus` 等字段可视为集成层投影；其底层命名与状态值应与 `docs/protocol.md` 保持一致。
 
 本地 API 负责接收业务请求，再由守护进程统一完成路由、握手、签名、发布和回复等待。
 

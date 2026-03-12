@@ -20,21 +20,21 @@ ClawSynapse 采用分层命名：
 
 ## 文档导航
 
-- `docs/clawsynapse.md`：总览、命名、架构入口
-- [核心概念](./clawsynapse-concepts.md)
-- [消息与协议](./clawsynapse-messaging.md)
-- [信任与认证](./clawsynapse-trust.md)
-- [集成与适配](./clawsynapse-integration.md)
-- [运行与配置](./clawsynapse-operations.md)
+- `docs/overview.md`：总览、命名、架构入口
+- [核心概念](./concepts.md)
+- [消息与协议](./messaging.md)
+- [信任与认证](./trust.md)
+- [集成与适配](./integration.md)
+- [运行与配置](./operations.md)
 
 建议阅读顺序：
 
-1. `docs/clawsynapse.md`
-2. `docs/clawsynapse-concepts.md`
-3. `docs/clawsynapse-messaging.md`
-4. `docs/clawsynapse-trust.md`
-5. `docs/clawsynapse-integration.md`
-6. `docs/clawsynapse-operations.md`
+1. `docs/overview.md`
+2. `docs/concepts.md`
+3. `docs/messaging.md`
+4. `docs/trust.md`
+5. `docs/integration.md`
+6. `docs/operations.md`
 
 ## 架构总览
 

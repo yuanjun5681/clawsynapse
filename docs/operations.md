@@ -76,7 +76,7 @@ BRIDGE_EVENTS=agent_end,message_sent
 
 ## 启动流程
 
-具体的 subject 命名、认证消息与控制消息字段，以 `docs/clawsynapse-protocol.md` 为准。这里仅描述运行时订阅与启动行为。
+具体的 subject 命名、认证消息与控制消息字段，以 `docs/protocol.md` 为准。这里仅描述运行时订阅与启动行为。
 
 ```text
 1. 加载或生成 Ed25519 密钥对

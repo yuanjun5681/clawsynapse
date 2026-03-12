@@ -44,8 +44,8 @@ title: "ClawSynapse Protocol"
 
 与设计文档的分工如下：
 
-- `docs/clawsynapse-trust.md`：解释 Trust 的模型、流程、状态机与安全边界
-- `docs/clawsynapse-protocol.md`：定义实现时应遵循的字段、subject、状态值与返回语义
+- `docs/trust.md`：解释 Trust 的模型、流程、状态机与安全边界
+- `docs/protocol.md`：定义实现时应遵循的字段、subject、状态值与返回语义
 
 ## 模块范围
 
