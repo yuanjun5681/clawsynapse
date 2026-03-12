@@ -18,11 +18,30 @@ ClawSynapse 使用基于 Ed25519 的节点身份模型：
 - 后续消息附带签名
 - 校验消息时间戳与本地时间偏差，防止重放攻击
 
+### 密钥目录
+
+```text
+~/.clawsynapse/
+├── identity.key
+├── identity.pub
+└── peers/
+    ├── node-beta.pub
+    └── node-gamma.pub
+```
+
+私钥仅保存在本地文件系统，公钥通过 `clawsynapse.discovery.announce` 广播并缓存到本地 peer 目录。
+
 ## 信任模式
 
 - `open`：不验证签名，仅用于开发和测试
 - `tofu`：首次见到自动信任，后续严格校验
 - `explicit`：仅接受预配置公钥
+
+| 模式 | 说明 | 适用场景 |
+|------|------|----------|
+| `open` | 接受所有消息，不校验签名 | 本地开发、内网测试 |
+| `tofu` | 首次见到自动信任，后续严格校验 | 小团队、可信网络 |
+| `explicit` | 仅接受预先配置公钥 | 生产环境、跨网络部署 |
 
 生产环境要求：
 
@@ -67,6 +86,52 @@ clawsynapse.auth.<targetNodeId>.challenge.ack
 3. Node A 校验 Node B 的签名
 4. Node A 回发 challenge ack，对 Node B 的挑战进行签名确认
 5. Node B 校验成功后，将对端状态更新为 `authenticated`
+
+### 载荷示例
+
+请求：
+
+```json
+{
+  "from": "node-alpha",
+  "publicKey": "base64url-ed25519-public-key",
+  "nonce": "random-32-bytes-base64url",
+  "ts": 1741680000000
+}
+```
+
+响应：
+
+```json
+{
+  "from": "node-beta",
+  "publicKey": "base64url-ed25519-public-key",
+  "nonce": "random-32-bytes-base64url",
+  "proof": "base64url-ed25519-signature-of-nonceA|B|A"
+}
+```
+
+确认：
+
+```json
+{
+  "from": "node-alpha",
+  "proof": "base64url-ed25519-signature-of-nonceB|A|B"
+}
+```
+
+## 认证状态机
+
+```text
+┌───────────┐   收到 announce   ┌──────────┐   挑战成功   ┌──────────────┐
+│ unknown   ├──────────────────►│ seen     ├────────────►│ authenticated│
+└───────────┘                   └────┬─────┘             └──────┬───────┘
+                                     │ 挑战失败                  │ TTL 过期
+                                     ▼                          ▼
+                                ┌──────────┐             ┌───────────┐
+                                │ rejected │             │ expired   │
+                                └──────────┘             └───────────┘
+```
 
 ## 消息签名
 

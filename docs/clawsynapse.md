@@ -20,11 +20,21 @@ ClawSynapse 采用分层命名：
 
 ## 文档导航
 
+- `docs/clawsynapse.md`：总览、命名、架构入口
 - [核心概念](./clawsynapse-concepts.md)
 - [消息与协议](./clawsynapse-messaging.md)
 - [信任与认证](./clawsynapse-trust.md)
 - [集成与适配](./clawsynapse-integration.md)
 - [运行与配置](./clawsynapse-operations.md)
+
+建议阅读顺序：
+
+1. `docs/clawsynapse.md`
+2. `docs/clawsynapse-concepts.md`
+3. `docs/clawsynapse-messaging.md`
+4. `docs/clawsynapse-trust.md`
+5. `docs/clawsynapse-integration.md`
+6. `docs/clawsynapse-operations.md`
 
 ## 架构总览
 
@@ -32,11 +42,28 @@ ClawSynapse 采用分层命名：
 Agent <-> Local ClawSynapse Daemon <-> NATS <-> Remote ClawSynapse Daemon <-> Remote Agent
 ```
 
-每台机器部署：
+```text
+ Machine A                                         Machine B
+┌──────────────────────────────┐          ┌──────────────────────────────┐
+│ Local Agent Product          │          │ Local Agent Product          │
+│ (OpenClaw / custom / etc.)   │          │ (Any Agent Product)          │
+│              ▲               │          │              ▲               │
+│              │ local adapter │          │              │ local adapter │
+│      ┌───────┴────────┐      │          │      ┌───────┴────────┐      │
+│      │ clawsynapsed   │◄─────┼──────────┼─────►│ clawsynapsed   │      │
+│      │ node-alpha     │      │   NATS   │      │ node-beta      │      │
+│      └───────┬────────┘      │          │      └───────┬────────┘      │
+│              │               │          │              │               │
+│   local API / CLI / Skill    │          │   local API / CLI / Skill    │
+└──────────────────────────────┘          └──────────────────────────────┘
+```
 
-- 一个本地 Agent
+每个本地节点部署：
+
+- 一个本地 Agent Product
 - 一个本地 `clawsynapsed`
-- `clawsynapsed` 通过 localhost、Unix Socket、WebSocket 或 HTTP 调用本地 Agent
+- `clawsynapsed` 通过 Adapter 连接本地 Agent Endpoint
+- 本地 Agent、CLI 或 Skill 通过本地 API 接入 `clawsynapsed`
 - 所有节点通过共享 NATS Server 实现跨设备通信
 
 ## 核心原则

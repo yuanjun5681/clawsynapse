@@ -19,6 +19,54 @@ GET /v1/peers
 POST /v1/request
 ```
 
+`POST /v1/publish` 示例：
+
+```json
+{
+  "targetNode": "node-beta",
+  "message": "请汇总最新报告",
+  "sessionKey": "nats:node-alpha:node-beta",
+  "metadata": { "priority": "high" }
+}
+```
+
+`POST /v1/request` 示例：
+
+```json
+{
+  "targetNode": "node-beta",
+  "message": "当前状态如何？",
+  "waitForReply": true,
+  "timeoutMs": 30000
+}
+```
+
+直接指定 subject 的发布示例：
+
+```json
+{
+  "subject": "clawsynapse.broadcast.task-queue",
+  "message": "新任务已就绪"
+}
+```
+
+`GET /v1/peers` 响应示例：
+
+```json
+[
+  {
+    "nodeId": "node-beta",
+    "agentProduct": "openclaw",
+    "version": "2026.3.9",
+    "capabilities": ["chat", "tools"],
+    "inbox": "clawsynapse.agent.node-beta.inbox",
+    "authStatus": "authenticated",
+    "lastSeen": "2026-03-11T10:00:15Z",
+    "metadata": { "hostname": "server-2", "channels": ["slack"] }
+  }
+]
+```
+
 本地 API 负责接收业务请求，再由守护进程统一完成路由、握手、签名、发布和回复等待。
 
 ## Agent Adapter
@@ -54,7 +102,7 @@ type AgentStatus struct {
 首批实现：
 
 - `OpenClawAdapter`
-- 扩展 `CustomHTTPAdapter`、`LangChainAdapter` 等
+- 扩展 `CustomHTTPAdapter`、`WorkflowAdapter` 等
 
 ## OpenClaw 接入
 
@@ -64,6 +112,63 @@ type AgentStatus struct {
 - 完成 gateway 握手后调用 `chat.send`
 - 将 `sessionKey` 映射为跨节点会话标识
 - 获取最终回复时，监听运行完成事件后调用 `chat.history`
+
+### 网关通信验证
+
+CLI 验证：
+
+```bash
+openclaw gateway run
+OPENCLAW_GATEWAY_TOKEN=your-gateway-token \
+  openclaw agent --agent <agentId> --message "你好"
+```
+
+WebSocket 调用流程：
+
+1. 连接本地 Gateway
+2. 响应 `connect.challenge`
+3. 发送 `connect`
+4. 发送 `chat.send`
+5. 在运行结束后调用 `chat.history` 获取最终回复
+
+简化示例：
+
+```javascript
+const ws = new WebSocket("ws://127.0.0.1:18789");
+
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+
+  if (msg.event === "connect.challenge") {
+    ws.send(JSON.stringify({
+      type: "req",
+      id: "1",
+      method: "connect",
+      params: {
+        minProtocol: 3,
+        maxProtocol: 3,
+        client: { id: "gateway-client", version: "0.0.1", platform: "macos", mode: "backend" },
+        role: "operator",
+        scopes: ["operator.read", "operator.write"],
+        auth: { token: "your-gateway-token" }
+      }
+    }));
+  }
+
+  if (msg.type === "res" && msg.ok && msg.payload?.type === "hello-ok") {
+    ws.send(JSON.stringify({
+      type: "req",
+      id: "2",
+      method: "chat.send",
+      params: {
+        message: "你好",
+        sessionKey: "nats:node-alpha:node-beta",
+        idempotencyKey: crypto.randomUUID()
+      }
+    }));
+  }
+};
+```
 
 ## 扩展方向
 
