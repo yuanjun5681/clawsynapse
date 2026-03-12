@@ -84,29 +84,51 @@ title: "ClawSynapse Protocol"
 
 ### Subject 约定
 
-- 使用小写英文与点分层级
+- 使用小写英文、数字与 `-`，并以 `.` 分层
 - 一级前缀固定为 `clawsynapse`
-- 二级表示模块，例如 `auth`、`trust`、`control`
-- 三级及以下表示目标节点、动作与资源
+- 二级固定为模块名：`auth`、`trust`、`discovery`、`control`、`msg`、`events`、`pubsub`、`transfer`
+- 三级为作用域（节点、topic 或 global），四级及以下为动作
 
 通用模式：
 
 ```text
-clawsynapse.<module>.<target-or-scope>.<action>
+clawsynapse.<module>.<scope>.<action>[.<subaction>]
 ```
+
+语法（BNF）：
+
+```text
+subject        ::= "clawsynapse" "." module "." scope "." action [ "." subaction ]
+module         ::= "auth" | "trust" | "discovery" | "control" | "msg" | "events" | "pubsub" | "transfer"
+scope          ::= node-id | topic | "global" | "trust" | "auth"
+action         ::= token
+subaction      ::= token
+token          ::= [a-z0-9-]+
+node-id        ::= [a-z0-9-]{3,64}
+topic          ::= [a-z0-9-]+("."[a-z0-9-]+){0,7}
+```
+
+约束：
+
+- 不允许 `*`、`>`、空格或大写字符出现在协议定义的固定 subject 中
+- `subject` 中的目标节点（若存在）必须与 payload 的 `to` 一致
+- `messageType` 与 `subject` 的模块必须一致
+- `subject` 必须参与签名，避免跨 subject 重放
 
 示例：
 
 ```text
 clawsynapse.auth.node-beta.challenge.request
 clawsynapse.trust.node-beta.response
+clawsynapse.msg.node-beta.inbox
 clawsynapse.control.trust.poll
 ```
 
 ### `messageType` 约定
 
-- 使用 `<module>.<action>` 形式
-- 与 subject 含义一致，但不必一一等同
+- 使用 `<module>.<action>[.<subaction>]` 形式
+- 与 subject 语义保持一致
+- `messageType` 仅表达语义，不包含路由范围（节点、topic）
 
 示例：
 
@@ -115,6 +137,7 @@ clawsynapse.control.trust.poll
 - `trust.request`
 - `trust.response`
 - `control.trust.poll`
+- `control.trust.response`
 
 ## 公共消息封套
 
@@ -236,6 +259,9 @@ sig_input = messageType + "\n" + subject + "\n" + from + "\n" + to + "\n" + ts +
 | `trust.key_mismatch` | 公钥与已记录指纹不一致 |
 | `control.unauthorized` | 控制面鉴权失败 |
 | `control.inbox_empty` | 当前无待处理记录 |
+| `protocol.invalid_subject` | subject 不符合命名规范 |
+| `protocol.subject_target_mismatch` | subject 目标与 payload.to 不一致 |
+| `protocol.module_mismatch` | subject 与 messageType 模块不一致 |
 | `protocol.unsupported_version` | 协议版本不兼容 |
 
 ## Subject 一览
@@ -248,14 +274,22 @@ sig_input = messageType + "\n" + subject + "\n" + from + "\n" + to + "\n" + ts +
 | 信任授权 | `clawsynapse.trust.<targetNodeId>.request` | 发起 trust request |
 | 信任授权 | `clawsynapse.trust.<targetNodeId>.response` | approve / reject |
 | 信任授权 | `clawsynapse.trust.<targetNodeId>.revoke` | 撤销信任 |
-| 点对点消息 | `clawsynapse.agent.<targetNodeId>.inbox` | 节点或 Agent 收件箱 |
-| 广播消息 | `clawsynapse.broadcast.<topic>` | 面向 topic 的广播 |
+| 点对点消息 | `clawsynapse.msg.<targetNodeId>.inbox` | 节点或 Agent 收件箱 |
 | 事件消息 | `clawsynapse.events.<nodeId>.<eventName>` | 生命周期或系统事件 |
-| 节点发现 | `clawsynapse.discovery.announce` | 节点注册与心跳 |
-| 节点发现 | `clawsynapse.discovery.depart` | 节点主动下线 |
+| 节点发现 | `clawsynapse.discovery.global.announce` | 节点注册与心跳 |
+| 节点发现 | `clawsynapse.discovery.global.depart` | 节点主动下线 |
 | 中继控制 | `clawsynapse.control.trust.poll` | 拉取 pending trust |
-| 中继控制 | `clawsynapse.control.trust.respond` | 回写审批结果 |
+| 中继控制 | `clawsynapse.control.trust.response` | 回写审批结果 |
 | 中继控制 | `clawsynapse.control.auth.poll` | 拉取待处理认证事件 |
+| PubSub | `clawsynapse.pubsub.global.subscribe` | 创建或更新订阅 |
+| PubSub | `clawsynapse.pubsub.global.unsubscribe` | 取消订阅 |
+| PubSub | `clawsynapse.pubsub.<topic>.publish` | 向 topic 发布消息 |
+| PubSub | `clawsynapse.pubsub.<topic>.ack` | 确认消费消息 |
+| Data Transfer | `clawsynapse.transfer.<targetNodeId>.start` | 发起传输会话 |
+| Data Transfer | `clawsynapse.transfer.<targetNodeId>.chunk` | 发送分片 |
+| Data Transfer | `clawsynapse.transfer.<targetNodeId>.ack` | 确认分片或窗口 |
+| Data Transfer | `clawsynapse.transfer.<targetNodeId>.complete` | 声明传输完成 |
+| Data Transfer | `clawsynapse.transfer.<targetNodeId>.abort` | 中止传输 |
 
 ## Auth
 
@@ -350,8 +384,8 @@ sig_input = messageType + "\n" + subject + "\n" + from + "\n" + to + "\n" + ts +
 
 | Subject | 说明 |
 |---------|------|
-| `clawsynapse.discovery.announce` | 节点注册、心跳、元数据刷新 |
-| `clawsynapse.discovery.depart` | 节点主动下线通知 |
+| `clawsynapse.discovery.global.announce` | 节点注册、心跳、元数据刷新 |
+| `clawsynapse.discovery.global.depart` | 节点主动下线通知 |
 
 ### `discovery.announce`
 
@@ -398,8 +432,8 @@ sig_input = messageType + "\n" + subject + "\n" + from + "\n" + to + "\n" + ts +
 
 | Subject | 说明 |
 |---------|------|
-| `clawsynapse.agent.<targetNodeId>.inbox` | 点对点消息收件箱 |
-| `clawsynapse.broadcast.<topic>` | 面向 topic 的广播 |
+| `clawsynapse.msg.<targetNodeId>.inbox` | 点对点消息收件箱 |
+| `clawsynapse.pubsub.<topic>.publish` | 面向 topic 的广播 |
 | `clawsynapse.events.<nodeId>.<eventName>` | 生命周期或业务事件 |
 
 ### Envelope
@@ -455,7 +489,7 @@ type Envelope struct {
 
 ### 处理约定
 
-- 点对点消息默认投递到 `clawsynapse.agent.<targetNodeId>.inbox`
+- 点对点消息默认投递到 `clawsynapse.msg.<targetNodeId>.inbox`
 - 需要同步回复时，发送方应带 `replyTo`
 - 业务消息若要求强认证，应在投递前确保 peer 已处于 `authenticated` 或 `trusted`
 - 事件消息优先用于观测、审计、编排，不直接等价为业务命令
@@ -569,10 +603,10 @@ type Envelope struct {
 
 | Subject | 说明 |
 |---------|------|
-| `clawsynapse.pubsub.subscribe` | 创建或更新订阅 |
-| `clawsynapse.pubsub.unsubscribe` | 取消订阅 |
-| `clawsynapse.pubsub.publish.<topic>` | 向 topic 发布消息 |
-| `clawsynapse.pubsub.ack` | 确认消费消息 |
+| `clawsynapse.pubsub.global.subscribe` | 创建或更新订阅 |
+| `clawsynapse.pubsub.global.unsubscribe` | 取消订阅 |
+| `clawsynapse.pubsub.<topic>.publish` | 向 topic 发布消息 |
+| `clawsynapse.pubsub.<topic>.ack` | 确认消费消息 |
 
 ### Topic 命名建议
 
@@ -623,7 +657,7 @@ type Envelope struct {
 | `ts` | `number` | 是 | 请求时间 |
 | `signature` | `string` | 否 | 可选签名 |
 
-### `pubsub.publish.<topic>`
+### `pubsub.<topic>.publish`
 
 建议在 `Messaging Envelope` 之上发布，至少包含：
 
@@ -701,11 +735,11 @@ type Envelope struct {
 
 | Subject | 说明 |
 |---------|------|
-| `clawsynapse.transfer.start` | 发起传输会话 |
-| `clawsynapse.transfer.chunk` | 发送分片 |
-| `clawsynapse.transfer.ack` | 确认分片或窗口 |
-| `clawsynapse.transfer.complete` | 声明传输完成 |
-| `clawsynapse.transfer.abort` | 中止传输 |
+| `clawsynapse.transfer.<targetNodeId>.start` | 发起传输会话 |
+| `clawsynapse.transfer.<targetNodeId>.chunk` | 发送分片 |
+| `clawsynapse.transfer.<targetNodeId>.ack` | 确认分片或窗口 |
+| `clawsynapse.transfer.<targetNodeId>.complete` | 声明传输完成 |
+| `clawsynapse.transfer.<targetNodeId>.abort` | 中止传输 |
 
 ### `transfer.start`
 
@@ -812,18 +846,34 @@ type Envelope struct {
 - `pendingResponses`
 - `nextCursor` 或 `drained`
 
-### `clawsynapse.control.trust.respond`
+### `clawsynapse.control.trust.response`
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `messageId` | `string` | 是 | 控制面响应 ID |
-| `messageType` | `string` | 是 | 固定为 `control.trust.respond` |
+| `messageType` | `string` | 是 | 固定为 `control.trust.response` |
 | `nodeId` | `string` | 是 | 当前节点 ID |
 | `requestId` | `string` | 是 | 对应 trust request |
 | `decision` | `string` | 是 | `approve` 或 `reject` |
 | `reason` | `string` | 否 | 审批备注 |
 | `ts` | `number` | 是 | 响应时间 |
 | `signature` | `string` | 是 | 节点签名 |
+
+### `clawsynapse.control.auth.poll`
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `messageId` | `string` | 是 | 轮询请求 ID |
+| `messageType` | `string` | 是 | 固定为 `control.auth.poll` |
+| `nodeId` | `string` | 是 | 当前节点 ID |
+| `ts` | `number` | 是 | 请求时间 |
+| `signature` | `string` | 是 | 节点签名 |
+
+返回体建议包含：
+
+- `pendingChallenges`
+- `pendingResponses`
+- `nextCursor` 或 `drained`
 
 ## 待补充模块
 

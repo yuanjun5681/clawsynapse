@@ -55,7 +55,7 @@ clawsynapsed 启动
     │
     ├─ 1. 生成或加载 Ed25519 密钥对
     ├─ 2. 连接 NATS
-    ├─ 3. 订阅 clawsynapse.discovery.announce
+    ├─ 3. 订阅 clawsynapse.discovery.global.announce
     ├─ 4. 发布自身注册信息
     ├─ 5. 启动心跳定时器
     │

@@ -47,7 +47,7 @@ POST /v1/request
 
 ```json
 {
-  "subject": "clawsynapse.broadcast.task-queue",
+  "subject": "clawsynapse.pubsub.tasks.queue.publish",
   "message": "新任务已就绪"
 }
 ```
@@ -63,7 +63,7 @@ POST /v1/request
     "agentProduct": "openclaw",
     "version": "2026.3.9",
     "capabilities": ["chat", "tools"],
-    "inbox": "clawsynapse.agent.node-beta.inbox",
+    "inbox": "clawsynapse.msg.node-beta.inbox",
     "authStatus": "authenticated",
     "lastSeen": "2026-03-11T10:00:15Z",
     "metadata": { "hostname": "server-2", "channels": ["slack"] }
