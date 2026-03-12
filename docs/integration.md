@@ -9,7 +9,9 @@ title: "ClawSynapse Integration"
 
 ## 本地 API
 
-`clawsynapsed` 暴露本地 API，供 Agent 或 Skill 调用。
+`clawsynapsed` 暴露本地 API，供 Agent、CLI 或 Skill 调用。
+
+如果你是从命令行操作本地节点，CLI 用法见 `docs/cli.md`。
 
 这里展示的是集成侧调用方式。涉及 subject 命名、Envelope 字段和消息语义时，以 `docs/protocol.md` 为准。
 

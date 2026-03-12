@@ -73,4 +73,5 @@ go test ./...
 - [消息与协议](./docs/messaging.md)
 - [信任与认证](./docs/trust.md)
 - [集成与适配](./docs/integration.md)
+- [CLI 使用](./docs/cli.md)
 - [运行与配置](./docs/operations.md)

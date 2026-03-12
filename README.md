@@ -73,4 +73,5 @@ Common environment variables:
 - [Messaging](./docs/messaging.md)
 - [Trust](./docs/trust.md)
 - [Integration](./docs/integration.md)
+- [CLI](./docs/cli.md)
 - [Operations](./docs/operations.md)

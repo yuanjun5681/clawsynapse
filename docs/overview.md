@@ -25,6 +25,7 @@ ClawSynapse 采用分层命名：
 - [消息与协议](./messaging.md)
 - [信任与认证](./trust.md)
 - [集成与适配](./integration.md)
+- [CLI 使用](./cli.md)
 - [运行与配置](./operations.md)
 
 建议阅读顺序：
@@ -34,7 +35,8 @@ ClawSynapse 采用分层命名：
 3. `docs/messaging.md`
 4. `docs/trust.md`
 5. `docs/integration.md`
-6. `docs/operations.md`
+6. `docs/cli.md`
+7. `docs/operations.md`
 
 ## 架构总览
 
