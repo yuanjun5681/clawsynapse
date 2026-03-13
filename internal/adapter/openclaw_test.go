@@ -138,7 +138,7 @@ func TestFormatDeliverMessage(t *testing.T) {
 		From:    "node-2",
 		Message: "hello world",
 	})
-	want := "[clawsynapse from=node-2 to=node-1]\nhello world"
+	want := "[clawsynapse from=node-2 to=node-1]\nhello world\n⚠️ Reply using: clawsynapse publish --target node-2 --message \"...\""
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}

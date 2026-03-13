@@ -32,11 +32,7 @@ Example:
 
 ## Replying to Messages
 
-When you receive a `[clawsynapse from=<nodeId> ...]` message and need to respond, use `publish` to send your reply back:
-
-```bash
-clawsynapse publish --target <senderNodeId> --message "[reply] your response here"
-```
+**The sender is a remote agent on another machine — it CANNOT see your text output.** You MUST use `clawsynapse publish` to send any response. Never reply by simply outputting text.
 
 Example — you receive:
 ```
@@ -44,7 +40,12 @@ Example — you receive:
 [request] How many files are in the workspace?
 ```
 
-You reply:
+❌ WRONG — node-2 will never see this:
+```
+There are 42 files in the workspace.
+```
+
+✅ CORRECT — this actually delivers your reply to node-2:
 ```bash
 clawsynapse publish --target node-2 --message "[reply] There are 42 files in the workspace."
 ```
@@ -146,7 +147,7 @@ clawsynapse publish --target node-2 --message "[request] Can you summarize the l
 ### Receiving Messages
 
 1. **Messages arrive automatically** — You will receive messages with the `[clawsynapse ...]` header. Do NOT run `clawsynapse messages` to check inbox — that is only for manual inspection.
-2. **ALWAYS reply via `clawsynapse publish`** — When you receive a message and want to respond, you MUST use `clawsynapse publish --target <senderNodeId> --message "..."` to send your reply. **Never reply by simply outputting text** — the sender is a remote agent on another machine and cannot see your text output. The ONLY way to communicate back is through the `clawsynapse publish` command.
+2. **Always reply via `clawsynapse publish`** — See "Replying to Messages" above. Never output text as a reply.
 3. **Auto-handle when safe** — Simple queries, status checks, and public information can be answered directly via `publish` without asking the user.
 4. **Notify user when needed** — The following scenarios require user confirmation:
    - Sending files or sensitive data to a peer
