@@ -89,6 +89,10 @@ func (s *Service) StartChallenge(ctx context.Context, targetNode string) error {
 
 	if s.trustMode == "open" {
 		_ = s.peers.SetAuthStatus(targetNode, types.AuthAuthenticated)
+		s.log.Info("authentication accepted in open mode",
+			slog.String("event", "auth.challenge.skipped"),
+			slog.String("peer", targetNode),
+		)
 		return nil
 	}
 
@@ -128,6 +132,11 @@ func (s *Service) StartChallenge(ctx context.Context, targetNode string) error {
 		_ = s.peers.SetAuthStatus(targetNode, types.AuthSeen)
 		return err
 	}
+	s.log.Info("authentication challenge sent",
+		slog.String("event", "auth.challenge.sent"),
+		slog.String("peer", targetNode),
+		slog.String("messageId", challengeID),
+	)
 
 	select {
 	case <-ctx.Done():
@@ -137,9 +146,20 @@ func (s *Service) StartChallenge(ctx context.Context, targetNode string) error {
 	case err := <-waitCh:
 		if err != nil {
 			_ = s.peers.SetAuthStatus(targetNode, types.AuthRejected)
+			s.log.Warn("authentication challenge failed",
+				slog.String("event", "auth.challenge.failed"),
+				slog.String("peer", targetNode),
+				slog.String("messageId", challengeID),
+				slog.String("error", err.Error()),
+			)
 			return err
 		}
 		_ = s.peers.SetAuthStatus(targetNode, types.AuthAuthenticated)
+		s.log.Info("authentication challenge completed",
+			slog.String("event", "auth.challenge.completed"),
+			slog.String("peer", targetNode),
+			slog.String("messageId", challengeID),
+		)
 		return nil
 	}
 }
@@ -159,6 +179,11 @@ func (s *Service) handleChallengeRequest(subject string, data []byte) {
 		s.log.Warn("invalid challenge request", slog.String("subject", subject), slog.String("error", err.Error()))
 		return
 	}
+	s.log.Info("authentication challenge request received",
+		slog.String("event", "auth.challenge.received"),
+		slog.String("peer", req.From),
+		slog.String("messageId", req.MessageID),
+	)
 
 	if s.trustMode != "open" && s.replay != nil {
 		if err := s.replay.CheckAndRemember("auth:request:message:"+req.MessageID, req.Ts); err != nil {
@@ -207,6 +232,12 @@ func (s *Service) handleChallengeRequest(subject string, data []byte) {
 		s.log.Warn("publish challenge response failed", slog.String("peer", req.From), slog.String("error", err.Error()))
 		return
 	}
+	s.log.Info("authentication challenge response sent",
+		slog.String("event", "auth.challenge.response.sent"),
+		slog.String("peer", req.From),
+		slog.String("messageId", resp.MessageID),
+		slog.String("challengeRef", req.MessageID),
+	)
 
 	s.savePendingAck(resp.MessageID, pendingAck{
 		challengeRef: resp.MessageID,
@@ -229,6 +260,11 @@ func (s *Service) handleChallengeResponse(subject string, data []byte) {
 	}
 	if s.trustMode == "open" {
 		s.ensurePeerState(resp.From, types.AuthAuthenticated)
+		s.log.Info("authentication response accepted in open mode",
+			slog.String("event", "auth.challenge.response.accepted"),
+			slog.String("peer", resp.From),
+			slog.String("messageId", resp.MessageID),
+		)
 		return
 	}
 
@@ -287,6 +323,12 @@ func (s *Service) handleChallengeResponse(subject string, data []byte) {
 		s.failChallenge(resp.ChallengeRef, p, err)
 		return
 	}
+	s.log.Info("authentication challenge response verified",
+		slog.String("event", "auth.challenge.response.verified"),
+		slog.String("peer", resp.From),
+		slog.String("messageId", resp.MessageID),
+		slog.String("challengeRef", resp.ChallengeRef),
+	)
 
 	p.resultCh <- nil
 	s.clearPending(resp.ChallengeRef)
@@ -316,6 +358,11 @@ func (s *Service) handleChallengeAck(_ string, data []byte) {
 	}
 	if s.trustMode == "open" {
 		s.ensurePeerState(ack.From, types.AuthAuthenticated)
+		s.log.Info("authentication ack accepted in open mode",
+			slog.String("event", "auth.challenge.ack.accepted"),
+			slog.String("peer", ack.From),
+			slog.String("messageId", ack.MessageID),
+		)
 		return
 	}
 
@@ -343,6 +390,12 @@ func (s *Service) handleChallengeAck(_ string, data []byte) {
 	}
 
 	_ = s.peers.SetAuthStatus(ack.From, types.AuthAuthenticated)
+	s.log.Info("authentication ack verified",
+		slog.String("event", "auth.challenge.ack.verified"),
+		slog.String("peer", ack.From),
+		slog.String("messageId", ack.MessageID),
+		slog.String("challengeRef", ack.ChallengeRef),
+	)
 }
 
 func (s *Service) failChallenge(challengeRef string, p *pendingChallenge, err error) {

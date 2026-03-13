@@ -78,7 +78,12 @@ func (s *Service) Start() error {
 	if _, err := s.bus.Subscribe(inboxSubject, s.handleInbox); err != nil {
 		return err
 	}
-	_, err := s.bus.Subscribe(s.replySubject(), s.handleReply)
+	s.log.Debug("subscribed to inbox", slog.String("event", "message.subscribe"), slog.String("subject", inboxSubject))
+	replySubject := s.replySubject()
+	_, err := s.bus.Subscribe(replySubject, s.handleReply)
+	if err == nil {
+		s.log.Debug("subscribed to reply inbox", slog.String("event", "message.subscribe"), slog.String("subject", replySubject))
+	}
 	return err
 }
 
@@ -219,6 +224,13 @@ func (s *Service) handleInbox(subject string, data []byte) {
 	}
 
 	if s.trustMode == "open" {
+		s.log.Info("message received",
+			slog.String("event", "message.received"),
+			slog.String("from", env.From),
+			slog.String("messageId", env.ID),
+			slog.String("messageType", env.Type),
+			slog.String("requestId", env.RequestID),
+		)
 		s.acceptInbox(env)
 		s.maybeReply(env)
 		return
@@ -244,6 +256,13 @@ func (s *Service) handleInbox(subject string, data []byte) {
 		return
 	}
 
+	s.log.Info("message received",
+		slog.String("event", "message.received"),
+		slog.String("from", env.From),
+		slog.String("messageId", env.ID),
+		slog.String("messageType", env.Type),
+		slog.String("requestId", env.RequestID),
+	)
 	s.acceptInbox(env)
 	s.maybeReply(env)
 }
@@ -279,6 +298,13 @@ func (s *Service) handleReply(subject string, data []byte) {
 		}
 	}
 
+	s.log.Info("reply received",
+		slog.String("event", "message.reply.received"),
+		slog.String("from", env.From),
+		slog.String("messageId", env.ID),
+		slog.String("requestId", env.RequestID),
+		slog.String("correlationId", env.CorrelationID),
+	)
 	s.dispatchReply(env)
 }
 
@@ -313,6 +339,13 @@ func (s *Service) maybeReply(env protocol.MessageEnvelope) {
 	if err := s.bus.PublishJSON(env.ReplyTo, reply); err != nil {
 		s.log.Warn("publish reply failed", slog.String("to", env.From), slog.String("requestId", env.RequestID), slog.String("error", err.Error()))
 	}
+	s.log.Info("reply sent",
+		slog.String("event", "message.reply.sent"),
+		slog.String("to", env.From),
+		slog.String("messageId", reply.ID),
+		slog.String("requestId", env.RequestID),
+		slog.String("correlationId", env.ID),
+	)
 }
 
 func (s *Service) buildReply(env protocol.MessageEnvelope) (protocol.MessageEnvelope, error) {
@@ -378,6 +411,12 @@ func (s *Service) dispatchReply(env protocol.MessageEnvelope) {
 
 	select {
 	case pending.resultCh <- RequestResult{RequestID: env.RequestID, MessageID: env.CorrelationID, From: env.From, Reply: env.Content, RunID: runIDFromMetadata(env.Metadata)}:
+		s.log.Info("reply dispatched to pending request",
+			slog.String("event", "message.reply.dispatched"),
+			slog.String("from", env.From),
+			slog.String("requestId", env.RequestID),
+			slog.String("correlationId", env.CorrelationID),
+		)
 	default:
 	}
 }

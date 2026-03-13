@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +21,9 @@ type fileConfig struct {
 	HeartbeatInterval string   `yaml:"heartbeatInterval"`
 	AnnounceTTL       string   `yaml:"announceTtl"`
 	TrustMode         string   `yaml:"trustMode"`
+	LogLevel          string   `yaml:"logLevel"`
+	LogFormat         string   `yaml:"logFormat"`
+	LogAddSource      *bool    `yaml:"logAddSource"`
 }
 
 func loadConfigValues(path string, required bool) (configValues, error) {
@@ -49,6 +53,11 @@ func loadConfigValues(path string, required bool) (configValues, error) {
 		IdentityKeyPath: strings.TrimSpace(cfg.IdentityKeyPath),
 		IdentityPubPath: strings.TrimSpace(cfg.IdentityPubPath),
 		TrustMode:       strings.TrimSpace(cfg.TrustMode),
+		LogLevel:        strings.TrimSpace(cfg.LogLevel),
+		LogFormat:       strings.TrimSpace(cfg.LogFormat),
+	}
+	if cfg.LogAddSource != nil {
+		values.LogAddSource = *cfg.LogAddSource
 	}
 
 	if cfg.HeartbeatInterval != "" {
@@ -119,6 +128,9 @@ func loadValuesFromMap(values map[string]string) configValues {
 		Heartbeat:       parseDurationValue(values["HEARTBEAT_INTERVAL_MS"], 0),
 		AnnounceTTL:     parseDurationValue(values["ANNOUNCE_TTL_MS"], 0),
 		TrustMode:       strings.TrimSpace(values["TRUST_MODE"]),
+		LogLevel:        strings.TrimSpace(values["LOG_LEVEL"]),
+		LogFormat:       strings.TrimSpace(values["LOG_FORMAT"]),
+		LogAddSource:    parseBoolValue(values["LOG_ADD_SOURCE"]),
 	}
 }
 
@@ -188,4 +200,16 @@ func cloneStrings(in []string) []string {
 		return nil
 	}
 	return out
+}
+
+func parseBoolValue(v string) bool {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return false
+	}
+	ok, err := strconv.ParseBool(v)
+	if err != nil {
+		return false
+	}
+	return ok
 }

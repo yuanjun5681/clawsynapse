@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"clawsynapse/internal/app"
 	"clawsynapse/internal/config"
+	"clawsynapse/internal/logging"
 )
 
 func main() {
@@ -27,17 +29,37 @@ func main() {
 		return
 	}
 
+	log := logging.New(logging.Options{
+		Level:     cfg.LogLevel,
+		Format:    cfg.LogFormat,
+		AddSource: cfg.LogAddSource,
+	}).With(
+		slog.String("service", "clawsynapsed"),
+		slog.String("nodeId", cfg.NodeID),
+	)
+
 	a, err := app.New(cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "bootstrap error: %v\n", err)
+		log.Error("bootstrap failed", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 
+	go func() {
+		sig := <-sigCh
+		log.Info("shutdown signal received", slog.String("signal", sig.String()))
+		cancel()
+	}()
+
+	log.Info("daemon starting")
 	if err := a.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		fmt.Fprintf(os.Stderr, "run error: %v\n", err)
+		log.Error("daemon stopped with error", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
+	log.Info("daemon stopped")
 }

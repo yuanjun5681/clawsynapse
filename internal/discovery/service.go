@@ -103,7 +103,11 @@ func (s *Service) publishAnnounce() error {
 		Ts:           time.Now().UnixMilli(),
 		TTLms:        s.ttl.Milliseconds(),
 	}
-	return s.bus.PublishJSON(announceSubject, msg)
+	if err := s.bus.PublishJSON(announceSubject, msg); err != nil {
+		return err
+	}
+	s.log.Debug("announce published", slog.String("event", "peer.announce.sent"), slog.String("subject", announceSubject), slog.Int64("ttlMs", msg.TTLms))
+	return nil
 }
 
 func (s *Service) publishDepart(reason string) error {
@@ -133,7 +137,8 @@ func (s *Service) handleAnnounce(_ string, data []byte) {
 		"publicKey": msg.PublicKey,
 		"ttlMs":     msg.TTLms,
 	}
-	if existing, ok := s.peers.Get(msg.NodeID); ok {
+	existing, ok := s.peers.Get(msg.NodeID)
+	if ok {
 		authStatus = existing.AuthStatus
 		trustStatus = existing.TrustStatus
 		if existing.Metadata != nil {
@@ -160,6 +165,33 @@ func (s *Service) handleAnnounce(_ string, data []byte) {
 		LastSeenMs:   msg.Ts,
 		Metadata:     metadata,
 	})
+	if !ok {
+		s.log.Info("peer discovered",
+			slog.String("event", "peer.discovered"),
+			slog.String("peer", msg.NodeID),
+			slog.String("inbox", msg.Inbox),
+			slog.String("version", msg.Version),
+			slog.String("agentProduct", msg.AgentProduct),
+			slog.String("trustStatus", trustStatus),
+			slog.String("authStatus", authStatus),
+		)
+	} else if existing.Inbox != msg.Inbox || existing.Version != msg.Version || existing.AgentProduct != msg.AgentProduct {
+		s.log.Info("peer refreshed",
+			slog.String("event", "peer.refreshed"),
+			slog.String("peer", msg.NodeID),
+			slog.String("inbox", msg.Inbox),
+			slog.String("version", msg.Version),
+			slog.String("agentProduct", msg.AgentProduct),
+			slog.String("trustStatus", trustStatus),
+			slog.String("authStatus", authStatus),
+		)
+	} else {
+		s.log.Debug("peer heartbeat received",
+			slog.String("event", "peer.heartbeat.received"),
+			slog.String("peer", msg.NodeID),
+			slog.Int64("ts", msg.Ts),
+		)
+	}
 
 	s.maybeAutoAuthenticate(msg.NodeID)
 }
@@ -219,6 +251,10 @@ func (s *Service) maybeAutoAuthenticate(nodeID string) {
 	}
 	s.authing[nodeID] = struct{}{}
 	s.authMu.Unlock()
+	s.log.Info("starting automatic authentication",
+		slog.String("event", "auth.auto.start"),
+		slog.String("peer", nodeID),
+	)
 
 	go func() {
 		defer s.clearAutoAuth(nodeID)
@@ -248,6 +284,11 @@ func (s *Service) handleDepart(_ string, data []byte) {
 		return
 	}
 	s.peers.Remove(msg.NodeID)
+	s.log.Info("peer departed",
+		slog.String("event", "peer.departed"),
+		slog.String("peer", msg.NodeID),
+		slog.String("reason", msg.Reason),
+	)
 }
 
 func (s *Service) gc() {
@@ -262,6 +303,12 @@ func (s *Service) gc() {
 		}
 		if now-peer.LastSeenMs > ttlMs {
 			s.peers.Remove(peer.NodeID)
+			s.log.Info("peer expired",
+				slog.String("event", "peer.expired"),
+				slog.String("peer", peer.NodeID),
+				slog.Int64("lastSeenMs", peer.LastSeenMs),
+				slog.Int64("ttlMs", ttlMs),
+			)
 		}
 	}
 }

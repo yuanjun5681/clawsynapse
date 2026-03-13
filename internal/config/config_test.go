@@ -8,8 +8,10 @@ import (
 
 func TestLoadFromOSReadsHomeConfig(t *testing.T) {
 	home := t.TempDir()
+	project := t.TempDir()
 	t.Setenv("HOME", home)
 	clearConfigEnv(t)
+	chdirTempProject(t, project)
 
 	configDir := filepath.Join(home, ".clawsynapse")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
@@ -42,6 +44,12 @@ func TestLoadFromOSReadsHomeConfig(t *testing.T) {
 	if cfg.AnnounceTTL != "45s" {
 		t.Fatalf("expected announce ttl 45s, got %q", cfg.AnnounceTTL)
 	}
+	if cfg.LogLevel != "info" {
+		t.Fatalf("expected default log level info, got %q", cfg.LogLevel)
+	}
+	if cfg.LogFormat != "json" {
+		t.Fatalf("expected default log format json, got %q", cfg.LogFormat)
+	}
 }
 
 func TestLoadFromOSMergesDotEnvEnvAndFlags(t *testing.T) {
@@ -61,7 +69,7 @@ func TestLoadFromOSMergesDotEnvEnvAndFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := os.WriteFile(filepath.Join(project, ".env"), []byte("NODE_ID=dotenv-node\nTRUST_MODE=open\nNATS_SERVERS=nats://10.0.0.2:4222\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(project, ".env"), []byte("NODE_ID=dotenv-node\nTRUST_MODE=open\nNATS_SERVERS=nats://10.0.0.2:4222\nLOG_LEVEL=debug\nLOG_FORMAT=text\nLOG_ADD_SOURCE=true\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -93,6 +101,15 @@ func TestLoadFromOSMergesDotEnvEnvAndFlags(t *testing.T) {
 	if len(cfg.NATSServers) != 1 || cfg.NATSServers[0] != "nats://10.0.0.2:4222" {
 		t.Fatalf("expected dotenv nats servers, got %#v", cfg.NATSServers)
 	}
+	if cfg.LogLevel != "debug" {
+		t.Fatalf("expected dotenv log level, got %q", cfg.LogLevel)
+	}
+	if cfg.LogFormat != "text" {
+		t.Fatalf("expected dotenv log format, got %q", cfg.LogFormat)
+	}
+	if !cfg.LogAddSource {
+		t.Fatal("expected dotenv log add source to be true")
+	}
 }
 
 func TestLoadFromOSUsesExplicitConfigPath(t *testing.T) {
@@ -100,6 +117,7 @@ func TestLoadFromOSUsesExplicitConfigPath(t *testing.T) {
 	project := t.TempDir()
 	t.Setenv("HOME", home)
 	clearConfigEnv(t)
+	chdirTempProject(t, project)
 
 	customPath := filepath.Join(project, "custom.yaml")
 	content := []byte("nodeId: custom-node\nnatsServers:\n  - nats://10.0.0.3:4222\n")
@@ -132,7 +150,24 @@ func clearConfigEnv(t *testing.T) {
 		"HEARTBEAT_INTERVAL_MS",
 		"ANNOUNCE_TTL_MS",
 		"TRUST_MODE",
+		"LOG_LEVEL",
+		"LOG_FORMAT",
+		"LOG_ADD_SOURCE",
 	} {
 		t.Setenv(key, "")
 	}
+}
+
+func chdirTempProject(t *testing.T, dir string) {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(wd)
+	})
 }

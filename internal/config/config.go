@@ -16,6 +16,8 @@ const (
 	defaultHeartbeatInterval = 15 * time.Second
 	defaultAnnounceTTL       = 30 * time.Second
 	defaultTrustMode         = "tofu"
+	defaultLogLevel          = "info"
+	defaultLogFormat         = "json"
 )
 
 type Config struct {
@@ -28,6 +30,9 @@ type Config struct {
 	HeartbeatInterval string   `json:"heartbeatInterval"`
 	AnnounceTTL       string   `json:"announceTtl"`
 	TrustMode         string   `json:"trustMode"`
+	LogLevel          string   `json:"logLevel"`
+	LogFormat         string   `json:"logFormat"`
+	LogAddSource      bool     `json:"logAddSource"`
 	CheckConfig       bool     `json:"checkConfig"`
 }
 
@@ -41,6 +46,9 @@ type runtimeConfig struct {
 	Heartbeat       time.Duration
 	AnnounceTTL     time.Duration
 	TrustMode       string
+	LogLevel        string
+	LogFormat       string
+	LogAddSource    bool
 	CheckConfig     bool
 }
 
@@ -54,6 +62,9 @@ type configValues struct {
 	Heartbeat       time.Duration
 	AnnounceTTL     time.Duration
 	TrustMode       string
+	LogLevel        string
+	LogFormat       string
+	LogAddSource    bool
 }
 
 func (c Config) Runtime() runtimeConfig {
@@ -69,6 +80,9 @@ func (c Config) Runtime() runtimeConfig {
 		Heartbeat:       h,
 		AnnounceTTL:     t,
 		TrustMode:       c.TrustMode,
+		LogLevel:        c.LogLevel,
+		LogFormat:       c.LogFormat,
+		LogAddSource:    c.LogAddSource,
 		CheckConfig:     c.CheckConfig,
 	}
 }
@@ -106,6 +120,9 @@ func LoadFromOS(args []string) (Config, error) {
 		heartbeat       = fs.Duration("heartbeat", merged.Heartbeat, "announce heartbeat interval")
 		announceTTL     = fs.Duration("announce-ttl", merged.AnnounceTTL, "announce ttl")
 		trustMode       = fs.String("trust-mode", merged.TrustMode, "trust mode: open|tofu|explicit")
+		logLevel        = fs.String("log-level", merged.LogLevel, "log level: debug|info|warn|error")
+		logFormat       = fs.String("log-format", merged.LogFormat, "log format: json|text")
+		logAddSource    = fs.Bool("log-add-source", merged.LogAddSource, "include source location in logs")
 		_               = fs.String("config", configPath, "config file path")
 		checkConfig     = fs.Bool("check-config", false, "print config and exit")
 	)
@@ -126,6 +143,14 @@ func LoadFromOS(args []string) (Config, error) {
 	mode := strings.ToLower(strings.TrimSpace(*trustMode))
 	if mode != "open" && mode != "tofu" && mode != "explicit" {
 		return Config{}, errors.New("trust mode must be one of: open|tofu|explicit")
+	}
+	level := strings.ToLower(strings.TrimSpace(*logLevel))
+	if level != "debug" && level != "info" && level != "warn" && level != "error" {
+		return Config{}, errors.New("log level must be one of: debug|info|warn|error")
+	}
+	format := strings.ToLower(strings.TrimSpace(*logFormat))
+	if format != "json" && format != "text" {
+		return Config{}, errors.New("log format must be one of: json|text")
 	}
 
 	resolvedDataDir, err := expandPath(*dataDir)
@@ -151,6 +176,9 @@ func LoadFromOS(args []string) (Config, error) {
 		HeartbeatInterval: heartbeat.String(),
 		AnnounceTTL:       announceTTL.String(),
 		TrustMode:         mode,
+		LogLevel:          level,
+		LogFormat:         format,
+		LogAddSource:      *logAddSource,
 		CheckConfig:       *checkConfig,
 	}, nil
 }
@@ -165,6 +193,8 @@ func defaultConfigValues(defaultDataDir string) configValues {
 		Heartbeat:       defaultHeartbeatInterval,
 		AnnounceTTL:     defaultAnnounceTTL,
 		TrustMode:       defaultTrustMode,
+		LogLevel:        defaultLogLevel,
+		LogFormat:       defaultLogFormat,
 	}
 }
 
@@ -195,6 +225,15 @@ func mergeConfigValues(base, override configValues) configValues {
 	}
 	if strings.TrimSpace(override.TrustMode) != "" {
 		base.TrustMode = strings.TrimSpace(override.TrustMode)
+	}
+	if strings.TrimSpace(override.LogLevel) != "" {
+		base.LogLevel = strings.TrimSpace(override.LogLevel)
+	}
+	if strings.TrimSpace(override.LogFormat) != "" {
+		base.LogFormat = strings.TrimSpace(override.LogFormat)
+	}
+	if override.LogAddSource {
+		base.LogAddSource = true
 	}
 	return base
 }

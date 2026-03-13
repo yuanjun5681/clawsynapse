@@ -213,6 +213,11 @@ func (s *Service) handleTrustRequest(subject string, data []byte) {
 		return
 	}
 	_ = s.peers.SetTrustStatus(req.From, types.TrustPending)
+	s.log.Info("trust request received",
+		slog.String("event", "trust.request.received"),
+		slog.String("peer", req.From),
+		slog.String("requestId", req.RequestID),
+	)
 }
 
 func (s *Service) handleTrustResponse(subject string, data []byte) {
@@ -265,6 +270,12 @@ func (s *Service) handleTrustResponse(subject string, data []byte) {
 	if err := s.persistLocked(); err != nil {
 		s.log.Warn("persist trust response failed", slog.String("error", err.Error()))
 	}
+	s.log.Info("trust response applied",
+		slog.String("event", "trust.response.applied"),
+		slog.String("peer", resp.From),
+		slog.String("requestId", resp.RequestID),
+		slog.String("decision", resp.Decision),
+	)
 }
 
 func (s *Service) handleTrustRevoke(subject string, data []byte) {
@@ -302,6 +313,11 @@ func (s *Service) handleTrustRevoke(subject string, data []byte) {
 		s.log.Warn("persist trust revoke failed", slog.String("error", err.Error()))
 	}
 	_ = s.peers.SetTrustStatus(rev.From, types.TrustRevoked)
+	s.log.Info("trust revoked by peer",
+		slog.String("event", "trust.revoked"),
+		slog.String("peer", rev.From),
+		slog.String("reason", rev.Reason),
+	)
 }
 
 func (s *Service) respond(requestID, decision, reason string) error {
@@ -351,6 +367,12 @@ func (s *Service) respond(requestID, decision, reason string) error {
 	if err := s.persistLocked(); err != nil {
 		return err
 	}
+	s.log.Info("trust decision sent",
+		slog.String("event", "trust.response.sent"),
+		slog.String("peer", pending.From),
+		slog.String("requestId", requestID),
+		slog.String("decision", decision),
+	)
 	return nil
 }
 

@@ -35,7 +35,14 @@ type App struct {
 }
 
 func New(cfg config.Config) (*App, error) {
-	log := logging.New("info")
+	log := logging.New(logging.Options{
+		Level:     cfg.LogLevel,
+		Format:    cfg.LogFormat,
+		AddSource: cfg.LogAddSource,
+	}).With(
+		slog.String("service", "clawsynapsed"),
+		slog.String("nodeId", cfg.NodeID),
+	)
 
 	fs := store.NewFSStore(cfg.DataDir)
 	if err := fs.EnsureLayout(); err != nil {
@@ -69,14 +76,14 @@ func New(cfg config.Config) (*App, error) {
 		return nil, fmt.Errorf("init replay guard: %w", err)
 	}
 
-	discoverySvc := discovery.NewService(log, bus, peers, fs, cfg.NodeID, base64.RawURLEncoding.EncodeToString(id.PublicKey), hb, ttl, cfg.TrustMode)
-	authSvc := auth.NewService(log, peers, bus, cfg.NodeID, id, replay, cfg.TrustMode)
+	discoverySvc := discovery.NewService(log.With(slog.String("component", "discovery")), bus, peers, fs, cfg.NodeID, base64.RawURLEncoding.EncodeToString(id.PublicKey), hb, ttl, cfg.TrustMode)
+	authSvc := auth.NewService(log.With(slog.String("component", "auth")), peers, bus, cfg.NodeID, id, replay, cfg.TrustMode)
 	discoverySvc.SetAutoAuthenticator(authSvc.StartChallenge)
-	trustSvc, err := trust.NewService(log, peers, bus, fs, cfg.NodeID, id)
+	trustSvc, err := trust.NewService(log.With(slog.String("component", "trust")), peers, bus, fs, cfg.NodeID, id)
 	if err != nil {
 		return nil, fmt.Errorf("init trust service: %w", err)
 	}
-	messagingSvc := messaging.NewService(log, peers, bus, cfg.NodeID, id, cfg.TrustMode)
+	messagingSvc := messaging.NewService(log.With(slog.String("component", "messaging")), peers, bus, cfg.NodeID, id, cfg.TrustMode)
 	defaultAdapter := adapter.NewDefaultAdapter(cfg.NodeID)
 	messagingSvc.SetRequestHandler(messaging.NewAdapterRequestHandler(defaultAdapter, 30*time.Second))
 	apiServer := api.NewServer(cfg.LocalAPIAddr, peers, authSvc, trustSvc, messagingSvc, bus)
@@ -106,18 +113,22 @@ func (a *App) Run(ctx context.Context) error {
 	if err := a.auth.Start(); err != nil {
 		return fmt.Errorf("start auth service: %w", err)
 	}
+	a.log.Info("auth subscriptions ready")
 	if err := a.trust.Start(); err != nil {
 		return fmt.Errorf("start trust service: %w", err)
 	}
+	a.log.Info("trust subscriptions ready")
 	if err := a.messaging.Start(); err != nil {
 		return fmt.Errorf("start messaging service: %w", err)
 	}
+	a.log.Info("messaging subscriptions ready")
 	if err := a.bus.FlushTimeout(3 * time.Second); err != nil {
 		a.log.Warn("nats flush timeout after control subscriptions", slog.String("error", err.Error()))
 	}
 	if err := a.discovery.Start(ctx); err != nil {
 		return fmt.Errorf("start discovery service: %w", err)
 	}
+	a.log.Info("discovery subscriptions ready")
 	if err := a.bus.FlushTimeout(3 * time.Second); err != nil {
 		a.log.Warn("nats flush timeout after discovery start", slog.String("error", err.Error()))
 	}
