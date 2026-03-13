@@ -255,6 +255,7 @@ func (s *Service) handleInbox(subject string, data []byte) {
 		)
 		s.acceptInbox(env)
 		s.maybeReply(env)
+		s.maybeDeliver(env)
 		return
 	}
 
@@ -289,6 +290,7 @@ func (s *Service) handleInbox(subject string, data []byte) {
 	)
 	s.acceptInbox(env)
 	s.maybeReply(env)
+	s.maybeDeliver(env)
 }
 
 func (s *Service) handleReply(subject string, data []byte) {
@@ -374,6 +376,41 @@ func (s *Service) maybeReply(env protocol.MessageEnvelope) {
 		logging.ContentLength(reply.Content),
 		logging.ContentPreview(reply.Content, contentPreviewLimit),
 	)
+}
+
+func (s *Service) maybeDeliver(env protocol.MessageEnvelope) {
+	if env.Type != "chat.message" {
+		return
+	}
+	handler := s.requestHandler()
+	if handler == nil {
+		return
+	}
+
+	go func() {
+		_, err := handler.HandleRequest(IncomingRequest{
+			MessageID:  env.ID,
+			From:       env.From,
+			To:         env.To,
+			Message:    env.Content,
+			SessionKey: env.SessionKey,
+			Metadata:   cloneMetadata(env.Metadata),
+		})
+		if err != nil {
+			s.log.Warn("deliver message to agent failed",
+				logging.Event("message.deliver.failed"),
+				logging.From(env.From),
+				logging.MessageID(env.ID),
+				logging.Error(err),
+			)
+			return
+		}
+		s.log.Info("message delivered to agent",
+			logging.Event("message.deliver.ok"),
+			logging.From(env.From),
+			logging.MessageID(env.ID),
+		)
+	}()
 }
 
 func (s *Service) buildReply(env protocol.MessageEnvelope) (protocol.MessageEnvelope, error) {
