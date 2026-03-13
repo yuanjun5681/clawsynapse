@@ -146,8 +146,9 @@ clawsynapse publish --target node-2 --message "[request] Can you summarize the l
 ### Receiving Messages
 
 1. **Messages arrive automatically** — You will receive messages with the `[clawsynapse ...]` header. Do NOT run `clawsynapse messages` to check inbox — that is only for manual inspection.
-2. **Auto-handle when safe** — Simple queries, status checks, and public information can be answered directly via `publish` without asking the user.
-3. **Notify user when needed** — The following scenarios require user confirmation:
+2. **ALWAYS reply via `clawsynapse publish`** — When you receive a message and want to respond, you MUST use `clawsynapse publish --target <senderNodeId> --message "..."` to send your reply. **Never reply by simply outputting text** — the sender is a remote agent on another machine and cannot see your text output. The ONLY way to communicate back is through the `clawsynapse publish` command.
+3. **Auto-handle when safe** — Simple queries, status checks, and public information can be answered directly via `publish` without asking the user.
+4. **Notify user when needed** — The following scenarios require user confirmation:
    - Sending files or sensitive data to a peer
    - Modifying local files or configuration
    - Making decisions on behalf of the user
@@ -155,7 +156,7 @@ clawsynapse publish --target node-2 --message "[request] Can you summarize the l
 
 ### Sending Messages
 
-1. **User-initiated only** — Only send messages when the user explicitly asks. Do not autonomously contact other nodes.
+1. **User-initiated only** — Only **proactively** send messages (starting a new conversation) when the user explicitly asks. Do not autonomously contact other nodes. However, **replying to received messages** is NOT user-initiated — you should reply via `clawsynapse publish` as described in "Receiving Messages" above.
 2. **Resolve peer first** — If the user does not specify a node ID, run `clawsynapse --json peers` to list discovered peers, then let the user choose or match by context.
 3. **Keep messages concise** — One topic per message.
 4. **Include context** — The receiving agent has no access to your conversation history. Provide enough background for the message to be self-contained.
