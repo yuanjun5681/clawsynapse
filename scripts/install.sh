@@ -12,7 +12,7 @@
 set -euo pipefail
 
 BINARY_NAME="clawsynapse"
-INSTALL_DIR="${HOME}/.clawsynapse/bin"
+INSTALL_DIR="/usr/local/bin"
 
 # --- 颜色 ---
 RED='\033[0;31m'
@@ -43,59 +43,19 @@ detect_platform() {
     echo "${os}-${arch}"
 }
 
-# --- 检测用户 shell 配置文件 ---
-detect_shell_rc() {
-    local shell_name
-    shell_name=$(basename "${SHELL:-/bin/bash}")
-
-    case "$shell_name" in
-        zsh)  echo "${HOME}/.zshrc" ;;
-        bash)
-            # macOS 用 .bash_profile，Linux 用 .bashrc
-            if [ "$(uname -s)" = "Darwin" ]; then
-                echo "${HOME}/.bash_profile"
-            else
-                echo "${HOME}/.bashrc"
-            fi
-            ;;
-        fish) echo "${HOME}/.config/fish/config.fish" ;;
-        *)    echo "${HOME}/.profile" ;;
-    esac
-}
-
-# --- 配置 PATH ---
-setup_path() {
-    # 已经在 PATH 中则跳过
-    case ":${PATH}:" in
-        *":${INSTALL_DIR}:"*) return 0 ;;
-    esac
-
-    local shell_rc
-    shell_rc=$(detect_shell_rc)
-    local shell_name
-    shell_name=$(basename "${SHELL:-/bin/bash}")
-
-    info "将 ${INSTALL_DIR} 添加到 PATH..."
-
-    local path_line
-    if [ "$shell_name" = "fish" ]; then
-        path_line="fish_add_path ${INSTALL_DIR}"
-    else
-        path_line="export PATH=\"${INSTALL_DIR}:\$PATH\""
+# --- 确保有写权限 ---
+ensure_writable() {
+    if [ -w "$INSTALL_DIR" ]; then
+        return 0
     fi
 
-    # 检查是否已写入过
-    if [ -f "$shell_rc" ] && grep -qF "$INSTALL_DIR" "$shell_rc" 2>/dev/null; then
-        info "PATH 配置已存在于 ${shell_rc}"
-    else
-        printf '\n# ClawSynapse CLI\n%s\n' "$path_line" >> "$shell_rc"
-        info "已写入 ${shell_rc}"
+    if ! command -v sudo >/dev/null 2>&1; then
+        error "无 ${INSTALL_DIR} 写权限且 sudo 不可用"
     fi
 
-    # 当前会话也生效
-    export PATH="${INSTALL_DIR}:${PATH}"
-
-    warn "新终端窗口自动生效，当前终端请执行: source ${shell_rc}"
+    info "需要 sudo 权限安装到 ${INSTALL_DIR}"
+    # 后续命令通过 $SUDO 前缀调用
+    SUDO="sudo"
 }
 
 # --- 检查已有安装 ---
@@ -162,11 +122,7 @@ do_install() {
     local src="$1"
     local dest="${INSTALL_DIR}/${BINARY_NAME}"
 
-    mkdir -p "$INSTALL_DIR"
-    install -m 755 "$src" "$dest"
-
-    # 配置 PATH
-    setup_path
+    ${SUDO:-} install -m 755 "$src" "$dest"
 
     # 验证
     if command -v "$BINARY_NAME" >/dev/null 2>&1; then
@@ -185,20 +141,7 @@ uninstall() {
     fi
 
     info "卸载: ${dest}"
-    rm -f "$dest"
-
-    # 清理空目录
-    rmdir "$INSTALL_DIR" 2>/dev/null || true
-    rmdir "${HOME}/.clawsynapse" 2>/dev/null || true
-
-    # 提示清理 shell 配置
-    local shell_rc
-    shell_rc=$(detect_shell_rc)
-    if [ -f "$shell_rc" ] && grep -qF "$INSTALL_DIR" "$shell_rc" 2>/dev/null; then
-        warn "请手动移除 ${shell_rc} 中的 PATH 配置:"
-        warn "  # ClawSynapse CLI"
-        warn "  export PATH=\"${INSTALL_DIR}:\$PATH\""
-    fi
+    ${SUDO:-} rm -f "$dest"
 
     info "卸载完成"
     exit 0
@@ -206,7 +149,10 @@ uninstall() {
 
 # --- 主流程 ---
 main() {
+    SUDO=""
+
     if [ "${1:-}" = "--uninstall" ] || [ "${1:-}" = "uninstall" ]; then
+        ensure_writable
         uninstall
     fi
 
@@ -217,6 +163,7 @@ main() {
     info "检测到平台: ${platform}"
 
     check_existing
+    ensure_writable
 
     # 优先从本地 dist/ 安装，失败则尝试 GitHub
     if ! install_from_local "$platform"; then
