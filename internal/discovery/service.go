@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"clawsynapse/internal/logging"
 	"clawsynapse/internal/natsbus"
 	"clawsynapse/internal/protocol"
 	"clawsynapse/internal/store"
@@ -79,7 +80,7 @@ func (s *Service) Start(ctx context.Context) error {
 				return
 			case <-heartbeatTicker.C:
 				if err := s.publishAnnounce(); err != nil {
-					s.log.Warn("publish announce failed", slog.String("error", err.Error()))
+					s.log.Warn("publish announce failed", logging.Error(err))
 				}
 			case <-gcTicker.C:
 				s.gc()
@@ -106,7 +107,7 @@ func (s *Service) publishAnnounce() error {
 	if err := s.bus.PublishJSON(announceSubject, msg); err != nil {
 		return err
 	}
-	s.log.Debug("announce published", slog.String("event", "peer.announce.sent"), slog.String("subject", announceSubject), slog.Int64("ttlMs", msg.TTLms))
+	s.log.Debug("announce published", logging.Event("peer.announce.sent"), logging.Subject(announceSubject), slog.Int64("ttlMs", msg.TTLms))
 	return nil
 }
 
@@ -124,7 +125,7 @@ func (s *Service) publishDepart(reason string) error {
 func (s *Service) handleAnnounce(_ string, data []byte) {
 	var msg protocol.DiscoveryAnnounce
 	if err := json.Unmarshal(data, &msg); err != nil {
-		s.log.Warn("decode announce failed", slog.String("error", err.Error()))
+		s.log.Warn("decode announce failed", logging.Error(err))
 		return
 	}
 	if msg.NodeID == s.nodeID {
@@ -145,7 +146,7 @@ func (s *Service) handleAnnounce(_ string, data []byte) {
 			if known, ok := existing.Metadata["publicKey"].(string); ok && known != "" {
 				if s.trustMode == "tofu" || s.trustMode == "explicit" {
 					if msg.PublicKey != "" && known != msg.PublicKey {
-						s.log.Warn("peer public key mismatch detected", slog.String("peer", msg.NodeID), slog.String("mode", s.trustMode))
+						s.log.Warn("peer public key mismatch detected", logging.Peer(msg.NodeID), slog.String("mode", s.trustMode))
 						authStatus = types.AuthRejected
 						metadata["publicKey"] = known
 					}
@@ -167,28 +168,28 @@ func (s *Service) handleAnnounce(_ string, data []byte) {
 	})
 	if !ok {
 		s.log.Info("peer discovered",
-			slog.String("event", "peer.discovered"),
-			slog.String("peer", msg.NodeID),
+			logging.Event("peer.discovered"),
+			logging.Peer(msg.NodeID),
 			slog.String("inbox", msg.Inbox),
 			slog.String("version", msg.Version),
 			slog.String("agentProduct", msg.AgentProduct),
-			slog.String("trustStatus", trustStatus),
-			slog.String("authStatus", authStatus),
+			logging.TrustStatus(trustStatus),
+			logging.AuthStatus(authStatus),
 		)
 	} else if existing.Inbox != msg.Inbox || existing.Version != msg.Version || existing.AgentProduct != msg.AgentProduct {
 		s.log.Info("peer refreshed",
-			slog.String("event", "peer.refreshed"),
-			slog.String("peer", msg.NodeID),
+			logging.Event("peer.refreshed"),
+			logging.Peer(msg.NodeID),
 			slog.String("inbox", msg.Inbox),
 			slog.String("version", msg.Version),
 			slog.String("agentProduct", msg.AgentProduct),
-			slog.String("trustStatus", trustStatus),
-			slog.String("authStatus", authStatus),
+			logging.TrustStatus(trustStatus),
+			logging.AuthStatus(authStatus),
 		)
 	} else {
 		s.log.Debug("peer heartbeat received",
-			slog.String("event", "peer.heartbeat.received"),
-			slog.String("peer", msg.NodeID),
+			logging.Event("peer.heartbeat.received"),
+			logging.Peer(msg.NodeID),
 			slog.Int64("ts", msg.Ts),
 		)
 	}
@@ -203,7 +204,7 @@ func (s *Service) persistedTrustStatus(nodeID string) string {
 
 	st, err := s.store.LoadTrustState()
 	if err != nil {
-		s.log.Warn("load trust state failed", slog.String("peer", nodeID), slog.String("error", err.Error()))
+		s.log.Warn("load trust state failed", logging.Peer(nodeID), logging.Error(err))
 		return types.TrustNone
 	}
 
@@ -252,8 +253,8 @@ func (s *Service) maybeAutoAuthenticate(nodeID string) {
 	s.authing[nodeID] = struct{}{}
 	s.authMu.Unlock()
 	s.log.Info("starting automatic authentication",
-		slog.String("event", "auth.auto.start"),
-		slog.String("peer", nodeID),
+		logging.Event("auth.auto.start"),
+		logging.Peer(nodeID),
 	)
 
 	go func() {
@@ -263,7 +264,7 @@ func (s *Service) maybeAutoAuthenticate(nodeID string) {
 		defer cancel()
 
 		if err := s.autoAuth(ctx, nodeID); err != nil {
-			s.log.Warn("auto auth challenge failed", slog.String("peer", nodeID), slog.String("error", err.Error()))
+			s.log.Warn("auto auth challenge failed", logging.Peer(nodeID), logging.Error(err))
 		}
 	}()
 }
@@ -277,7 +278,7 @@ func (s *Service) clearAutoAuth(nodeID string) {
 func (s *Service) handleDepart(_ string, data []byte) {
 	var msg protocol.DiscoveryDepart
 	if err := json.Unmarshal(data, &msg); err != nil {
-		s.log.Warn("decode depart failed", slog.String("error", err.Error()))
+		s.log.Warn("decode depart failed", logging.Error(err))
 		return
 	}
 	if msg.NodeID == s.nodeID {
@@ -285,8 +286,8 @@ func (s *Service) handleDepart(_ string, data []byte) {
 	}
 	s.peers.Remove(msg.NodeID)
 	s.log.Info("peer departed",
-		slog.String("event", "peer.departed"),
-		slog.String("peer", msg.NodeID),
+		logging.Event("peer.departed"),
+		logging.Peer(msg.NodeID),
 		slog.String("reason", msg.Reason),
 	)
 }
@@ -304,8 +305,8 @@ func (s *Service) gc() {
 		if now-peer.LastSeenMs > ttlMs {
 			s.peers.Remove(peer.NodeID)
 			s.log.Info("peer expired",
-				slog.String("event", "peer.expired"),
-				slog.String("peer", peer.NodeID),
+				logging.Event("peer.expired"),
+				logging.Peer(peer.NodeID),
 				slog.Int64("lastSeenMs", peer.LastSeenMs),
 				slog.Int64("ttlMs", ttlMs),
 			)

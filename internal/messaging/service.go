@@ -13,10 +13,13 @@ import (
 
 	"clawsynapse/internal/discovery"
 	"clawsynapse/internal/identity"
+	"clawsynapse/internal/logging"
 	"clawsynapse/internal/natsbus"
 	"clawsynapse/internal/protocol"
 	"clawsynapse/pkg/types"
 )
+
+const contentPreviewLimit = 160
 
 type PublishRequest struct {
 	TargetNode string
@@ -78,11 +81,11 @@ func (s *Service) Start() error {
 	if _, err := s.bus.Subscribe(inboxSubject, s.handleInbox); err != nil {
 		return err
 	}
-	s.log.Debug("subscribed to inbox", slog.String("event", "message.subscribe"), slog.String("subject", inboxSubject))
+	s.log.Debug("subscribed to inbox", logging.Event("message.subscribe"), logging.Subject(inboxSubject))
 	replySubject := s.replySubject()
 	_, err := s.bus.Subscribe(replySubject, s.handleReply)
 	if err == nil {
-		s.log.Debug("subscribed to reply inbox", slog.String("event", "message.subscribe"), slog.String("subject", replySubject))
+		s.log.Debug("subscribed to reply inbox", logging.Event("message.subscribe"), logging.Subject(replySubject))
 	}
 	return err
 }
@@ -124,6 +127,14 @@ func (s *Service) Publish(req PublishRequest) (string, error) {
 	if err := s.bus.PublishJSON(subject, env); err != nil {
 		return "", err
 	}
+	s.log.Info("message published",
+		logging.Event("message.sent"),
+		logging.To(req.TargetNode),
+		logging.MessageID(env.ID),
+		logging.MessageType(env.Type),
+		logging.ContentLength(req.Message),
+		logging.ContentPreview(req.Message, contentPreviewLimit),
+	)
 	return env.ID, nil
 }
 
@@ -187,6 +198,15 @@ func (s *Service) Request(req RequestRequest) (RequestResult, error) {
 		s.clearPendingRequest(requestID)
 		return RequestResult{}, err
 	}
+	s.log.Info("request message sent",
+		logging.Event("message.request.sent"),
+		logging.To(req.TargetNode),
+		logging.MessageID(messageID),
+		logging.RequestID(requestID),
+		logging.MessageType(env.Type),
+		logging.ContentLength(req.Message),
+		logging.ContentPreview(req.Message, contentPreviewLimit),
+	)
 
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -215,7 +235,7 @@ func (s *Service) RecentMessages(limit int) []protocol.MessageEnvelope {
 func (s *Service) handleInbox(subject string, data []byte) {
 	var env protocol.MessageEnvelope
 	if err := json.Unmarshal(data, &env); err != nil {
-		s.log.Warn("decode inbox message failed", slog.String("subject", subject), slog.String("error", err.Error()))
+		s.log.Warn("decode inbox message failed", logging.Subject(subject), logging.Error(err))
 		return
 	}
 
@@ -225,11 +245,13 @@ func (s *Service) handleInbox(subject string, data []byte) {
 
 	if s.trustMode == "open" {
 		s.log.Info("message received",
-			slog.String("event", "message.received"),
-			slog.String("from", env.From),
-			slog.String("messageId", env.ID),
-			slog.String("messageType", env.Type),
-			slog.String("requestId", env.RequestID),
+			logging.Event("message.received"),
+			logging.From(env.From),
+			logging.MessageID(env.ID),
+			logging.MessageType(env.Type),
+			logging.RequestID(env.RequestID),
+			logging.ContentLength(env.Content),
+			logging.ContentPreview(env.Content, contentPreviewLimit),
 		)
 		s.acceptInbox(env)
 		s.maybeReply(env)
@@ -238,30 +260,32 @@ func (s *Service) handleInbox(subject string, data []byte) {
 
 	peer, ok := s.peers.Get(env.From)
 	if !ok {
-		s.log.Warn("message sender not found", slog.String("from", env.From))
+		s.log.Warn("message sender not found", logging.From(env.From))
 		return
 	}
 	if peer.TrustStatus != types.TrustTrusted {
-		s.log.Warn("reject message from untrusted peer", slog.String("from", env.From), slog.String("trustStatus", peer.TrustStatus))
+		s.log.Warn("reject message from untrusted peer", logging.From(env.From), logging.TrustStatus(peer.TrustStatus))
 		return
 	}
 
 	pub, err := s.peerPublicKey(env.From)
 	if err != nil {
-		s.log.Warn("sender public key unavailable", slog.String("from", env.From), slog.String("error", err.Error()))
+		s.log.Warn("sender public key unavailable", logging.From(env.From), logging.Error(err))
 		return
 	}
 	if !identity.Verify(pub, []byte(s.signatureInput(env)), env.Sig) {
-		s.log.Warn("invalid message signature", slog.String("from", env.From), slog.String("id", env.ID))
+		s.log.Warn("invalid message signature", logging.From(env.From), logging.MessageID(env.ID))
 		return
 	}
 
 	s.log.Info("message received",
-		slog.String("event", "message.received"),
-		slog.String("from", env.From),
-		slog.String("messageId", env.ID),
-		slog.String("messageType", env.Type),
-		slog.String("requestId", env.RequestID),
+		logging.Event("message.received"),
+		logging.From(env.From),
+		logging.MessageID(env.ID),
+		logging.MessageType(env.Type),
+		logging.RequestID(env.RequestID),
+		logging.ContentLength(env.Content),
+		logging.ContentPreview(env.Content, contentPreviewLimit),
 	)
 	s.acceptInbox(env)
 	s.maybeReply(env)
@@ -270,7 +294,7 @@ func (s *Service) handleInbox(subject string, data []byte) {
 func (s *Service) handleReply(subject string, data []byte) {
 	var env protocol.MessageEnvelope
 	if err := json.Unmarshal(data, &env); err != nil {
-		s.log.Warn("decode reply message failed", slog.String("subject", subject), slog.String("error", err.Error()))
+		s.log.Warn("decode reply message failed", logging.Subject(subject), logging.Error(err))
 		return
 	}
 	if env.To != "" && env.To != s.nodeID {
@@ -280,30 +304,32 @@ func (s *Service) handleReply(subject string, data []byte) {
 	if s.trustMode != "open" {
 		peer, ok := s.peers.Get(env.From)
 		if !ok {
-			s.log.Warn("reply sender not found", slog.String("from", env.From))
+			s.log.Warn("reply sender not found", logging.From(env.From))
 			return
 		}
 		if peer.TrustStatus != types.TrustTrusted {
-			s.log.Warn("reject reply from untrusted peer", slog.String("from", env.From), slog.String("trustStatus", peer.TrustStatus))
+			s.log.Warn("reject reply from untrusted peer", logging.From(env.From), logging.TrustStatus(peer.TrustStatus))
 			return
 		}
 		pub, err := s.peerPublicKey(env.From)
 		if err != nil {
-			s.log.Warn("reply sender public key unavailable", slog.String("from", env.From), slog.String("error", err.Error()))
+			s.log.Warn("reply sender public key unavailable", logging.From(env.From), logging.Error(err))
 			return
 		}
 		if !identity.Verify(pub, []byte(s.signatureInput(env)), env.Sig) {
-			s.log.Warn("invalid reply signature", slog.String("from", env.From), slog.String("id", env.ID))
+			s.log.Warn("invalid reply signature", logging.From(env.From), logging.MessageID(env.ID))
 			return
 		}
 	}
 
 	s.log.Info("reply received",
-		slog.String("event", "message.reply.received"),
-		slog.String("from", env.From),
-		slog.String("messageId", env.ID),
-		slog.String("requestId", env.RequestID),
-		slog.String("correlationId", env.CorrelationID),
+		logging.Event("message.reply.received"),
+		logging.From(env.From),
+		logging.MessageID(env.ID),
+		logging.RequestID(env.RequestID),
+		logging.CorrelationID(env.CorrelationID),
+		logging.ContentLength(env.Content),
+		logging.ContentPreview(env.Content, contentPreviewLimit),
 	)
 	s.dispatchReply(env)
 }
@@ -333,18 +359,20 @@ func (s *Service) maybeReply(env protocol.MessageEnvelope) {
 
 	reply, err := s.buildReply(env)
 	if err != nil {
-		s.log.Warn("handle request failed", slog.String("from", env.From), slog.String("requestId", env.RequestID), slog.String("error", err.Error()))
+		s.log.Warn("handle request failed", logging.From(env.From), logging.RequestID(env.RequestID), logging.Error(err))
 		return
 	}
 	if err := s.bus.PublishJSON(env.ReplyTo, reply); err != nil {
-		s.log.Warn("publish reply failed", slog.String("to", env.From), slog.String("requestId", env.RequestID), slog.String("error", err.Error()))
+		s.log.Warn("publish reply failed", logging.To(env.From), logging.RequestID(env.RequestID), logging.Error(err))
 	}
 	s.log.Info("reply sent",
-		slog.String("event", "message.reply.sent"),
-		slog.String("to", env.From),
-		slog.String("messageId", reply.ID),
-		slog.String("requestId", env.RequestID),
-		slog.String("correlationId", env.ID),
+		logging.Event("message.reply.sent"),
+		logging.To(env.From),
+		logging.MessageID(reply.ID),
+		logging.RequestID(env.RequestID),
+		logging.CorrelationID(env.ID),
+		logging.ContentLength(reply.Content),
+		logging.ContentPreview(reply.Content, contentPreviewLimit),
 	)
 }
 
@@ -412,10 +440,10 @@ func (s *Service) dispatchReply(env protocol.MessageEnvelope) {
 	select {
 	case pending.resultCh <- RequestResult{RequestID: env.RequestID, MessageID: env.CorrelationID, From: env.From, Reply: env.Content, RunID: runIDFromMetadata(env.Metadata)}:
 		s.log.Info("reply dispatched to pending request",
-			slog.String("event", "message.reply.dispatched"),
-			slog.String("from", env.From),
-			slog.String("requestId", env.RequestID),
-			slog.String("correlationId", env.CorrelationID),
+			logging.Event("message.reply.dispatched"),
+			logging.From(env.From),
+			logging.RequestID(env.RequestID),
+			logging.CorrelationID(env.CorrelationID),
 		)
 	default:
 	}

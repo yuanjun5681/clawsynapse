@@ -14,6 +14,7 @@ import (
 
 	"clawsynapse/internal/discovery"
 	"clawsynapse/internal/identity"
+	"clawsynapse/internal/logging"
 	"clawsynapse/internal/natsbus"
 	"clawsynapse/internal/protocol"
 	"clawsynapse/internal/store"
@@ -171,24 +172,24 @@ func (s *Service) Revoke(targetNode, reason string) error {
 func (s *Service) handleTrustRequest(subject string, data []byte) {
 	var req protocol.TrustRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		s.log.Warn("decode trust request failed", slog.String("subject", subject), slog.String("error", err.Error()))
+		s.log.Warn("decode trust request failed", logging.Subject(subject), logging.Error(err))
 		return
 	}
 	if req.To != s.nodeID {
 		return
 	}
 	if err := protocol.ValidateMessage(subject, protocol.ControlMessage{MessageType: req.MessageType, To: req.To, Ts: req.Ts}, protocol.ValidateOptions{}); err != nil {
-		s.log.Warn("invalid trust request", slog.String("error", err.Error()))
+		s.log.Warn("invalid trust request", logging.Error(err))
 		return
 	}
 
 	peerPub, err := s.peerPublicKey(req.From)
 	if err != nil {
-		s.log.Warn("trust request peer key unavailable", slog.String("peer", req.From), slog.String("error", err.Error()))
+		s.log.Warn("trust request peer key unavailable", logging.Peer(req.From), logging.Error(err))
 		return
 	}
 	if !identity.Verify(peerPub, []byte(s.trustRequestSignatureInput(req)), req.Signature) {
-		s.log.Warn("invalid trust request signature", slog.String("peer", req.From))
+		s.log.Warn("invalid trust request signature", logging.Peer(req.From))
 		return
 	}
 
@@ -209,38 +210,38 @@ func (s *Service) handleTrustRequest(subject string, data []byte) {
 		ReceivedAtMs: now,
 	})
 	if err := s.persistLocked(); err != nil {
-		s.log.Warn("persist trust pending failed", slog.String("error", err.Error()))
+		s.log.Warn("persist trust pending failed", logging.Error(err))
 		return
 	}
 	_ = s.peers.SetTrustStatus(req.From, types.TrustPending)
 	s.log.Info("trust request received",
-		slog.String("event", "trust.request.received"),
-		slog.String("peer", req.From),
-		slog.String("requestId", req.RequestID),
+		logging.Event("trust.request.received"),
+		logging.Peer(req.From),
+		logging.RequestID(req.RequestID),
 	)
 }
 
 func (s *Service) handleTrustResponse(subject string, data []byte) {
 	var resp protocol.TrustResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
-		s.log.Warn("decode trust response failed", slog.String("subject", subject), slog.String("error", err.Error()))
+		s.log.Warn("decode trust response failed", logging.Subject(subject), logging.Error(err))
 		return
 	}
 	if resp.To != s.nodeID {
 		return
 	}
 	if err := protocol.ValidateMessage(subject, protocol.ControlMessage{MessageType: resp.MessageType, To: resp.To, Ts: resp.Ts}, protocol.ValidateOptions{}); err != nil {
-		s.log.Warn("invalid trust response", slog.String("error", err.Error()))
+		s.log.Warn("invalid trust response", logging.Error(err))
 		return
 	}
 
 	peerPub, err := s.peerPublicKey(resp.From)
 	if err != nil {
-		s.log.Warn("trust response peer key unavailable", slog.String("peer", resp.From), slog.String("error", err.Error()))
+		s.log.Warn("trust response peer key unavailable", logging.Peer(resp.From), logging.Error(err))
 		return
 	}
 	if !identity.Verify(peerPub, []byte(s.trustResponseSignatureInput(resp)), resp.Signature) {
-		s.log.Warn("invalid trust response signature", slog.String("peer", resp.From))
+		s.log.Warn("invalid trust response signature", logging.Peer(resp.From))
 		return
 	}
 
@@ -268,12 +269,12 @@ func (s *Service) handleTrustResponse(subject string, data []byte) {
 		_ = s.peers.SetTrustStatus(resp.From, types.TrustRejected)
 	}
 	if err := s.persistLocked(); err != nil {
-		s.log.Warn("persist trust response failed", slog.String("error", err.Error()))
+		s.log.Warn("persist trust response failed", logging.Error(err))
 	}
 	s.log.Info("trust response applied",
-		slog.String("event", "trust.response.applied"),
-		slog.String("peer", resp.From),
-		slog.String("requestId", resp.RequestID),
+		logging.Event("trust.response.applied"),
+		logging.Peer(resp.From),
+		logging.RequestID(resp.RequestID),
 		slog.String("decision", resp.Decision),
 	)
 }
@@ -281,24 +282,24 @@ func (s *Service) handleTrustResponse(subject string, data []byte) {
 func (s *Service) handleTrustRevoke(subject string, data []byte) {
 	var rev protocol.TrustRevoke
 	if err := json.Unmarshal(data, &rev); err != nil {
-		s.log.Warn("decode trust revoke failed", slog.String("subject", subject), slog.String("error", err.Error()))
+		s.log.Warn("decode trust revoke failed", logging.Subject(subject), logging.Error(err))
 		return
 	}
 	if rev.To != s.nodeID {
 		return
 	}
 	if err := protocol.ValidateMessage(subject, protocol.ControlMessage{MessageType: rev.MessageType, To: rev.To, Ts: rev.Ts}, protocol.ValidateOptions{}); err != nil {
-		s.log.Warn("invalid trust revoke", slog.String("error", err.Error()))
+		s.log.Warn("invalid trust revoke", logging.Error(err))
 		return
 	}
 
 	peerPub, err := s.peerPublicKey(rev.From)
 	if err != nil {
-		s.log.Warn("trust revoke peer key unavailable", slog.String("peer", rev.From), slog.String("error", err.Error()))
+		s.log.Warn("trust revoke peer key unavailable", logging.Peer(rev.From), logging.Error(err))
 		return
 	}
 	if !identity.Verify(peerPub, []byte(s.trustRevokeSignatureInput(rev)), rev.Signature) {
-		s.log.Warn("invalid trust revoke signature", slog.String("peer", rev.From))
+		s.log.Warn("invalid trust revoke signature", logging.Peer(rev.From))
 		return
 	}
 
@@ -310,12 +311,12 @@ func (s *Service) handleTrustRevoke(subject string, data []byte) {
 	s.upsertPeerStateLocked(&s.state.Revoked, rev.From, now, rev.Reason)
 	s.removePendingByNodeLocked(rev.From)
 	if err := s.persistLocked(); err != nil {
-		s.log.Warn("persist trust revoke failed", slog.String("error", err.Error()))
+		s.log.Warn("persist trust revoke failed", logging.Error(err))
 	}
 	_ = s.peers.SetTrustStatus(rev.From, types.TrustRevoked)
 	s.log.Info("trust revoked by peer",
-		slog.String("event", "trust.revoked"),
-		slog.String("peer", rev.From),
+		logging.Event("trust.revoked"),
+		logging.Peer(rev.From),
 		slog.String("reason", rev.Reason),
 	)
 }
@@ -368,9 +369,9 @@ func (s *Service) respond(requestID, decision, reason string) error {
 		return err
 	}
 	s.log.Info("trust decision sent",
-		slog.String("event", "trust.response.sent"),
-		slog.String("peer", pending.From),
-		slog.String("requestId", requestID),
+		logging.Event("trust.response.sent"),
+		logging.Peer(pending.From),
+		logging.RequestID(requestID),
 		slog.String("decision", decision),
 	)
 	return nil
