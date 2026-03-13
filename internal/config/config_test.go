@@ -50,6 +50,9 @@ func TestLoadFromOSReadsHomeConfig(t *testing.T) {
 	if cfg.LogFormat != "json" {
 		t.Fatalf("expected default log format json, got %q", cfg.LogFormat)
 	}
+	if cfg.AgentAdapter != "default" {
+		t.Fatalf("expected default agent adapter, got %q", cfg.AgentAdapter)
+	}
 }
 
 func TestLoadFromOSMergesDotEnvEnvAndFlags(t *testing.T) {
@@ -69,7 +72,7 @@ func TestLoadFromOSMergesDotEnvEnvAndFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := os.WriteFile(filepath.Join(project, ".env"), []byte("NODE_ID=dotenv-node\nTRUST_MODE=open\nNATS_SERVERS=nats://10.0.0.2:4222\nLOG_LEVEL=debug\nLOG_FORMAT=text\nLOG_ADD_SOURCE=true\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(project, ".env"), []byte("NODE_ID=dotenv-node\nTRUST_MODE=open\nNATS_SERVERS=nats://10.0.0.2:4222\nAGENT_ADAPTER=openclaw\nOPENCLAW_AGENT_ID=main\nLOG_LEVEL=debug\nLOG_FORMAT=text\nLOG_ADD_SOURCE=true\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -109,6 +112,12 @@ func TestLoadFromOSMergesDotEnvEnvAndFlags(t *testing.T) {
 	}
 	if !cfg.LogAddSource {
 		t.Fatal("expected dotenv log add source to be true")
+	}
+	if cfg.AgentAdapter != "openclaw" {
+		t.Fatalf("expected dotenv agent adapter openclaw, got %q", cfg.AgentAdapter)
+	}
+	if cfg.OpenClawAgentID != "main" {
+		t.Fatalf("expected dotenv openclaw agent id, got %q", cfg.OpenClawAgentID)
 	}
 }
 
@@ -150,11 +159,29 @@ func clearConfigEnv(t *testing.T) {
 		"HEARTBEAT_INTERVAL_MS",
 		"ANNOUNCE_TTL_MS",
 		"TRUST_MODE",
+		"AGENT_ADAPTER",
+		"OPENCLAW_AGENT_ID",
 		"LOG_LEVEL",
 		"LOG_FORMAT",
 		"LOG_ADD_SOURCE",
 	} {
 		t.Setenv(key, "")
+	}
+}
+
+func TestLoadFromOSRequiresAgentIDForOpenClaw(t *testing.T) {
+	home := t.TempDir()
+	project := t.TempDir()
+	t.Setenv("HOME", home)
+	clearConfigEnv(t)
+	chdirTempProject(t, project)
+
+	_, err := LoadFromOS([]string{"--node-id", "node-alpha", "--agent-adapter", "openclaw"})
+	if err == nil {
+		t.Fatal("expected config validation error")
+	}
+	if err.Error() != "openclaw agent id is required when agent adapter is openclaw" {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

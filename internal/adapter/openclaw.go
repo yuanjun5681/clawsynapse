@@ -1,0 +1,131 @@
+package adapter
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os/exec"
+	"strconv"
+	"strings"
+)
+
+type OpenClawConfig struct {
+	NodeID  string
+	AgentID string
+}
+
+type OpenClawAdapter struct {
+	nodeID  string
+	agentID string
+	execCmd func(ctx context.Context, args ...string) ([]byte, error)
+}
+
+func NewOpenClawAdapter(cfg OpenClawConfig) (*OpenClawAdapter, error) {
+	if strings.TrimSpace(cfg.AgentID) == "" {
+		return nil, errors.New("openclaw agent id is required")
+	}
+
+	return &OpenClawAdapter{
+		nodeID:  strings.TrimSpace(cfg.NodeID),
+		agentID: strings.TrimSpace(cfg.AgentID),
+		execCmd: defaultExecCmd,
+	}, nil
+}
+
+func (a *OpenClawAdapter) DeliverMessage(ctx context.Context, req DeliverMessageRequest) (*DeliverMessageResult, error) {
+	args := []string{
+		"agent",
+		"--agent", a.agentID,
+		"--message", req.Message,
+		"--json",
+	}
+	if strings.TrimSpace(req.SessionKey) != "" {
+		args = append(args, "--session-id", req.SessionKey)
+	}
+
+	out, err := a.execCmd(ctx, args...)
+	if err != nil {
+		return nil, fmt.Errorf("openclaw agent command: %w", err)
+	}
+
+	return parseOpenClawResult(out)
+}
+
+func (a *OpenClawAdapter) GetStatus(ctx context.Context) (*AgentStatus, error) {
+	out, err := a.execCmd(ctx, "--version")
+	if err != nil {
+		return &AgentStatus{Healthy: false}, err
+	}
+	if len(out) == 0 {
+		return &AgentStatus{Healthy: false}, nil
+	}
+	return &AgentStatus{Healthy: true}, nil
+}
+
+type openClawResponse struct {
+	RunID  string `json:"runId"`
+	Status string `json:"status"`
+	Result struct {
+		Payloads []struct {
+			Text string `json:"text"`
+		} `json:"payloads"`
+		Meta struct {
+			DurationMs int `json:"durationMs"`
+		} `json:"meta"`
+	} `json:"result"`
+	Error string `json:"error"`
+}
+
+func parseOpenClawResult(data []byte) (*DeliverMessageResult, error) {
+	var resp openClawResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("parse openclaw response: %w", err)
+	}
+
+	if resp.Error != "" {
+		return &DeliverMessageResult{
+			Success: false,
+			RunID:   resp.RunID,
+			Error:   resp.Error,
+		}, nil
+	}
+
+	if resp.Status != "ok" {
+		return &DeliverMessageResult{
+			Success: false,
+			RunID:   resp.RunID,
+			Error:   fmt.Sprintf("openclaw status: %s", resp.Status),
+		}, nil
+	}
+
+	var reply string
+	for _, p := range resp.Result.Payloads {
+		text := strings.TrimSpace(p.Text)
+		if text != "" {
+			reply = text
+			break
+		}
+	}
+
+	return &DeliverMessageResult{
+		Success:  true,
+		Accepted: true,
+		RunID:    resp.RunID,
+		Reply:    reply,
+	}, nil
+}
+
+func defaultExecCmd(ctx context.Context, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "openclaw", args...)
+	out, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			stderr := strings.TrimSpace(string(exitErr.Stderr))
+			return nil, fmt.Errorf("openclaw exited %s: %s", strconv.Itoa(exitErr.ExitCode()), stderr)
+		}
+		return nil, err
+	}
+	return out, nil
+}

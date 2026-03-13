@@ -21,6 +21,8 @@ type fileConfig struct {
 	HeartbeatInterval string   `yaml:"heartbeatInterval"`
 	AnnounceTTL       string   `yaml:"announceTtl"`
 	TrustMode         string   `yaml:"trustMode"`
+	AgentAdapter      string   `yaml:"agentAdapter"`
+	OpenClawAgentID   string   `yaml:"openclawAgentId"`
 	LogLevel          string   `yaml:"logLevel"`
 	LogFormat         string   `yaml:"logFormat"`
 	LogAddSource      *bool    `yaml:"logAddSource"`
@@ -53,6 +55,8 @@ func loadConfigValues(path string, required bool) (configValues, error) {
 		IdentityKeyPath: strings.TrimSpace(cfg.IdentityKeyPath),
 		IdentityPubPath: strings.TrimSpace(cfg.IdentityPubPath),
 		TrustMode:       strings.TrimSpace(cfg.TrustMode),
+		AgentAdapter:    strings.TrimSpace(cfg.AgentAdapter),
+		OpenClawAgentID: strings.TrimSpace(cfg.OpenClawAgentID),
 		LogLevel:        strings.TrimSpace(cfg.LogLevel),
 		LogFormat:       strings.TrimSpace(cfg.LogFormat),
 	}
@@ -128,6 +132,8 @@ func loadValuesFromMap(values map[string]string) configValues {
 		Heartbeat:       parseDurationValue(values["HEARTBEAT_INTERVAL_MS"], 0),
 		AnnounceTTL:     parseDurationValue(values["ANNOUNCE_TTL_MS"], 0),
 		TrustMode:       strings.TrimSpace(values["TRUST_MODE"]),
+		AgentAdapter:    strings.TrimSpace(values["AGENT_ADAPTER"]),
+		OpenClawAgentID: strings.TrimSpace(values["OPENCLAW_AGENT_ID"]),
 		LogLevel:        strings.TrimSpace(values["LOG_LEVEL"]),
 		LogFormat:       strings.TrimSpace(values["LOG_FORMAT"]),
 		LogAddSource:    parseBoolValue(values["LOG_ADD_SOURCE"]),
