@@ -23,8 +23,9 @@ func TestOpenClawAdapterDeliverMessage(t *testing.T) {
 		if args[2] != "main" {
 			t.Fatalf("agent id = %q, want main", args[2])
 		}
-		if args[4] != "hello" {
-			t.Fatalf("message = %q, want hello", args[4])
+		wantMsg := "[clawsynapse from=node-beta to=node-alpha]\nhello"
+		if args[4] != wantMsg {
+			t.Fatalf("message = %q, want %q", args[4], wantMsg)
 		}
 
 		return []byte(`{
@@ -129,6 +130,27 @@ func TestOpenClawAdapterGetStatus(t *testing.T) {
 	}
 	if !status.Healthy {
 		t.Fatal("expected healthy")
+	}
+}
+
+func TestFormatDeliverMessage(t *testing.T) {
+	got := formatDeliverMessage("node-1", DeliverMessageRequest{
+		From:    "node-2",
+		Message: "hello world",
+	})
+	want := "[clawsynapse from=node-2 to=node-1]\nhello world"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestFormatDeliverMessageNoFrom(t *testing.T) {
+	got := formatDeliverMessage("node-1", DeliverMessageRequest{
+		Message: "test",
+	})
+	want := "[clawsynapse to=node-1]\ntest"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }
 
