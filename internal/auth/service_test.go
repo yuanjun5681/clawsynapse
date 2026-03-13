@@ -3,6 +3,7 @@ package auth
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"testing"
@@ -123,6 +124,56 @@ func TestHandleChallengeAckRejectsInvalidProof(t *testing.T) {
 	}
 	if p.AuthStatus == types.AuthAuthenticated {
 		t.Fatal("invalid ack proof should not authenticate peer")
+	}
+}
+
+func TestHandleChallengeAckAuthenticatesPeerWithValidProof(t *testing.T) {
+	peers := discovery.NewRegistry()
+	self := mustIdentity(t, "self")
+	peer := mustIdentity(t, "peer")
+
+	peers.Upsert(types.Peer{
+		NodeID:      "node-beta",
+		AuthStatus:  types.AuthSeen,
+		TrustStatus: types.TrustNone,
+		Metadata: map[string]any{
+			"publicKey": base64.RawURLEncoding.EncodeToString(peer.PublicKey),
+		},
+	})
+
+	svc := NewService(slog.Default(), peers, nil, "node-alpha", self, nil, "tofu")
+	responseTS := time.Now().UnixMilli()
+	svc.savePendingAck("resp-1", pendingAck{
+		challengeRef: "resp-1",
+		peer:         "node-beta",
+		nonce:        "nonce-2",
+		responseTs:   responseTS,
+		createdAt:    time.Now(),
+	})
+
+	proof := identity.Sign(peer.PrivateKey, []byte("nonce-2|node-alpha|node-beta|"+fmt.Sprintf("%d", responseTS)))
+	ack := map[string]any{
+		"messageId":    "ack-1",
+		"messageType":  "auth.challenge.ack",
+		"from":         "node-beta",
+		"to":           "node-alpha",
+		"challengeRef": "resp-1",
+		"proof":        proof,
+		"ts":           time.Now().UnixMilli(),
+	}
+	b, err := json.Marshal(ack)
+	if err != nil {
+		t.Fatalf("marshal ack: %v", err)
+	}
+
+	svc.handleChallengeAck("", b)
+
+	p, ok := peers.Get("node-beta")
+	if !ok {
+		t.Fatal("peer should exist")
+	}
+	if p.AuthStatus != types.AuthAuthenticated {
+		t.Fatalf("expected authenticated status, got %s", p.AuthStatus)
 	}
 }
 

@@ -205,7 +205,16 @@ func (s *Service) handleChallengeRequest(subject string, data []byte) {
 	sub := "clawsynapse.auth." + req.From + ".challenge.response"
 	if err := s.bus.PublishJSON(sub, resp); err != nil {
 		s.log.Warn("publish challenge response failed", slog.String("peer", req.From), slog.String("error", err.Error()))
+		return
 	}
+
+	s.savePendingAck(resp.MessageID, pendingAck{
+		challengeRef: resp.MessageID,
+		peer:         req.From,
+		nonce:        nonce,
+		responseTs:   resp.Ts,
+		createdAt:    time.Now(),
+	})
 }
 
 func (s *Service) handleChallengeResponse(subject string, data []byte) {
@@ -278,14 +287,6 @@ func (s *Service) handleChallengeResponse(subject string, data []byte) {
 		s.failChallenge(resp.ChallengeRef, p, err)
 		return
 	}
-
-	s.savePendingAck(ack.ChallengeRef, pendingAck{
-		challengeRef: ack.ChallengeRef,
-		peer:         resp.From,
-		nonce:        resp.Nonce,
-		responseTs:   resp.Ts,
-		createdAt:    time.Now(),
-	})
 
 	p.resultCh <- nil
 	s.clearPending(resp.ChallengeRef)

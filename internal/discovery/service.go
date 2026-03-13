@@ -6,10 +6,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"log/slog"
+	"sync"
 	"time"
 
 	"clawsynapse/internal/natsbus"
 	"clawsynapse/internal/protocol"
+	"clawsynapse/internal/store"
 	"clawsynapse/pkg/types"
 )
 
@@ -22,24 +24,34 @@ type Service struct {
 	log       *slog.Logger
 	bus       *natsbus.Client
 	peers     *Registry
+	store     *store.FSStore
 	nodeID    string
 	publicKey string
 	ttl       time.Duration
 	heartbeat time.Duration
 	trustMode string
+	autoAuth  func(context.Context, string) error
+	authMu    sync.Mutex
+	authing   map[string]struct{}
 }
 
-func NewService(log *slog.Logger, bus *natsbus.Client, peers *Registry, nodeID string, publicKey string, heartbeat, ttl time.Duration, trustMode string) *Service {
+func NewService(log *slog.Logger, bus *natsbus.Client, peers *Registry, fs *store.FSStore, nodeID string, publicKey string, heartbeat, ttl time.Duration, trustMode string) *Service {
 	return &Service{
 		log:       log,
 		bus:       bus,
 		peers:     peers,
+		store:     fs,
 		nodeID:    nodeID,
 		publicKey: publicKey,
 		ttl:       ttl,
 		heartbeat: heartbeat,
 		trustMode: trustMode,
+		authing:   map[string]struct{}{},
 	}
+}
+
+func (s *Service) SetAutoAuthenticator(fn func(context.Context, string) error) {
+	s.autoAuth = fn
 }
 
 func (s *Service) Start(ctx context.Context) error {
@@ -116,7 +128,7 @@ func (s *Service) handleAnnounce(_ string, data []byte) {
 	}
 
 	authStatus := types.AuthSeen
-	trustStatus := types.TrustNone
+	trustStatus := s.persistedTrustStatus(msg.NodeID)
 	metadata := map[string]any{
 		"publicKey": msg.PublicKey,
 		"ttlMs":     msg.TTLms,
@@ -148,6 +160,82 @@ func (s *Service) handleAnnounce(_ string, data []byte) {
 		LastSeenMs:   msg.Ts,
 		Metadata:     metadata,
 	})
+
+	s.maybeAutoAuthenticate(msg.NodeID)
+}
+
+func (s *Service) persistedTrustStatus(nodeID string) string {
+	if s.store == nil {
+		return types.TrustNone
+	}
+
+	st, err := s.store.LoadTrustState()
+	if err != nil {
+		s.log.Warn("load trust state failed", slog.String("peer", nodeID), slog.String("error", err.Error()))
+		return types.TrustNone
+	}
+
+	for _, peer := range st.Trusted {
+		if peer.NodeID == nodeID {
+			return types.TrustTrusted
+		}
+	}
+	for _, peer := range st.Pending {
+		if peer.From == nodeID || peer.To == nodeID {
+			return types.TrustPending
+		}
+	}
+	for _, peer := range st.Rejected {
+		if peer.NodeID == nodeID {
+			return types.TrustRejected
+		}
+	}
+	for _, peer := range st.Revoked {
+		if peer.NodeID == nodeID {
+			return types.TrustRevoked
+		}
+	}
+
+	return types.TrustNone
+}
+
+func (s *Service) maybeAutoAuthenticate(nodeID string) {
+	if s.autoAuth == nil || s.trustMode == "open" {
+		return
+	}
+
+	peer, ok := s.peers.Get(nodeID)
+	if !ok {
+		return
+	}
+	if peer.TrustStatus != types.TrustTrusted || peer.AuthStatus == types.AuthAuthenticated || peer.AuthStatus == types.AuthPending {
+		return
+	}
+
+	s.authMu.Lock()
+	if _, exists := s.authing[nodeID]; exists {
+		s.authMu.Unlock()
+		return
+	}
+	s.authing[nodeID] = struct{}{}
+	s.authMu.Unlock()
+
+	go func() {
+		defer s.clearAutoAuth(nodeID)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		if err := s.autoAuth(ctx, nodeID); err != nil {
+			s.log.Warn("auto auth challenge failed", slog.String("peer", nodeID), slog.String("error", err.Error()))
+		}
+	}()
+}
+
+func (s *Service) clearAutoAuth(nodeID string) {
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+	delete(s.authing, nodeID)
 }
 
 func (s *Service) handleDepart(_ string, data []byte) {

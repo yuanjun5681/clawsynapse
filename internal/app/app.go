@@ -69,8 +69,9 @@ func New(cfg config.Config) (*App, error) {
 		return nil, fmt.Errorf("init replay guard: %w", err)
 	}
 
-	discoverySvc := discovery.NewService(log, bus, peers, cfg.NodeID, base64.RawURLEncoding.EncodeToString(id.PublicKey), hb, ttl, cfg.TrustMode)
+	discoverySvc := discovery.NewService(log, bus, peers, fs, cfg.NodeID, base64.RawURLEncoding.EncodeToString(id.PublicKey), hb, ttl, cfg.TrustMode)
 	authSvc := auth.NewService(log, peers, bus, cfg.NodeID, id, replay, cfg.TrustMode)
+	discoverySvc.SetAutoAuthenticator(authSvc.StartChallenge)
 	trustSvc, err := trust.NewService(log, peers, bus, fs, cfg.NodeID, id)
 	if err != nil {
 		return nil, fmt.Errorf("init trust service: %w", err)
@@ -111,11 +112,14 @@ func (a *App) Run(ctx context.Context) error {
 	if err := a.messaging.Start(); err != nil {
 		return fmt.Errorf("start messaging service: %w", err)
 	}
+	if err := a.bus.FlushTimeout(3 * time.Second); err != nil {
+		a.log.Warn("nats flush timeout after control subscriptions", slog.String("error", err.Error()))
+	}
 	if err := a.discovery.Start(ctx); err != nil {
 		return fmt.Errorf("start discovery service: %w", err)
 	}
 	if err := a.bus.FlushTimeout(3 * time.Second); err != nil {
-		a.log.Warn("nats flush timeout", slog.String("error", err.Error()))
+		a.log.Warn("nats flush timeout after discovery start", slog.String("error", err.Error()))
 	}
 
 	errCh := make(chan error, 1)
