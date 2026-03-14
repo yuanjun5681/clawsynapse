@@ -244,7 +244,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	msgID, err := s.messaging.Publish(messaging.PublishRequest{
+	result, err := s.messaging.Publish(messaging.PublishRequest{
 		TargetNode: req.TargetNode,
 		Message:    req.Message,
 		SessionKey: req.SessionKey,
@@ -268,8 +268,9 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		Code:    "msg.published",
 		Message: "message published",
 		Data: map[string]any{
-			"targetNode": req.TargetNode,
-			"messageId":  msgID,
+			"targetNode":  req.TargetNode,
+			"messageId":   result.MessageID,
+			"sessionKey":  result.SessionKey,
 		},
 		TS: time.Now().UnixMilli(),
 	})

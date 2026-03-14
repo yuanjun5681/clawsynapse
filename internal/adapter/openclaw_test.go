@@ -23,7 +23,7 @@ func TestOpenClawAdapterDeliverMessage(t *testing.T) {
 		if args[2] != "main" {
 			t.Fatalf("agent id = %q, want main", args[2])
 		}
-		wantMsg := "[clawsynapse from=node-beta to=node-alpha]\nhello"
+		wantMsg := "[clawsynapse from=node-beta to=node-alpha session=session-1]\nhello"
 		// No reply hint appended — skill handles reply instructions
 		if args[4] != wantMsg {
 			t.Fatalf("message = %q, want %q", args[4], wantMsg)
@@ -140,6 +140,18 @@ func TestFormatDeliverMessage(t *testing.T) {
 		Message: "hello world",
 	})
 	want := "[clawsynapse from=node-2 to=node-1]\nhello world"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestFormatDeliverMessageWithSession(t *testing.T) {
+	got := formatDeliverMessage("node-1", DeliverMessageRequest{
+		From:       "node-2",
+		Message:    "hello world",
+		SessionKey: "task-abc",
+	})
+	want := "[clawsynapse from=node-2 to=node-1 session=task-abc]\nhello world"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}

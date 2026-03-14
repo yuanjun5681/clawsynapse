@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,6 +27,11 @@ type PublishRequest struct {
 	Message    string
 	SessionKey string
 	Metadata   map[string]any
+}
+
+type PublishResult struct {
+	MessageID  string
+	SessionKey string
 }
 
 type RequestRequest struct {
@@ -90,24 +96,29 @@ func (s *Service) Start() error {
 	return err
 }
 
-func (s *Service) Publish(req PublishRequest) (string, error) {
+func (s *Service) Publish(req PublishRequest) (PublishResult, error) {
 	if req.TargetNode == "" {
-		return "", errors.New("targetNode is required")
+		return PublishResult{}, errors.New("targetNode is required")
 	}
 	if s.bus == nil {
-		return "", errors.New("nats client is required")
+		return PublishResult{}, errors.New("nats client is required")
 	}
 	peer, ok := s.peers.Get(req.TargetNode)
 	if !ok {
-		return "", errors.New("target peer not found")
+		return PublishResult{}, errors.New("target peer not found")
 	}
 	if s.trustMode != "open" {
 		if peer.TrustStatus != types.TrustTrusted {
-			return "", protocol.NewError("control.unauthorized", "peer is not trusted")
+			return PublishResult{}, protocol.NewError("control.unauthorized", "peer is not trusted")
 		}
 		if peer.AuthStatus != types.AuthAuthenticated {
-			return "", errors.New("peer is not authenticated")
+			return PublishResult{}, errors.New("peer is not authenticated")
 		}
+	}
+
+	sessionKey := req.SessionKey
+	if strings.TrimSpace(sessionKey) == "" {
+		sessionKey = "ses-" + randID()
 	}
 
 	env := protocol.MessageEnvelope{
@@ -116,7 +127,7 @@ func (s *Service) Publish(req PublishRequest) (string, error) {
 		From:            s.nodeID,
 		To:              req.TargetNode,
 		Content:         req.Message,
-		SessionKey:      req.SessionKey,
+		SessionKey:      sessionKey,
 		Metadata:        req.Metadata,
 		Ts:              time.Now().UnixMilli(),
 		ProtocolVersion: "v1",
@@ -125,7 +136,7 @@ func (s *Service) Publish(req PublishRequest) (string, error) {
 
 	subject := "clawsynapse.msg." + req.TargetNode + ".inbox"
 	if err := s.bus.PublishJSON(subject, env); err != nil {
-		return "", err
+		return PublishResult{}, err
 	}
 	s.log.Info("message published",
 		logging.Event("message.sent"),
@@ -135,7 +146,7 @@ func (s *Service) Publish(req PublishRequest) (string, error) {
 		logging.ContentLength(req.Message),
 		logging.ContentPreview(req.Message, contentPreviewLimit),
 	)
-	return env.ID, nil
+	return PublishResult{MessageID: env.ID, SessionKey: sessionKey}, nil
 }
 
 func (s *Service) Request(req RequestRequest) (RequestResult, error) {

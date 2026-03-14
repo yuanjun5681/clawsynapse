@@ -128,6 +128,10 @@ func formatDeliverMessage(localNodeID string, req DeliverMessageRequest) string 
 		b.WriteString(" to=")
 		b.WriteString(localNodeID)
 	}
+	if req.SessionKey != "" {
+		b.WriteString(" session=")
+		b.WriteString(req.SessionKey)
+	}
 	b.WriteString("]\n")
 	b.WriteString(req.Message)
 	return b.String()

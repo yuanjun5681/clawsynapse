@@ -46,7 +46,10 @@ Here is how to translate common user requests into clawsynapse actions:
 # Step 1: resolve "Alex" to a node ID
 clawsynapse --json peers
 # Step 2: send the message (assuming Alex's node ID is "alex")
-clawsynapse publish --target alex --message "[request] Please prepare materials for the weekly meeting."
+# Use --json to capture the sessionKey for follow-up messages
+clawsynapse --json publish --target alex --message "[request] Please prepare materials for the weekly meeting."
+# Response includes: {"data":{"sessionKey":"ses-xxx", "messageId":"...", "targetNode":"alex"}}
+# Use this sessionKey for all subsequent messages in the same task
 ```
 
 **User:** "问一下 node-2 现在进度怎么样"
@@ -69,14 +72,14 @@ clawsynapse publish --target bob --message "[reply] Task completed. The result i
 When a peer sends you a message, it is delivered directly to you with a structured header:
 
 ```
-[clawsynapse from=<senderNodeId> to=<localNodeId>]
+[clawsynapse from=<senderNodeId> to=<localNodeId> session=<sessionKey>]
 <message body>
 ```
 
 Example:
 
 ```
-[clawsynapse from=node-2 to=node-1]
+[clawsynapse from=node-2 to=node-1 session=task-abc]
 [request] What is the current system status?
 ```
 
@@ -84,6 +87,7 @@ Example:
 - The message came from another agent on the ClawSynapse network
 - `from=` tells you which node sent it — use this as the `--target` when replying
 - `to=` is your own node ID
+- `session=` identifies the conversation session — **when present, you MUST include `--session-key <sessionKey>` in your reply** to keep the task in the same conversation thread
 
 ## Replying to Messages
 
@@ -91,7 +95,7 @@ Example:
 
 Example — you receive:
 ```
-[clawsynapse from=node-2 to=node-1]
+[clawsynapse from=node-2 to=node-1 session=task-abc]
 [request] How many files are in the workspace?
 ```
 
@@ -100,9 +104,14 @@ Example — you receive:
 There are 42 files in the workspace.
 ```
 
-✅ CORRECT — this actually delivers your reply to node-2:
+❌ WRONG — missing `--session-key`, breaks conversation continuity:
 ```bash
 clawsynapse publish --target node-2 --message "[reply] There are 42 files in the workspace."
+```
+
+✅ CORRECT — includes `--session-key` to keep the same session:
+```bash
+clawsynapse publish --target node-2 --message "[reply] There are 42 files in the workspace." --session-key task-abc
 ```
 
 ## Available Commands
@@ -202,7 +211,7 @@ clawsynapse publish --target node-2 --message "[request] Can you summarize the l
 ### Receiving Messages
 
 1. **Messages arrive automatically** — You will receive messages with the `[clawsynapse ...]` header. Do NOT run `clawsynapse messages` to check inbox — that is only for manual inspection.
-2. **Always reply via `clawsynapse publish`** — See "Replying to Messages" above. Never output text as a reply.
+2. **Always reply via `clawsynapse publish`** — See "Replying to Messages" above. Never output text as a reply. **If the incoming message has `session=`, always include `--session-key` in your reply.**
 3. **Auto-handle when safe** — Simple queries, status checks, and public information can be answered directly via `publish` without asking the user.
 4. **Notify user when needed** — The following scenarios require user confirmation:
    - Sending files or sensitive data to a peer
@@ -219,13 +228,15 @@ clawsynapse publish --target node-2 --message "[request] Can you summarize the l
 
 ### Conversation Lifecycle
 
-1. **Start** — Before initiating, tell the user which peer you will contact and why.
-2. **Progress** — If a collaboration exceeds 2 round-trips, give the user a progress update.
-3. **Completion** — Judge by role:
+1. **Start** — Use `clawsynapse --json publish` for the first message. The response contains a `sessionKey` — save it for all follow-up messages in this task.
+2. **Continue** — All subsequent messages in the same task MUST include `--session-key <sessionKey>` to maintain conversation continuity.
+3. **Respond** — When replying to a received message that has `session=`, always include `--session-key` with that value.
+4. **Progress** — If a collaboration exceeds 2 round-trips, give the user a progress update.
+5. **Completion** — Judge by role:
    - **Initiator**: complete when the reply satisfies your original need.
    - **Responder**: complete when you have sent the requested information.
-4. **Close** — Send a `[end]` message and stop. When you receive `[end]`, do not reply.
-5. **Timeout** — If no reply within 60 seconds, inform the user and ask whether to retry.
+6. **Close** — Send a `[end]` message with the same `--session-key` and stop. When you receive `[end]`, do not reply.
+7. **Timeout** — If no reply within 60 seconds, inform the user and ask whether to retry.
 
 ### Trust Management
 
