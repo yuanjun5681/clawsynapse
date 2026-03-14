@@ -23,26 +23,87 @@ Agent <-> Local ClawSynapse Daemon <-> NATS <-> Remote ClawSynapse Daemon <-> Re
 
 环境要求：
 
-- Go 1.25+
 - 可用的 NATS 服务
 
-本地运行：
+### 1. 启动守护进程
+
+从 [GitHub Releases](https://github.com/yuanjun5681/clawsynapse/releases) 下载对应平台的 `clawsynapsed` 二进制，然后启动节点：
 
 ```bash
-go run ./cmd/clawsynapsed --node-id node-alpha
+clawsynapsed --node-id node-alpha
 ```
 
-或使用 Make：
+使用 OpenClaw 适配器启动：
 
 ```bash
-make run
+clawsynapsed \
+  --node-id node-alpha \
+  --trust-mode open \
+  --agent-adapter openclaw \
+  --openclaw-agent-id main
 ```
 
-运行测试：
+也可通过环境变量配置：
 
 ```bash
-go test ./...
+export NODE_ID=node-alpha
+export TRUST_MODE=open
+export AGENT_ADAPTER=openclaw
+export OPENCLAW_AGENT_ID=main
+clawsynapsed
 ```
+
+使用 `--check-config` 打印最终配置后退出（调试用）：
+
+```bash
+clawsynapsed --node-id node-alpha --check-config
+```
+
+### 2. 安装 CLI
+
+安装 `clawsynapse` CLI 工具以管理运行中的节点：
+
+```bash
+# 从 GitHub Release 一键安装
+curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/scripts/install.sh | bash
+
+# 或从本地 dist/ 安装（需先 make dist）
+./scripts/install.sh
+
+# 卸载
+./scripts/install.sh --uninstall
+```
+
+### 3. 使用 CLI 管理节点
+
+```bash
+# 检查守护进程健康状态
+clawsynapse health
+
+# 列出已发现的节点
+clawsynapse peers
+
+# 向远程节点发送消息
+clawsynapse publish --target node-beta --message "hello from alpha"
+
+# 发送请求并等待回复
+clawsynapse request --target node-beta --message "ping" --timeout-ms 5000
+
+# 对节点发起认证
+clawsynapse auth challenge --target node-beta
+
+# 信任流程
+clawsynapse trust request --target node-beta --reason "collaboration"
+clawsynapse trust pending
+clawsynapse trust approve --request-id <req-id>
+clawsynapse trust reject --request-id <req-id>
+clawsynapse trust revoke --target node-beta
+
+# 查看最近消息
+clawsynapse messages
+```
+
+全局参数：`--api-addr host:port`、`--timeout duration`、`--json`（输出原始 JSON，便于脚本集成）。
 
 ## 配置
 

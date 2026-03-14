@@ -2,7 +2,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 DIST_DIR := dist
 
-.PHONY: test test-unit run build-cli install-cli dist clean
+.PHONY: test test-unit run build build-daemon build-cli install-cli dist clean
 
 test: test-unit
 
@@ -11,6 +11,11 @@ test-unit:
 
 run:
 	go run ./cmd/clawsynapsed --node-id node-alpha
+
+build: build-daemon build-cli
+
+build-daemon:
+	go build -ldflags "$(LDFLAGS)" -o clawsynapsed ./cmd/clawsynapsed
 
 build-cli:
 	go build -ldflags "$(LDFLAGS)" -o clawsynapse ./cmd/clawsynapse
@@ -23,6 +28,10 @@ install-cli: build-cli
 
 dist:
 	@mkdir -p $(DIST_DIR)
+	GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/clawsynapsed-darwin-arm64 ./cmd/clawsynapsed
+	GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/clawsynapsed-darwin-amd64 ./cmd/clawsynapsed
+	GOOS=linux  GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/clawsynapsed-linux-amd64  ./cmd/clawsynapsed
+	GOOS=linux  GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/clawsynapsed-linux-arm64  ./cmd/clawsynapsed
 	GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/clawsynapse-darwin-arm64 ./cmd/clawsynapse
 	GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/clawsynapse-darwin-amd64 ./cmd/clawsynapse
 	GOOS=linux  GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/clawsynapse-linux-amd64  ./cmd/clawsynapse
@@ -30,4 +39,4 @@ dist:
 	@echo "binaries in $(DIST_DIR)/"
 
 clean:
-	rm -rf $(DIST_DIR) clawsynapse
+	rm -rf $(DIST_DIR) clawsynapse clawsynapsed

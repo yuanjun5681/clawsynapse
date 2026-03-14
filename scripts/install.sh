@@ -7,12 +7,13 @@
 #     ./scripts/install.sh
 #
 #   远程安装（从 GitHub Release）:
-#     curl -fsSL https://raw.githubusercontent.com/<OWNER>/clawsynapse/main/scripts/install.sh | bash
+#     curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/scripts/install.sh | bash
 #
 set -euo pipefail
 
 BINARY_NAME="clawsynapse"
 INSTALL_DIR="/usr/local/bin"
+DEFAULT_REPO="yuanjun5681/clawsynapse"
 
 # --- 颜色 ---
 RED='\033[0;31m'
@@ -85,12 +86,7 @@ install_from_local() {
 # --- 从 GitHub Release 下载安装 ---
 install_from_github() {
     local platform="$1"
-    local repo="${GITHUB_REPO:-}"
-
-    if [ -z "$repo" ]; then
-        error "未配置 GITHUB_REPO，且本地 dist/ 中无对应二进制文件。请先运行 'make dist' 构建"
-    fi
-
+    local repo="${GITHUB_REPO:-$DEFAULT_REPO}"
     local version="${VERSION:-latest}"
     local url
 

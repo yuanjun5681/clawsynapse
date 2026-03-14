@@ -23,26 +23,87 @@ Agent <-> Local ClawSynapse Daemon <-> NATS <-> Remote ClawSynapse Daemon <-> Re
 
 Requirements:
 
-- Go 1.25+
 - A running NATS server
 
-Run locally:
+### 1. Start the Daemon
+
+Download the `clawsynapsed` binary for your platform from [GitHub Releases](https://github.com/yuanjun5681/clawsynapse/releases), then start a node:
 
 ```bash
-go run ./cmd/clawsynapsed --node-id node-alpha
+clawsynapsed --node-id node-alpha
 ```
 
-Or via Make:
+Start with OpenClaw adapter:
 
 ```bash
-make run
+clawsynapsed \
+  --node-id node-alpha \
+  --trust-mode open \
+  --agent-adapter openclaw \
+  --openclaw-agent-id main
 ```
 
-Run tests:
+Or configure via environment variables:
 
 ```bash
-go test ./...
+export NODE_ID=node-alpha
+export TRUST_MODE=open
+export AGENT_ADAPTER=openclaw
+export OPENCLAW_AGENT_ID=main
+clawsynapsed
 ```
+
+Use `--check-config` to print the resolved configuration and exit:
+
+```bash
+clawsynapsed --node-id node-alpha --check-config
+```
+
+### 2. Install the CLI
+
+Install the `clawsynapse` CLI tool for managing running nodes:
+
+```bash
+# One-line install from GitHub Release
+curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/scripts/install.sh | bash
+
+# Or install from local dist/ (after make dist)
+./scripts/install.sh
+
+# Uninstall
+./scripts/install.sh --uninstall
+```
+
+### 3. Manage Nodes with the CLI
+
+```bash
+# Check daemon health
+clawsynapse health
+
+# List discovered peers
+clawsynapse peers
+
+# Send a message to a remote node
+clawsynapse publish --target node-beta --message "hello from alpha"
+
+# Send a request and wait for a reply
+clawsynapse request --target node-beta --message "ping" --timeout-ms 5000
+
+# Authenticate a peer
+clawsynapse auth challenge --target node-beta
+
+# Trust workflow
+clawsynapse trust request --target node-beta --reason "collaboration"
+clawsynapse trust pending
+clawsynapse trust approve --request-id <req-id>
+clawsynapse trust reject --request-id <req-id>
+clawsynapse trust revoke --target node-beta
+
+# View recent messages
+clawsynapse messages
+```
+
+Global flags: `--api-addr host:port`, `--timeout duration`, `--json` (raw JSON output).
 
 ## Configuration
 
