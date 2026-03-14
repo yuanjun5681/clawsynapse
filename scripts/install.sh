@@ -100,7 +100,7 @@ install_from_github() {
 
     local tmpfile
     tmpfile=$(mktemp)
-    trap 'rm -f "$tmpfile"' EXIT
+    trap 'rm -f "'"$tmpfile"'"' EXIT
 
     if command -v curl >/dev/null 2>&1; then
         curl -fsSL -o "$tmpfile" "$url" || error "下载失败: ${url}"
