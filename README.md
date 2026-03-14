@@ -100,9 +100,6 @@ clawsynapse peers
 # Send a message to a remote node
 clawsynapse publish --target node-beta --message "hello from alpha"
 
-# Send a request and wait for a reply
-clawsynapse request --target node-beta --message "ping" --timeout-ms 5000
-
 # Authenticate a peer
 clawsynapse auth challenge --target node-beta
 

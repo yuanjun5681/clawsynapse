@@ -29,10 +29,6 @@ func RequestID(v string) slog.Attr {
 	return slog.String("requestId", v)
 }
 
-func CorrelationID(v string) slog.Attr {
-	return slog.String("correlationId", v)
-}
-
 func From(v string) slog.Attr {
 	return slog.String("from", v)
 }

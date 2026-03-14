@@ -20,7 +20,6 @@ title: "ClawSynapse Integration"
 ```http
 POST /v1/publish
 GET /v1/peers
-POST /v1/request
 ```
 
 `POST /v1/publish` 示例：
@@ -31,17 +30,6 @@ POST /v1/request
   "message": "请汇总最新报告",
   "sessionKey": "nats:node-alpha:node-beta",
   "metadata": { "priority": "high" }
-}
-```
-
-`POST /v1/request` 示例：
-
-```json
-{
-  "targetNode": "node-beta",
-  "message": "当前状态如何？",
-  "waitForReply": true,
-  "timeoutMs": 30000
 }
 ```
 
@@ -75,7 +63,7 @@ POST /v1/request
 
 返回中的 `inbox`、`authStatus` 等字段可视为集成层投影；其底层命名与状态值应与 `docs/protocol.md` 保持一致。
 
-本地 API 负责接收业务请求，再由守护进程统一完成路由、握手、签名、发布和回复等待。
+本地 API 负责接收业务请求，再由守护进程统一完成路由、握手、签名和发布。
 
 ## Agent Adapter
 

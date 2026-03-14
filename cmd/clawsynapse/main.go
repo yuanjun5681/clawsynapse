@@ -39,7 +39,7 @@ func run(args []string, stdout, stderr *os.File) int {
 	}
 
 	apiAddr := fs.String("api-addr", defaultAPIAddr, "local API address")
-	timeout := fs.Duration("timeout", 5*time.Second, "request timeout")
+	timeout := fs.Duration("timeout", 5*time.Second, "local API timeout")
 	asJSON := fs.Bool("json", false, "print raw JSON response")
 
 	if err := fs.Parse(args); err != nil {
@@ -79,8 +79,6 @@ func dispatch(ctx context.Context, client *api.Client, args []string) (types.API
 		return client.Get(ctx, "/v1/messages")
 	case "publish":
 		return runPublish(ctx, client, args[1:])
-	case "request":
-		return runRequest(ctx, client, args[1:])
 	case "auth":
 		return runAuth(ctx, client, args[1:])
 	case "trust":
@@ -115,39 +113,6 @@ func runPublish(ctx context.Context, client *api.Client, args []string) (types.A
 		"message":    *message,
 		"sessionKey": *sessionKey,
 		"metadata":   metadata,
-	})
-}
-
-func runRequest(ctx context.Context, client *api.Client, args []string) (types.APIResult, error) {
-	fs := flag.NewFlagSet("request", flag.ContinueOnError)
-	target := fs.String("target", "", "target node id")
-	message := fs.String("message", "", "request content")
-	sessionKey := fs.String("session-key", "", "session key")
-	timeoutMs := fs.Int64("timeout-ms", 30000, "reply timeout in milliseconds")
-	var metadataFlags stringList
-	fs.Var(&metadataFlags, "metadata", "metadata key=value; repeatable")
-	if err := fs.Parse(args); err != nil {
-		return types.APIResult{}, err
-	}
-	if strings.TrimSpace(*target) == "" {
-		return types.APIResult{}, fmt.Errorf("missing --target")
-	}
-	if strings.TrimSpace(*message) == "" {
-		return types.APIResult{}, fmt.Errorf("missing --message")
-	}
-	if *timeoutMs <= 0 {
-		return types.APIResult{}, fmt.Errorf("--timeout-ms must be greater than 0")
-	}
-	metadata, err := parseMetadata(metadataFlags)
-	if err != nil {
-		return types.APIResult{}, err
-	}
-	return client.Post(ctx, "/v1/request", map[string]any{
-		"targetNode": *target,
-		"message":    *message,
-		"sessionKey": *sessionKey,
-		"metadata":   metadata,
-		"timeoutMs":  *timeoutMs,
 	})
 }
 
@@ -273,9 +238,6 @@ func printResult(stdout, stderr *os.File, result types.APIResult, asJSON bool) {
 		fmt.Fprintln(stream, result.Message)
 	}
 	switch result.Code {
-	case "msg.replied":
-		printRequestResult(stream, result.Data)
-		return
 	case "msg.published":
 		printPublishResult(stream, result.Data)
 		return
@@ -300,34 +262,18 @@ func printResult(stdout, stderr *os.File, result types.APIResult, asJSON bool) {
 	}
 }
 
-func printRequestResult(stream *os.File, data map[string]any) {
-	reply, _ := data["reply"].(string)
-	runID, _ := data["runId"].(string)
-	from, _ := data["from"].(string)
-	requestID, _ := data["requestId"].(string)
-
-	if reply != "" {
-		fmt.Fprintf(stream, "reply: %s\n", reply)
-	}
-	if runID != "" {
-		fmt.Fprintf(stream, "runId: %s\n", runID)
-	}
-	if from != "" {
-		fmt.Fprintf(stream, "from: %s\n", from)
-	}
-	if requestID != "" {
-		fmt.Fprintf(stream, "requestId: %s\n", requestID)
-	}
-}
-
 func printPublishResult(stream *os.File, data map[string]any) {
 	targetNode, _ := data["targetNode"].(string)
 	messageID, _ := data["messageId"].(string)
+	sessionKey, _ := data["sessionKey"].(string)
 	if targetNode != "" {
 		fmt.Fprintf(stream, "targetNode: %s\n", targetNode)
 	}
 	if messageID != "" {
 		fmt.Fprintf(stream, "messageId: %s\n", messageID)
+	}
+	if sessionKey != "" {
+		fmt.Fprintf(stream, "sessionKey: %s\n", sessionKey)
 	}
 }
 
@@ -373,5 +319,5 @@ func printAuthChallengeResult(stream *os.File, data map[string]any) {
 
 func printUsage(stderr *os.File) {
 	fmt.Fprintln(stderr, "usage: clawsynapse [--api-addr host:port] [--timeout 5s] [--json] <command>")
-	fmt.Fprintln(stderr, "commands: health, peers, messages, publish, request, auth challenge, trust request|pending|approve|reject|revoke")
+	fmt.Fprintln(stderr, "commands: health, peers, messages, publish, auth challenge, trust request|pending|approve|reject|revoke")
 }

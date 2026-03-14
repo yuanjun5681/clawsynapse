@@ -448,9 +448,6 @@ type Envelope struct {
     To              string         `json:"to,omitempty"`
     Content         string         `json:"content,omitempty"`
     SessionKey      string         `json:"sessionKey,omitempty"`
-    ReplyTo         string         `json:"replyTo,omitempty"`
-    RequestID       string         `json:"requestId,omitempty"`
-    CorrelationID   string         `json:"correlationId,omitempty"`
     Ts              int64          `json:"ts"`
     Sig             string         `json:"sig,omitempty"`
     Metadata        map[string]any `json:"metadata,omitempty"`
@@ -461,13 +458,7 @@ type Envelope struct {
 ### `Envelope.type` 预留值
 
 - `chat.message`
-- `chat.reply`
 - `event.forward`
-- `rpc.request`
-- `rpc.response`
-- `task.request`
-- `task.accepted`
-- `task.result`
 
 ### 字段说明
 
@@ -479,9 +470,6 @@ type Envelope struct {
 | `to` | 否 | 目标节点 ID |
 | `content` | 否 | 文本或序列化正文 |
 | `sessionKey` | 否 | 会话标识 |
-| `replyTo` | 否 | 回复地址 subject |
-| `requestId` | 否 | 请求 ID |
-| `correlationId` | 否 | 关联请求或事件链路 |
 | `ts` | 是 | 发送时间戳 |
 | `sig` | 否 | 消息签名 |
 | `metadata` | 否 | 扩展字段 |
@@ -490,77 +478,9 @@ type Envelope struct {
 ### 处理约定
 
 - 点对点消息默认投递到 `clawsynapse.msg.<targetNodeId>.inbox`
-- 需要同步回复时，发送方应带 `replyTo`
+- 对话连续性由 `sessionKey` 维护，后续消息应复用同一会话键
 - 业务消息若要求强认证，应在投递前确保 peer 已处于 `authenticated` 或 `trusted`
 - 事件消息优先用于观测、审计、编排，不直接等价为业务命令
-
-## RPC / Tasks
-
-### 设计范围
-
-`RPC / Tasks` 在 Messaging Envelope 之上定义请求-响应与异步任务语义。
-
-### 建议消息类型
-
-| 类型 | 说明 |
-|------|------|
-| `rpc.request` | 同步请求 |
-| `rpc.response` | 同步响应 |
-| `task.request` | 异步任务提交 |
-| `task.accepted` | 任务已接收 |
-| `task.progress` | 任务进度 |
-| `task.result` | 任务结果 |
-| `task.failed` | 任务失败 |
-
-### `rpc.request`
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `id` | `string` | 是 | Envelope ID |
-| `type` | `string` | 是 | 固定为 `rpc.request` |
-| `from` | `string` | 是 | 请求方 |
-| `to` | `string` | 是 | 目标节点 |
-| `replyTo` | `string` | 是 | 响应 subject |
-| `metadata.method` | `string` | 是 | RPC 方法名 |
-| `metadata.timeoutMs` | `number` | 否 | 超时时间 |
-| `metadata.idempotencyKey` | `string` | 否 | 幂等键 |
-| `content` | `string` | 否 | 请求参数 |
-| `ts` | `number` | 是 | 请求时间 |
-
-### `rpc.response`
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `id` | `string` | 是 | Envelope ID |
-| `type` | `string` | 是 | 固定为 `rpc.response` |
-| `from` | `string` | 是 | 响应方 |
-| `to` | `string` | 是 | 请求方 |
-| `correlationId` | `string` | 是 | 对应 `rpc.request.id` |
-| `metadata.status` | `string` | 是 | `ok` 或 `error` |
-| `content` | `string` | 否 | 返回值 |
-| `metadata.errorCode` | `string` | 否 | 错误码 |
-| `ts` | `number` | 是 | 响应时间 |
-
-### `task.request`
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `id` | `string` | 是 | Envelope ID |
-| `type` | `string` | 是 | 固定为 `task.request` |
-| `from` | `string` | 是 | 发起方 |
-| `to` | `string` | 是 | 执行方 |
-| `replyTo` | `string` | 否 | 状态回传 subject |
-| `metadata.taskType` | `string` | 是 | 任务类型 |
-| `metadata.idempotencyKey` | `string` | 否 | 幂等键 |
-| `content` | `string` | 否 | 任务参数 |
-| `ts` | `number` | 是 | 提交时间 |
-
-### 处理约定
-
-- `RPC` 要求请求方提供 `replyTo`
-- `Task` 支持异步进度与结果回传，优先使用 `correlationId` 关联原任务
-- 所有可能重复提交的写操作都应支持 `idempotencyKey`
-- `Task` 模块通常要求 peer 至少处于 `trusted`
 
 ## PubSub
 

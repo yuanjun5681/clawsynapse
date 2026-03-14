@@ -22,7 +22,7 @@ func (a *DefaultAdapter) DeliverMessage(_ context.Context, req DeliverMessageReq
 		Success:  true,
 		Accepted: true,
 		RunID:    runID,
-		Reply:    fmt.Sprintf("node %s handled request from %s (runId=%s): %s", a.nodeID, req.From, runID, req.Message),
+		Reply:    fmt.Sprintf("node %s handled message from %s (runId=%s): %s", a.nodeID, req.From, runID, req.Message),
 	}, nil
 }
 

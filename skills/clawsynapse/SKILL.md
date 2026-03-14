@@ -54,7 +54,8 @@ clawsynapse --json publish --target alex --message "[request] Please prepare mat
 
 **User:** "问一下 node-2 现在进度怎么样"
 ```bash
-clawsynapse request --target node-2 --message "[request] What is your current progress?" --timeout-ms 30000
+# Start a normal conversation with publish and keep the returned sessionKey
+clawsynapse --json publish --target node-2 --message "[request] What is your current progress?"
 ```
 
 **User:** "有哪些节点在线？"
@@ -119,7 +120,7 @@ clawsynapse publish --target node-2 --message "[reply] There are 42 files in the
 ### Messaging
 
 ```bash
-# Publish a message to another agent (fire-and-forget, no reply expected)
+# Publish a message to another agent
 clawsynapse publish --target <nodeId> --message "your message"
 
 # Publish with session key (for conversation continuity)
@@ -127,12 +128,6 @@ clawsynapse publish --target <nodeId> --message "your message" --session-key "se
 
 # Publish with metadata
 clawsynapse publish --target <nodeId> --message "your message" --metadata key1=value1 --metadata key2=value2
-
-# Send a request and wait for reply (synchronous, blocks until reply or timeout)
-clawsynapse request --target <nodeId> --message "your question"
-
-# Send a request with custom timeout
-clawsynapse request --target <nodeId> --message "your question" --timeout-ms 60000
 ```
 
 ### Network & Discovery
@@ -174,12 +169,11 @@ clawsynapse trust revoke --target <nodeId> --reason "no longer needed"
 clawsynapse auth challenge --target <nodeId>
 ```
 
-## Publish vs Request
+## OpenClaw Messaging Rule
 
-- **`publish`** — Fire-and-forget. Sends a message to the target node's inbox. Does NOT wait for a reply. Use this for notifications, status updates, task results, and any one-way communication.
-- **`request`** — Synchronous RPC. Sends a message and blocks until the target node replies (or timeout). Use this only when you need an immediate answer.
-
-**In most cases, prefer `publish`.**
+- **OpenClaw agents MUST use `clawsynapse publish` for peer-to-peer communication.**
+- Rationale: this skill relies on session continuity through `sessionKey` and explicit `[reply]` / `[notify]` messages.
+- If you need a follow-up, send another `publish` in the same `--session-key`.
 
 ## Message Intent Tags
 
@@ -203,7 +197,7 @@ clawsynapse publish --target node-2 --message "[request] Can you summarize the l
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--api-addr` | `127.0.0.1:18080` | Local API address of clawsynapsed |
-| `--timeout` | `5s` | CLI request timeout |
+| `--timeout` | `5s` | Local API timeout |
 | `--json` | `false` | Output raw JSON response |
 
 ## Collaboration Rules
@@ -218,6 +212,7 @@ clawsynapse publish --target node-2 --message "[request] Can you summarize the l
    - Modifying local files or configuration
    - Making decisions on behalf of the user
    - Accessing the user's private information
+5. **Send exactly once per turn unless there is a real state change** — Do not send the same answer twice. Do not send both a content reply and a second "closing" message unless the conversation truly needs both.
 
 ### Sending Messages
 
@@ -235,7 +230,7 @@ clawsynapse publish --target node-2 --message "[request] Can you summarize the l
 5. **Completion** — Judge by role:
    - **Initiator**: complete when the reply satisfies your original need.
    - **Responder**: complete when you have sent the requested information.
-6. **Close** — Send a `[end]` message with the same `--session-key` and stop. When you receive `[end]`, do not reply.
+6. **Close** — Do NOT automatically send `[end]` after every `[reply]`. Only send `[end]` when the user explicitly wants to close the thread or the remote side has asked to close it. When you receive `[end]`, do not reply.
 7. **Timeout** — If no reply within 60 seconds, inform the user and ask whether to retry.
 
 ### Trust Management

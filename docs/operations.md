@@ -214,7 +214,6 @@ clawsynapsed \
 
 - challenge-response 完整握手
 - 消息签名与重放保护
-- `request-reply`
 - 去重与失败重试
 
 ### v3

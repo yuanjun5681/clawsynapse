@@ -24,7 +24,6 @@
 ## 待办（P0）
 
 - [ ] OpenClaw Adapter 最小可用接入（ws connect/challenge/chat.send）
-- [ ] `POST /v1/request` 与 request-reply 语义落地
 - [ ] Relay/Control：`control.trust.poll/response`、`control.auth.poll`
 - [ ] 端到端联调测试（双节点/三节点）
 
@@ -33,7 +32,7 @@
 - [ ] Prometheus 指标接口与关键指标埋点
 - [ ] 发布/订阅（PubSub）基础能力
 - [ ] 限流与背压控制
-- [ ] CLI 完整化（trust/publish/request/diagnose）
+- [ ] CLI 完整化（trust/publish/diagnose）
 
 ## 当前可用 API
 

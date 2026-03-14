@@ -79,10 +79,3 @@ clawsynapsed 启动
 4. 对消息签名后发布到目标 subject
 5. 对端 `clawsynapsed` 收到消息并验签
 6. 对端通过本地 Adapter 投递给 Agent
-
-### 同步请求/回复
-
-1. 本地 Agent 调用 `request` API
-2. 消息中携带 `replyTo`
-3. 远端 Agent 处理完成后，由远端 `clawsynapsed` 回发 `chat.reply`
-4. 本地 `clawsynapsed` 等待并返回结果

@@ -9,8 +9,7 @@ import (
 	"clawsynapse/internal/adapter"
 )
 
-type IncomingRequest struct {
-	RequestID  string
+type IncomingMessage struct {
 	MessageID  string
 	From       string
 	To         string
@@ -24,49 +23,49 @@ type HandlerResult struct {
 	RunID string
 }
 
-type RequestHandler interface {
-	HandleRequest(req IncomingRequest) (HandlerResult, error)
+type MessageHandler interface {
+	HandleMessage(msg IncomingMessage) (HandlerResult, error)
 }
 
-type RequestHandlerFunc func(req IncomingRequest) (HandlerResult, error)
+type MessageHandlerFunc func(msg IncomingMessage) (HandlerResult, error)
 
-func (f RequestHandlerFunc) HandleRequest(req IncomingRequest) (HandlerResult, error) {
-	return f(req)
+func (f MessageHandlerFunc) HandleMessage(msg IncomingMessage) (HandlerResult, error) {
+	return f(msg)
 }
 
-type DefaultRequestHandler struct {
+type DefaultMessageHandler struct {
 	nodeID string
 }
 
-func NewDefaultRequestHandler(nodeID string) *DefaultRequestHandler {
-	return &DefaultRequestHandler{nodeID: nodeID}
+func NewDefaultMessageHandler(nodeID string) *DefaultMessageHandler {
+	return &DefaultMessageHandler{nodeID: nodeID}
 }
 
-func (h *DefaultRequestHandler) HandleRequest(req IncomingRequest) (HandlerResult, error) {
-	return HandlerResult{Reply: fmt.Sprintf("node %s handled request from %s: %s", h.nodeID, req.From, req.Message)}, nil
+func (h *DefaultMessageHandler) HandleMessage(msg IncomingMessage) (HandlerResult, error) {
+	return HandlerResult{Reply: fmt.Sprintf("node %s handled message from %s: %s", h.nodeID, msg.From, msg.Message)}, nil
 }
 
-type AdapterRequestHandler struct {
+type AdapterMessageHandler struct {
 	adapter adapter.AgentAdapter
 	timeout time.Duration
 }
 
-func NewAdapterRequestHandler(agentAdapter adapter.AgentAdapter, timeout time.Duration) *AdapterRequestHandler {
+func NewAdapterMessageHandler(agentAdapter adapter.AgentAdapter, timeout time.Duration) *AdapterMessageHandler {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	return &AdapterRequestHandler{adapter: agentAdapter, timeout: timeout}
+	return &AdapterMessageHandler{adapter: agentAdapter, timeout: timeout}
 }
 
-func (h *AdapterRequestHandler) HandleRequest(req IncomingRequest) (HandlerResult, error) {
+func (h *AdapterMessageHandler) HandleMessage(msg IncomingMessage) (HandlerResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), h.timeout)
 	defer cancel()
 
 	result, err := h.adapter.DeliverMessage(ctx, adapter.DeliverMessageRequest{
-		SessionKey: req.SessionKey,
-		Message:    req.Message,
-		From:       req.From,
-		Metadata:   req.Metadata,
+		SessionKey: msg.SessionKey,
+		Message:    msg.Message,
+		From:       msg.From,
+		Metadata:   msg.Metadata,
 	})
 	if err != nil {
 		return HandlerResult{}, err

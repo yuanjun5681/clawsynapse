@@ -100,9 +100,6 @@ clawsynapse peers
 # 向远程节点发送消息
 clawsynapse publish --target node-beta --message "hello from alpha"
 
-# 发送请求并等待回复
-clawsynapse request --target node-beta --message "ping" --timeout-ms 5000
-
 # 对节点发起认证
 clawsynapse auth challenge --target node-beta
 

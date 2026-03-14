@@ -88,7 +88,7 @@ func New(cfg config.Config) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("init agent adapter: %w", err)
 	}
-	messagingSvc.SetRequestHandler(messaging.NewAdapterRequestHandler(agentAdapter, 30*time.Second))
+	messagingSvc.SetMessageHandler(messaging.NewAdapterMessageHandler(agentAdapter, 30*time.Second))
 	apiServer := api.NewServer(cfg.LocalAPIAddr, peers, authSvc, trustSvc, messagingSvc, bus)
 
 	return &App{

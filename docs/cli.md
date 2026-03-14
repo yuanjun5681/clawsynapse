@@ -109,36 +109,7 @@ go run ./cmd/clawsynapse publish \
 POST /v1/publish
 ```
 
-普通输出会单独显示 `targetNode` 和 `messageId`；如果需要完整结构，使用 `--json`。
-
-### Request
-
-向目标节点发送请求并等待 reply：
-
-```bash
-go run ./cmd/clawsynapse request \
-  --target node-beta \
-  --message "当前状态如何？"
-```
-
-带会话键、元数据与自定义超时：
-
-```bash
-go run ./cmd/clawsynapse request \
-  --target node-beta \
-  --message "请返回最新处理结果" \
-  --session-key nats:node-alpha:node-beta \
-  --metadata priority=high \
-  --timeout-ms 15000
-```
-
-对应 API：
-
-```http
-POST /v1/request
-```
-
-普通输出会单独显示 `reply`、`runId`、`from` 和 `requestId`；如果需要完整结构，使用 `--json`。
+普通输出会单独显示 `targetNode`、`messageId` 和 `sessionKey`；如果需要完整结构，使用 `--json`。
 
 ### Auth Challenge
 
@@ -216,7 +187,6 @@ POST /v1/trust/revoke
 | `clawsynapse peers` | `GET /v1/peers` |
 | `clawsynapse messages` | `GET /v1/messages` |
 | `clawsynapse publish` | `POST /v1/publish` |
-| `clawsynapse request` | `POST /v1/request` |
 | `clawsynapse auth challenge` | `POST /v1/auth/challenge` |
 | `clawsynapse trust pending` | `GET /v1/trust/pending` |
 | `clawsynapse trust request` | `POST /v1/trust/request` |
