@@ -243,3 +243,56 @@ func TestRequestRejectsMissingMessage(t *testing.T) {
 		t.Fatal("expected request to fail for missing message")
 	}
 }
+
+func TestMaybeDeliverSkipsReplyAndEnd(t *testing.T) {
+	peers := discovery.NewRegistry()
+	base := t.TempDir()
+	id, err := identity.LoadOrCreate(base+"/identity.key", base+"/identity.pub")
+	if err != nil {
+		t.Fatalf("identity init failed: %v", err)
+	}
+
+	delivered := make(chan string, 10)
+	svc := NewService(slog.Default(), peers, nil, "node-alpha", id, "open")
+	svc.SetRequestHandler(RequestHandlerFunc(func(req IncomingRequest) (HandlerResult, error) {
+		delivered <- req.Message
+		return HandlerResult{Reply: "ok"}, nil
+	}))
+
+	// [reply] messages should NOT be delivered
+	svc.maybeDeliver(protocol.MessageEnvelope{Type: "chat.message", Content: "[reply] Task completed."})
+	// [end] messages should NOT be delivered
+	svc.maybeDeliver(protocol.MessageEnvelope{Type: "chat.message", Content: "[end] Closing conversation."})
+	// chat.reply should NOT be delivered
+	svc.maybeDeliver(protocol.MessageEnvelope{Type: "chat.reply", Content: "ack"})
+
+	// regular chat.message should be delivered
+	svc.maybeDeliver(protocol.MessageEnvelope{Type: "chat.message", Content: "[request] Do something."})
+	// chat.request should also be delivered
+	svc.maybeDeliver(protocol.MessageEnvelope{Type: "chat.request", Content: "translate this"})
+
+	received := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		select {
+		case msg := <-delivered:
+			received[msg] = true
+		case <-time.After(1 * time.Second):
+			t.Fatalf("expected 2 deliveries, got %d", len(received))
+		}
+	}
+
+	if !received["[request] Do something."] {
+		t.Fatal("expected [request] message to be delivered")
+	}
+	if !received["translate this"] {
+		t.Fatal("expected chat.request message to be delivered")
+	}
+
+	// ensure no extra deliveries
+	select {
+	case msg := <-delivered:
+		t.Fatalf("unexpected extra delivery: %q", msg)
+	case <-time.After(100 * time.Millisecond):
+		// ok — no extra deliveries
+	}
+}

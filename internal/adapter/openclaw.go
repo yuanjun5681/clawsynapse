@@ -35,14 +35,13 @@ func NewOpenClawAdapter(cfg OpenClawConfig) (*OpenClawAdapter, error) {
 
 func (a *OpenClawAdapter) DeliverMessage(ctx context.Context, req DeliverMessageRequest) (*DeliverMessageResult, error) {
 	msg := formatDeliverMessage(a.nodeID, req)
+	sessionID := a.resolveSessionID(req)
 	args := []string{
 		"agent",
 		"--agent", a.agentID,
 		"--message", msg,
 		"--json",
-	}
-	if strings.TrimSpace(req.SessionKey) != "" {
-		args = append(args, "--session-id", req.SessionKey)
+		"--session-id", sessionID,
 	}
 
 	out, err := a.execCmd(ctx, args...)
@@ -115,6 +114,17 @@ func parseOpenClawResult(data []byte) (*DeliverMessageResult, error) {
 		RunID:    resp.RunID,
 		Reply:    reply,
 	}, nil
+}
+
+func (a *OpenClawAdapter) resolveSessionID(req DeliverMessageRequest) string {
+	if s := strings.TrimSpace(req.SessionKey); s != "" {
+		return s
+	}
+	from := req.From
+	if from == "" {
+		from = "_anon"
+	}
+	return "cs-" + from + "-" + a.nodeID
 }
 
 func formatDeliverMessage(localNodeID string, req DeliverMessageRequest) string {

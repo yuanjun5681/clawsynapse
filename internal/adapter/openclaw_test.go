@@ -17,16 +17,19 @@ func TestOpenClawAdapterDeliverMessage(t *testing.T) {
 	}
 
 	adapter.execCmd = func(_ context.Context, args ...string) ([]byte, error) {
-		if len(args) < 4 || args[0] != "agent" {
+		// args: agent --agent main --message <msg> --json --session-id <id>
+		if len(args) < 8 || args[0] != "agent" {
 			t.Fatalf("unexpected args: %v", args)
 		}
 		if args[2] != "main" {
 			t.Fatalf("agent id = %q, want main", args[2])
 		}
 		wantMsg := "[clawsynapse from=node-beta to=node-alpha session=session-1]\nhello"
-		// No reply hint appended — skill handles reply instructions
 		if args[4] != wantMsg {
 			t.Fatalf("message = %q, want %q", args[4], wantMsg)
+		}
+		if args[6] != "--session-id" || args[7] != "session-1" {
+			t.Fatalf("session-id args = %v, want [--session-id session-1]", args[6:])
 		}
 
 		return []byte(`{
@@ -164,6 +167,28 @@ func TestFormatDeliverMessageNoFrom(t *testing.T) {
 	want := "[clawsynapse to=node-1]\ntest"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestResolveSessionID(t *testing.T) {
+	a, _ := NewOpenClawAdapter(OpenClawConfig{NodeID: "node-1", AgentID: "main"})
+
+	// explicit sessionKey takes priority
+	got := a.resolveSessionID(DeliverMessageRequest{SessionKey: "task-1", From: "node-2"})
+	if got != "task-1" {
+		t.Fatalf("got %q, want task-1", got)
+	}
+
+	// derive from from+nodeID when sessionKey is empty
+	got = a.resolveSessionID(DeliverMessageRequest{From: "node-2"})
+	if got != "cs-node-2-node-1" {
+		t.Fatalf("got %q, want cs-node-2-node-1", got)
+	}
+
+	// anonymous when from is empty
+	got = a.resolveSessionID(DeliverMessageRequest{})
+	if got != "cs-_anon-node-1" {
+		t.Fatalf("got %q, want cs-_anon-node-1", got)
 	}
 }
 

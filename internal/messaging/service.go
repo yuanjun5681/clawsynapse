@@ -143,6 +143,7 @@ func (s *Service) Publish(req PublishRequest) (PublishResult, error) {
 		logging.To(req.TargetNode),
 		logging.MessageID(env.ID),
 		logging.MessageType(env.Type),
+		logging.SessionKey(sessionKey),
 		logging.ContentLength(req.Message),
 		logging.ContentPreview(req.Message, contentPreviewLimit),
 	)
@@ -215,6 +216,7 @@ func (s *Service) Request(req RequestRequest) (RequestResult, error) {
 		logging.MessageID(messageID),
 		logging.RequestID(requestID),
 		logging.MessageType(env.Type),
+		logging.SessionKey(env.SessionKey),
 		logging.ContentLength(req.Message),
 		logging.ContentPreview(req.Message, contentPreviewLimit),
 	)
@@ -261,6 +263,7 @@ func (s *Service) handleInbox(subject string, data []byte) {
 			logging.MessageID(env.ID),
 			logging.MessageType(env.Type),
 			logging.RequestID(env.RequestID),
+			logging.SessionKey(env.SessionKey),
 			logging.ContentLength(env.Content),
 			logging.ContentPreview(env.Content, contentPreviewLimit),
 		)
@@ -341,6 +344,7 @@ func (s *Service) handleReply(subject string, data []byte) {
 		logging.MessageID(env.ID),
 		logging.RequestID(env.RequestID),
 		logging.CorrelationID(env.CorrelationID),
+		logging.SessionKey(env.SessionKey),
 		logging.ContentLength(env.Content),
 		logging.ContentPreview(env.Content, contentPreviewLimit),
 	)
@@ -370,6 +374,12 @@ func (s *Service) maybeReply(env protocol.MessageEnvelope) {
 		return
 	}
 
+	// If an agent adapter handler is set, let maybeDeliver handle it.
+	// The agent will reply via clawsynapse publish on its own.
+	if s.requestHandler() != nil {
+		return
+	}
+
 	reply, err := s.buildReply(env)
 	if err != nil {
 		s.log.Warn("handle request failed", logging.From(env.From), logging.RequestID(env.RequestID), logging.Error(err))
@@ -384,13 +394,24 @@ func (s *Service) maybeReply(env protocol.MessageEnvelope) {
 		logging.MessageID(reply.ID),
 		logging.RequestID(env.RequestID),
 		logging.CorrelationID(env.ID),
+		logging.SessionKey(env.SessionKey),
 		logging.ContentLength(reply.Content),
 		logging.ContentPreview(reply.Content, contentPreviewLimit),
 	)
 }
 
 func (s *Service) maybeDeliver(env protocol.MessageEnvelope) {
-	if env.Type != "chat.message" {
+	if env.Type != "chat.message" && env.Type != "chat.request" {
+		return
+	}
+	content := strings.TrimSpace(env.Content)
+	if strings.HasPrefix(content, "[reply]") || strings.HasPrefix(content, "[end]") {
+		s.log.Debug("skip deliver: reply/end message",
+			logging.Event("message.deliver.skipped"),
+			logging.From(env.From),
+			logging.MessageID(env.ID),
+			logging.SessionKey(env.SessionKey),
+		)
 		return
 	}
 	handler := s.requestHandler()
@@ -412,6 +433,7 @@ func (s *Service) maybeDeliver(env protocol.MessageEnvelope) {
 				logging.Event("message.deliver.failed"),
 				logging.From(env.From),
 				logging.MessageID(env.ID),
+				logging.SessionKey(env.SessionKey),
 				logging.Error(err),
 			)
 			return
@@ -420,6 +442,7 @@ func (s *Service) maybeDeliver(env protocol.MessageEnvelope) {
 			logging.Event("message.deliver.ok"),
 			logging.From(env.From),
 			logging.MessageID(env.ID),
+			logging.SessionKey(env.SessionKey),
 		)
 	}()
 }
