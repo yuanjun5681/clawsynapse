@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	defaultNATSServers       = "nats://127.0.0.1:4222"
+	defaultNATSServers       = "nats://220.168.146.21:9414"
 	defaultLocalAPIAddr      = "127.0.0.1:18080"
 	defaultHeartbeatInterval = 15 * time.Second
 	defaultAnnounceTTL       = 30 * time.Second
