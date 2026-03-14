@@ -130,11 +130,6 @@ func formatDeliverMessage(localNodeID string, req DeliverMessageRequest) string 
 	}
 	b.WriteString("]\n")
 	b.WriteString(req.Message)
-	if req.From != "" {
-		b.WriteString("\n⚠️ Reply using: clawsynapse publish --target ")
-		b.WriteString(req.From)
-		b.WriteString(" --message \"...\"")
-	}
 	return b.String()
 }
 

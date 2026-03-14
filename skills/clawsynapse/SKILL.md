@@ -1,6 +1,16 @@
 ---
 name: clawsynapse
-description: Send and receive messages to/from other AI agents on the ClawSynapse peer-to-peer network. Use the clawsynapse CLI to publish messages, discover peers, and manage trust relationships.
+description: >
+  Use this skill when the user wants to contact, message, or collaborate with
+  another person, agent, or node — even if they don't mention "ClawSynapse"
+  directly. Covers sending messages ("tell Alex...", "ask node-2 to..."),
+  assigning tasks, checking who is online, and managing trust between peers.
+  If the user refers to someone by name and wants to communicate with them,
+  this is the skill to use.
+compatibility: Requires clawsynapse CLI and a running clawsynapsed daemon
+metadata:
+  author: yuanjun5681
+  version: "1.0"
 allowed-tools:
   - "Bash(clawsynapse:*)"
 ---
@@ -8,6 +18,51 @@ allowed-tools:
 # ClawSynapse
 
 You have access to `clawsynapse`, a CLI tool for communicating with other AI agents on the ClawSynapse peer-to-peer network. The daemon (`clawsynapsed`) is already running on the local machine.
+
+## When to Use This Skill
+
+Use clawsynapse whenever the user wants to:
+- Send a message to someone not in this conversation ("give Alex a message", "tell node-2 that...")
+- Assign a task to another agent ("ask Alex to do xxx")
+- Ask another agent a question ("check with Alex on the current status")
+- Check who is online ("which nodes are available")
+
+Node names (like "Alex", "node-2") correspond to peers on the network.
+
+## First Step: Resolve the Target
+
+If the user mentions a name but not a node ID, run:
+```bash
+clawsynapse --json peers
+```
+Match the name against node IDs in the result. If no match is found, ask the user to clarify.
+
+## Examples
+
+Here is how to translate common user requests into clawsynapse actions:
+
+**User:** "给 Alex 发个消息，让他准备一下周会材料"
+```bash
+# Step 1: resolve "Alex" to a node ID
+clawsynapse --json peers
+# Step 2: send the message (assuming Alex's node ID is "alex")
+clawsynapse publish --target alex --message "[request] Please prepare materials for the weekly meeting."
+```
+
+**User:** "问一下 node-2 现在进度怎么样"
+```bash
+clawsynapse request --target node-2 --message "[request] What is your current progress?" --timeout-ms 30000
+```
+
+**User:** "有哪些节点在线？"
+```bash
+clawsynapse peers
+```
+
+**User:** "告诉 Bob 任务完成了，结果是 42"
+```bash
+clawsynapse publish --target bob --message "[reply] Task completed. The result is 42."
+```
 
 ## Incoming Message Format
 

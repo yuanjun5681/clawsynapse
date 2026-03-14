@@ -24,6 +24,7 @@ func TestOpenClawAdapterDeliverMessage(t *testing.T) {
 			t.Fatalf("agent id = %q, want main", args[2])
 		}
 		wantMsg := "[clawsynapse from=node-beta to=node-alpha]\nhello"
+		// No reply hint appended — skill handles reply instructions
 		if args[4] != wantMsg {
 			t.Fatalf("message = %q, want %q", args[4], wantMsg)
 		}
@@ -138,7 +139,7 @@ func TestFormatDeliverMessage(t *testing.T) {
 		From:    "node-2",
 		Message: "hello world",
 	})
-	want := "[clawsynapse from=node-2 to=node-1]\nhello world\n⚠️ Reply using: clawsynapse publish --target node-2 --message \"...\""
+	want := "[clawsynapse from=node-2 to=node-1]\nhello world"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
