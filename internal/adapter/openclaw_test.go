@@ -3,9 +3,43 @@ package adapter
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
+
+type captureHandler struct {
+	records *[]slog.Record
+}
+
+func (h captureHandler) Enabled(context.Context, slog.Level) bool {
+	return true
+}
+
+func (h captureHandler) Handle(_ context.Context, r slog.Record) error {
+	clone := slog.Record{
+		Time:    r.Time,
+		Level:   r.Level,
+		Message: r.Message,
+		PC:      r.PC,
+	}
+	r.Attrs(func(a slog.Attr) bool {
+		clone.AddAttrs(a)
+		return true
+	})
+	*h.records = append(*h.records, clone)
+	return nil
+}
+
+func (h captureHandler) WithAttrs(_ []slog.Attr) slog.Handler {
+	return h
+}
+
+func (h captureHandler) WithGroup(_ string) slog.Handler {
+	return h
+}
 
 func TestOpenClawAdapterDeliverMessage(t *testing.T) {
 	adapter, err := NewOpenClawAdapter(OpenClawConfig{
@@ -213,5 +247,79 @@ func TestParseOpenClawResult(t *testing.T) {
 	}
 	if result.Reply != "first reply" {
 		t.Fatalf("reply = %q, want first reply", result.Reply)
+	}
+}
+
+func TestFormatOpenClawCommandForLogTruncatesMessage(t *testing.T) {
+	message := strings.Repeat("x", 300)
+
+	got := formatOpenClawCommandForLog([]string{
+		"agent",
+		"--agent", "main",
+		"--message", message,
+		"--json",
+		"--session-id", "session-1",
+	})
+
+	if !strings.Contains(got, `openclaw "agent" "--agent" "main" "--message" "`) {
+		t.Fatalf("command = %q, missing prefix", got)
+	}
+	if !strings.Contains(got, "truncated, 300 bytes total") {
+		t.Fatalf("command = %q, missing truncation marker", got)
+	}
+	if !strings.Contains(got, `"--session-id" "session-1"`) {
+		t.Fatalf("command = %q, missing session id", got)
+	}
+}
+
+func TestOpenClawAdapterDeliverMessageLogsCommand(t *testing.T) {
+	var records []slog.Record
+	logger := slog.New(captureHandler{records: &records})
+
+	adapter, err := NewOpenClawAdapter(OpenClawConfig{
+		NodeID:  "node-alpha",
+		AgentID: "main",
+		Logger:  logger,
+	})
+	if err != nil {
+		t.Fatalf("NewOpenClawAdapter failed: %v", err)
+	}
+
+	adapter.execCmd = func(_ context.Context, _ ...string) ([]byte, error) {
+		return []byte(`{"runId":"run-1","status":"ok","result":{"payloads":[{"text":"done"}]}}`), nil
+	}
+
+	_, err = adapter.DeliverMessage(context.Background(), DeliverMessageRequest{
+		SessionKey: "session-1",
+		Message:    strings.Repeat("m", 320),
+		From:       "node-beta",
+	})
+	if err != nil {
+		t.Fatalf("DeliverMessage failed: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("log records = %d, want 1", len(records))
+	}
+
+	var command string
+	records[0].Attrs(func(a slog.Attr) bool {
+		if a.Key == "command" {
+			command = a.Value.String()
+		}
+		return true
+	})
+	if command == "" {
+		t.Fatal("expected command attribute")
+	}
+	wantMarker := "truncated, " + strconv.Itoa(len(formatDeliverMessage("node-alpha", DeliverMessageRequest{
+		SessionKey: "session-1",
+		Message:    strings.Repeat("m", 320),
+		From:       "node-beta",
+	}))) + " bytes total"
+	if !strings.Contains(command, wantMarker) {
+		t.Fatalf("command = %q, missing truncation marker", command)
+	}
+	if !strings.Contains(command, `"--agent" "main"`) {
+		t.Fatalf("command = %q, missing agent", command)
 	}
 }

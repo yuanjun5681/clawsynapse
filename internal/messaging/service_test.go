@@ -95,7 +95,7 @@ func TestAdapterMessageHandlerReturnsAcceptedWithRunID(t *testing.T) {
 	}
 }
 
-func TestMaybeDeliverSkipsReplyAndEnd(t *testing.T) {
+func TestMaybeDeliverForwardsAllChatMessages(t *testing.T) {
 	peers := discovery.NewRegistry()
 	base := t.TempDir()
 	id, err := identity.LoadOrCreate(base+"/identity.key", base+"/identity.pub")
@@ -115,19 +115,29 @@ func TestMaybeDeliverSkipsReplyAndEnd(t *testing.T) {
 	svc.maybeDeliver(protocol.MessageEnvelope{Type: "event.forward", Content: "ignored"})
 	svc.maybeDeliver(protocol.MessageEnvelope{Type: "chat.message", Content: "[request] Do something."})
 
-	select {
-	case msg := <-delivered:
-		if msg != "[request] Do something." {
-			t.Fatalf("delivered message = %q, want request body", msg)
-		}
-	case <-time.After(1 * time.Second):
-		t.Fatal("expected message delivery")
+	want := map[string]bool{
+		"[reply] Task completed.":     false,
+		"[end] Closing conversation.": false,
+		"[request] Do something.":     false,
 	}
 
-	select {
-	case msg := <-delivered:
-		t.Fatalf("unexpected extra delivery: %q", msg)
-	case <-time.After(100 * time.Millisecond):
+	deadline := time.After(1 * time.Second)
+	for i := 0; i < len(want); i++ {
+		select {
+		case msg := <-delivered:
+			if _, ok := want[msg]; !ok {
+				t.Fatalf("unexpected delivered message: %q", msg)
+			}
+			want[msg] = true
+		case <-deadline:
+			t.Fatal("expected message delivery")
+		}
+	}
+
+	for msg, got := range want {
+		if !got {
+			t.Fatalf("message %q was not delivered", msg)
+		}
 	}
 }
 

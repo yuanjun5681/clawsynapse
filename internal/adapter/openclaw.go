@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -13,11 +14,13 @@ import (
 type OpenClawConfig struct {
 	NodeID  string
 	AgentID string
+	Logger  *slog.Logger
 }
 
 type OpenClawAdapter struct {
 	nodeID  string
 	agentID string
+	log     *slog.Logger
 	execCmd func(ctx context.Context, args ...string) ([]byte, error)
 }
 
@@ -29,6 +32,7 @@ func NewOpenClawAdapter(cfg OpenClawConfig) (*OpenClawAdapter, error) {
 	return &OpenClawAdapter{
 		nodeID:  strings.TrimSpace(cfg.NodeID),
 		agentID: strings.TrimSpace(cfg.AgentID),
+		log:     cfg.Logger,
 		execCmd: defaultExecCmd,
 	}, nil
 }
@@ -43,6 +47,7 @@ func (a *OpenClawAdapter) DeliverMessage(ctx context.Context, req DeliverMessage
 		"--json",
 		"--session-id", sessionID,
 	}
+	a.logCommand(args)
 
 	out, err := a.execCmd(ctx, args...)
 	if err != nil {
@@ -127,6 +132,17 @@ func (a *OpenClawAdapter) resolveSessionID(req DeliverMessageRequest) string {
 	return "cs-" + from + "-" + a.nodeID
 }
 
+func (a *OpenClawAdapter) logCommand(args []string) {
+	if a.log == nil {
+		return
+	}
+	a.log.Info("executing openclaw agent command",
+		slog.String("agentID", a.agentID),
+		slog.String("sessionID", redactedSessionID(args)),
+		slog.String("command", formatOpenClawCommandForLog(args)),
+	)
+}
+
 func formatDeliverMessage(localNodeID string, req DeliverMessageRequest) string {
 	var b strings.Builder
 	b.WriteString("[clawsynapse")
@@ -145,6 +161,44 @@ func formatDeliverMessage(localNodeID string, req DeliverMessageRequest) string 
 	b.WriteString("]\n")
 	b.WriteString(req.Message)
 	return b.String()
+}
+
+func formatOpenClawCommandForLog(args []string) string {
+	logArgs := append([]string(nil), args...)
+	for i := 0; i < len(logArgs)-1; i++ {
+		if logArgs[i] == "--message" {
+			logArgs[i+1] = truncateForLog(logArgs[i+1], 240)
+			break
+		}
+	}
+
+	parts := make([]string, 0, len(logArgs)+1)
+	parts = append(parts, "openclaw")
+	for _, arg := range logArgs {
+		parts = append(parts, strconv.Quote(arg))
+	}
+	return strings.Join(parts, " ")
+}
+
+func truncateForLog(value string, limit int) string {
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	const suffixTemplate = "...(truncated, %d bytes total)"
+	suffix := fmt.Sprintf(suffixTemplate, len(value))
+	if len(suffix) >= limit {
+		return value[:limit]
+	}
+	return value[:limit-len(suffix)] + suffix
+}
+
+func redactedSessionID(args []string) string {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "--session-id" {
+			return args[i+1]
+		}
+	}
+	return ""
 }
 
 func defaultExecCmd(ctx context.Context, args ...string) ([]byte, error) {

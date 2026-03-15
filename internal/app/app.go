@@ -84,7 +84,7 @@ func New(cfg config.Config) (*App, error) {
 		return nil, fmt.Errorf("init trust service: %w", err)
 	}
 	messagingSvc := messaging.NewService(log.With(slog.String("component", "messaging")), peers, bus, cfg.NodeID, id, cfg.TrustMode)
-	agentAdapter, err := newAgentAdapter(cfg)
+	agentAdapter, err := newAgentAdapter(cfg, log)
 	if err != nil {
 		return nil, fmt.Errorf("init agent adapter: %w", err)
 	}
@@ -105,7 +105,7 @@ func New(cfg config.Config) (*App, error) {
 	}, nil
 }
 
-func newAgentAdapter(cfg config.Config) (adapter.AgentAdapter, error) {
+func newAgentAdapter(cfg config.Config, log *slog.Logger) (adapter.AgentAdapter, error) {
 	switch cfg.AgentAdapter {
 	case "", "default":
 		return adapter.NewDefaultAdapter(cfg.NodeID), nil
@@ -113,6 +113,7 @@ func newAgentAdapter(cfg config.Config) (adapter.AgentAdapter, error) {
 		return adapter.NewOpenClawAdapter(adapter.OpenClawConfig{
 			NodeID:  cfg.NodeID,
 			AgentID: cfg.OpenClawAgentID,
+			Logger:  log.With(slog.String("component", "adapter"), slog.String("adapter", "openclaw")),
 		})
 	default:
 		return nil, fmt.Errorf("unsupported agent adapter: %s", cfg.AgentAdapter)

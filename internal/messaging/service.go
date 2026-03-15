@@ -213,16 +213,6 @@ func (s *Service) maybeDeliver(env protocol.MessageEnvelope) {
 	if env.Type != "chat.message" {
 		return
 	}
-	content := strings.TrimSpace(env.Content)
-	if strings.HasPrefix(content, "[reply]") || strings.HasPrefix(content, "[end]") {
-		s.log.Debug("skip deliver: reply/end message",
-			logging.Event("message.deliver.skipped"),
-			logging.From(env.From),
-			logging.MessageID(env.ID),
-			logging.SessionKey(env.SessionKey),
-		)
-		return
-	}
 	handler := s.messageHandler()
 	if handler == nil {
 		return
