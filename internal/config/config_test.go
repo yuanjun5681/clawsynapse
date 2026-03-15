@@ -72,7 +72,7 @@ func TestLoadFromOSMergesDotEnvEnvAndFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := os.WriteFile(filepath.Join(project, ".env"), []byte("NODE_ID=dotenv-node\nTRUST_MODE=open\nNATS_SERVERS=nats://10.0.0.2:4222\nAGENT_ADAPTER=openclaw\nOPENCLAW_AGENT_ID=main\nLOG_LEVEL=debug\nLOG_FORMAT=text\nLOG_ADD_SOURCE=true\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(project, ".env"), []byte("NODE_ID=dotenv-node\nTRUST_MODE=open\nNATS_SERVERS=nats://10.0.0.2:4222\nAGENT_ADAPTER=openclaw\nLOG_LEVEL=debug\nLOG_FORMAT=text\nLOG_ADD_SOURCE=true\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -116,9 +116,6 @@ func TestLoadFromOSMergesDotEnvEnvAndFlags(t *testing.T) {
 	if cfg.AgentAdapter != "openclaw" {
 		t.Fatalf("expected dotenv agent adapter openclaw, got %q", cfg.AgentAdapter)
 	}
-	if cfg.OpenClawAgentID != "main" {
-		t.Fatalf("expected dotenv openclaw agent id, got %q", cfg.OpenClawAgentID)
-	}
 }
 
 func TestLoadFromOSUsesExplicitConfigPath(t *testing.T) {
@@ -160,28 +157,11 @@ func clearConfigEnv(t *testing.T) {
 		"ANNOUNCE_TTL_MS",
 		"TRUST_MODE",
 		"AGENT_ADAPTER",
-		"OPENCLAW_AGENT_ID",
 		"LOG_LEVEL",
 		"LOG_FORMAT",
 		"LOG_ADD_SOURCE",
 	} {
 		t.Setenv(key, "")
-	}
-}
-
-func TestLoadFromOSRequiresAgentIDForOpenClaw(t *testing.T) {
-	home := t.TempDir()
-	project := t.TempDir()
-	t.Setenv("HOME", home)
-	clearConfigEnv(t)
-	chdirTempProject(t, project)
-
-	_, err := LoadFromOS([]string{"--node-id", "node-alpha", "--agent-adapter", "openclaw"})
-	if err == nil {
-		t.Fatal("expected config validation error")
-	}
-	if err.Error() != "openclaw agent id is required when agent adapter is openclaw" {
-		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

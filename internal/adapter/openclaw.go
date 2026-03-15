@@ -12,26 +12,19 @@ import (
 )
 
 type OpenClawConfig struct {
-	NodeID  string
-	AgentID string
-	Logger  *slog.Logger
+	NodeID string
+	Logger *slog.Logger
 }
 
 type OpenClawAdapter struct {
 	nodeID  string
-	agentID string
 	log     *slog.Logger
 	execCmd func(ctx context.Context, args ...string) ([]byte, error)
 }
 
 func NewOpenClawAdapter(cfg OpenClawConfig) (*OpenClawAdapter, error) {
-	if strings.TrimSpace(cfg.AgentID) == "" {
-		return nil, errors.New("openclaw agent id is required")
-	}
-
 	return &OpenClawAdapter{
 		nodeID:  strings.TrimSpace(cfg.NodeID),
-		agentID: strings.TrimSpace(cfg.AgentID),
 		log:     cfg.Logger,
 		execCmd: defaultExecCmd,
 	}, nil
@@ -42,7 +35,6 @@ func (a *OpenClawAdapter) DeliverMessage(ctx context.Context, req DeliverMessage
 	sessionID := a.resolveSessionID(req)
 	args := []string{
 		"agent",
-		"--agent", a.agentID,
 		"--message", msg,
 		"--json",
 		"--session-id", sessionID,
@@ -137,7 +129,6 @@ func (a *OpenClawAdapter) logCommand(args []string) {
 		return
 	}
 	a.log.Info("executing openclaw agent command",
-		slog.String("agentID", a.agentID),
 		slog.String("sessionID", redactedSessionID(args)),
 		slog.String("command", formatOpenClawCommandForLog(args)),
 	)

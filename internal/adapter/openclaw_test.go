@@ -43,27 +43,23 @@ func (h captureHandler) WithGroup(_ string) slog.Handler {
 
 func TestOpenClawAdapterDeliverMessage(t *testing.T) {
 	adapter, err := NewOpenClawAdapter(OpenClawConfig{
-		NodeID:  "node-alpha",
-		AgentID: "main",
+		NodeID: "node-alpha",
 	})
 	if err != nil {
 		t.Fatalf("NewOpenClawAdapter failed: %v", err)
 	}
 
 	adapter.execCmd = func(_ context.Context, args ...string) ([]byte, error) {
-		// args: agent --agent main --message <msg> --json --session-id <id>
-		if len(args) < 8 || args[0] != "agent" {
+		// args: agent --message <msg> --json --session-id <id>
+		if len(args) < 6 || args[0] != "agent" {
 			t.Fatalf("unexpected args: %v", args)
 		}
-		if args[2] != "main" {
-			t.Fatalf("agent id = %q, want main", args[2])
-		}
 		wantMsg := "[clawsynapse from=node-beta to=node-alpha session=session-1]\nhello"
-		if args[4] != wantMsg {
-			t.Fatalf("message = %q, want %q", args[4], wantMsg)
+		if args[2] != wantMsg {
+			t.Fatalf("message = %q, want %q", args[2], wantMsg)
 		}
-		if args[6] != "--session-id" || args[7] != "session-1" {
-			t.Fatalf("session-id args = %v, want [--session-id session-1]", args[6:])
+		if args[4] != "--session-id" || args[5] != "session-1" {
+			t.Fatalf("session-id args = %v, want [--session-id session-1]", args[4:])
 		}
 
 		return []byte(`{
@@ -102,7 +98,7 @@ func TestOpenClawAdapterDeliverMessage(t *testing.T) {
 }
 
 func TestOpenClawAdapterDeliverMessageError(t *testing.T) {
-	adapter, err := NewOpenClawAdapter(OpenClawConfig{AgentID: "main"})
+	adapter, err := NewOpenClawAdapter(OpenClawConfig{})
 	if err != nil {
 		t.Fatalf("NewOpenClawAdapter failed: %v", err)
 	}
@@ -124,7 +120,7 @@ func TestOpenClawAdapterDeliverMessageError(t *testing.T) {
 }
 
 func TestOpenClawAdapterCommandFailure(t *testing.T) {
-	adapter, err := NewOpenClawAdapter(OpenClawConfig{AgentID: "main"})
+	adapter, err := NewOpenClawAdapter(OpenClawConfig{})
 	if err != nil {
 		t.Fatalf("NewOpenClawAdapter failed: %v", err)
 	}
@@ -139,18 +135,8 @@ func TestOpenClawAdapterCommandFailure(t *testing.T) {
 	}
 }
 
-func TestOpenClawAdapterValidatesConfig(t *testing.T) {
-	_, err := NewOpenClawAdapter(OpenClawConfig{})
-	if err == nil {
-		t.Fatal("expected config validation error")
-	}
-	if err.Error() != "openclaw agent id is required" {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
 func TestOpenClawAdapterGetStatus(t *testing.T) {
-	adapter, err := NewOpenClawAdapter(OpenClawConfig{AgentID: "main"})
+	adapter, err := NewOpenClawAdapter(OpenClawConfig{})
 	if err != nil {
 		t.Fatalf("NewOpenClawAdapter failed: %v", err)
 	}
@@ -205,7 +191,7 @@ func TestFormatDeliverMessageNoFrom(t *testing.T) {
 }
 
 func TestResolveSessionID(t *testing.T) {
-	a, _ := NewOpenClawAdapter(OpenClawConfig{NodeID: "node-1", AgentID: "main"})
+	a, _ := NewOpenClawAdapter(OpenClawConfig{NodeID: "node-1"})
 
 	// explicit sessionKey takes priority
 	got := a.resolveSessionID(DeliverMessageRequest{SessionKey: "task-1", From: "node-2"})
@@ -255,13 +241,12 @@ func TestFormatOpenClawCommandForLogTruncatesMessage(t *testing.T) {
 
 	got := formatOpenClawCommandForLog([]string{
 		"agent",
-		"--agent", "main",
 		"--message", message,
 		"--json",
 		"--session-id", "session-1",
 	})
 
-	if !strings.Contains(got, `openclaw "agent" "--agent" "main" "--message" "`) {
+	if !strings.Contains(got, `openclaw "agent" "--message" "`) {
 		t.Fatalf("command = %q, missing prefix", got)
 	}
 	if !strings.Contains(got, "truncated, 300 bytes total") {
@@ -277,9 +262,8 @@ func TestOpenClawAdapterDeliverMessageLogsCommand(t *testing.T) {
 	logger := slog.New(captureHandler{records: &records})
 
 	adapter, err := NewOpenClawAdapter(OpenClawConfig{
-		NodeID:  "node-alpha",
-		AgentID: "main",
-		Logger:  logger,
+		NodeID: "node-alpha",
+		Logger: logger,
 	})
 	if err != nil {
 		t.Fatalf("NewOpenClawAdapter failed: %v", err)
@@ -319,7 +303,7 @@ func TestOpenClawAdapterDeliverMessageLogsCommand(t *testing.T) {
 	if !strings.Contains(command, wantMarker) {
 		t.Fatalf("command = %q, missing truncation marker", command)
 	}
-	if !strings.Contains(command, `"--agent" "main"`) {
-		t.Fatalf("command = %q, missing agent", command)
+	if !strings.Contains(command, `openclaw "agent" "--message" "`) {
+		t.Fatalf("command = %q, missing command prefix", command)
 	}
 }

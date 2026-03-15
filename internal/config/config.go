@@ -32,7 +32,6 @@ type Config struct {
 	AnnounceTTL       string   `json:"announceTtl"`
 	TrustMode         string   `json:"trustMode"`
 	AgentAdapter      string   `json:"agentAdapter"`
-	OpenClawAgentID   string   `json:"openclawAgentId,omitempty"`
 	LogLevel          string   `json:"logLevel"`
 	LogFormat         string   `json:"logFormat"`
 	LogAddSource      bool     `json:"logAddSource"`
@@ -50,7 +49,6 @@ type runtimeConfig struct {
 	AnnounceTTL     time.Duration
 	TrustMode       string
 	AgentAdapter    string
-	OpenClawAgentID string
 	LogLevel        string
 	LogFormat       string
 	LogAddSource    bool
@@ -68,7 +66,6 @@ type configValues struct {
 	AnnounceTTL     time.Duration
 	TrustMode       string
 	AgentAdapter    string
-	OpenClawAgentID string
 	LogLevel        string
 	LogFormat       string
 	LogAddSource    bool
@@ -88,7 +85,6 @@ func (c Config) Runtime() runtimeConfig {
 		AnnounceTTL:     t,
 		TrustMode:       c.TrustMode,
 		AgentAdapter:    c.AgentAdapter,
-		OpenClawAgentID: c.OpenClawAgentID,
 		LogLevel:        c.LogLevel,
 		LogFormat:       c.LogFormat,
 		LogAddSource:    c.LogAddSource,
@@ -130,7 +126,6 @@ func LoadFromOS(args []string) (Config, error) {
 		announceTTL     = fs.Duration("announce-ttl", merged.AnnounceTTL, "announce ttl")
 		trustMode       = fs.String("trust-mode", merged.TrustMode, "trust mode: open|tofu|explicit")
 		agentAdapter    = fs.String("agent-adapter", merged.AgentAdapter, "agent adapter: default|openclaw")
-		openclawAgentID = fs.String("openclaw-agent-id", merged.OpenClawAgentID, "openclaw agent id")
 		logLevel        = fs.String("log-level", merged.LogLevel, "log level: debug|info|warn|error")
 		logFormat       = fs.String("log-format", merged.LogFormat, "log format: json|text")
 		logAddSource    = fs.Bool("log-add-source", merged.LogAddSource, "include source location in logs")
@@ -161,12 +156,6 @@ func LoadFromOS(args []string) (Config, error) {
 	}
 	if adapterName != "default" && adapterName != "openclaw" {
 		return Config{}, errors.New("agent adapter must be one of: default|openclaw")
-	}
-	openclawAgentIDValue := strings.TrimSpace(*openclawAgentID)
-	if adapterName == "openclaw" {
-		if openclawAgentIDValue == "" {
-			return Config{}, errors.New("openclaw agent id is required when agent adapter is openclaw")
-		}
 	}
 	level := strings.ToLower(strings.TrimSpace(*logLevel))
 	if level != "debug" && level != "info" && level != "warn" && level != "error" {
@@ -201,7 +190,6 @@ func LoadFromOS(args []string) (Config, error) {
 		AnnounceTTL:       announceTTL.String(),
 		TrustMode:         mode,
 		AgentAdapter:      adapterName,
-		OpenClawAgentID:   openclawAgentIDValue,
 		LogLevel:          level,
 		LogFormat:         format,
 		LogAddSource:      *logAddSource,
@@ -255,9 +243,6 @@ func mergeConfigValues(base, override configValues) configValues {
 	}
 	if strings.TrimSpace(override.AgentAdapter) != "" {
 		base.AgentAdapter = strings.TrimSpace(override.AgentAdapter)
-	}
-	if strings.TrimSpace(override.OpenClawAgentID) != "" {
-		base.OpenClawAgentID = strings.TrimSpace(override.OpenClawAgentID)
 	}
 	if strings.TrimSpace(override.LogLevel) != "" {
 		base.LogLevel = strings.TrimSpace(override.LogLevel)

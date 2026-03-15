@@ -111,9 +111,8 @@ func newAgentAdapter(cfg config.Config, log *slog.Logger) (adapter.AgentAdapter,
 		return adapter.NewDefaultAdapter(cfg.NodeID), nil
 	case "openclaw":
 		return adapter.NewOpenClawAdapter(adapter.OpenClawConfig{
-			NodeID:  cfg.NodeID,
-			AgentID: cfg.OpenClawAgentID,
-			Logger:  log.With(slog.String("component", "adapter"), slog.String("adapter", "openclaw")),
+			NodeID: cfg.NodeID,
+			Logger: log.With(slog.String("component", "adapter"), slog.String("adapter", "openclaw")),
 		})
 	default:
 		return nil, fmt.Errorf("unsupported agent adapter: %s", cfg.AgentAdapter)

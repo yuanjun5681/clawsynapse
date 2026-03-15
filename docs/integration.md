@@ -116,7 +116,7 @@ CLI 验证：
 ```bash
 openclaw gateway run
 OPENCLAW_GATEWAY_TOKEN=your-gateway-token \
-  openclaw agent --agent <agentId> --message "你好"
+  openclaw agent --message "你好"
 ```
 
 WebSocket 调用流程：
