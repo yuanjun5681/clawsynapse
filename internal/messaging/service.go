@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -90,7 +91,7 @@ func (s *Service) Publish(req PublishRequest) (PublishResult, error) {
 
 	sessionKey := req.SessionKey
 	if strings.TrimSpace(sessionKey) == "" {
-		sessionKey = "ses-" + randID()
+		sessionKey = newSessionKey()
 	}
 
 	env := protocol.MessageEnvelope{
@@ -315,4 +316,23 @@ func randID() string {
 		return fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+func newSessionKey() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		ts := time.Now().UnixNano()
+		for i := range b {
+			b[i] = byte(ts >> ((i % 8) * 8))
+		}
+	}
+
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+
+	return hex.EncodeToString(b[0:4]) + "-" +
+		hex.EncodeToString(b[4:6]) + "-" +
+		hex.EncodeToString(b[6:8]) + "-" +
+		hex.EncodeToString(b[8:10]) + "-" +
+		hex.EncodeToString(b[10:16])
 }

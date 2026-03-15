@@ -3,6 +3,7 @@ package messaging
 import (
 	"context"
 	"log/slog"
+	"regexp"
 	"testing"
 	"time"
 
@@ -127,5 +128,13 @@ func TestMaybeDeliverSkipsReplyAndEnd(t *testing.T) {
 	case msg := <-delivered:
 		t.Fatalf("unexpected extra delivery: %q", msg)
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestNewSessionKeyUsesUUIDv4Format(t *testing.T) {
+	sessionKey := newSessionKey()
+	pattern := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	if !pattern.MatchString(sessionKey) {
+		t.Fatalf("sessionKey = %q, want UUID v4", sessionKey)
 	}
 }
