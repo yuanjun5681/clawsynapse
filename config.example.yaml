@@ -4,7 +4,6 @@ natsServers:
 localApiAddr: 127.0.0.1:18080
 trustMode: tofu
 agentAdapter: default
-openclawAgentId: main
 heartbeatInterval: 15s
 announceTtl: 30s
 dataDir: ~/.clawsynapse

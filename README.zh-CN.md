@@ -39,8 +39,7 @@ clawsynapsed --node-id node-alpha
 clawsynapsed \
   --node-id node-alpha \
   --trust-mode open \
-  --agent-adapter openclaw \
-  --openclaw-agent-id main
+  --agent-adapter openclaw
 ```
 
 也可通过环境变量配置：
@@ -49,7 +48,6 @@ clawsynapsed \
 export NODE_ID=node-alpha
 export TRUST_MODE=open
 export AGENT_ADAPTER=openclaw
-export OPENCLAW_AGENT_ID=main
 clawsynapsed
 ```
 

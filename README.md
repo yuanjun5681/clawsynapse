@@ -39,8 +39,7 @@ Start with OpenClaw adapter:
 clawsynapsed \
   --node-id node-alpha \
   --trust-mode open \
-  --agent-adapter openclaw \
-  --openclaw-agent-id main
+  --agent-adapter openclaw
 ```
 
 Or configure via environment variables:
@@ -49,7 +48,6 @@ Or configure via environment variables:
 export NODE_ID=node-alpha
 export TRUST_MODE=open
 export AGENT_ADAPTER=openclaw
-export OPENCLAW_AGENT_ID=main
 clawsynapsed
 ```
 
