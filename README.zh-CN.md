@@ -163,6 +163,7 @@ clawsynapsed --check-config
 ## 更多文档
 
 - [总览](./docs/overview.md)
+- [Agent Internet 愿景](./docs/agent-internet.md)
 - [CLI 使用](./docs/cli.md)
 - [运行与配置](./docs/operations.md)
 - [消息与协议](./docs/messaging.md)
