@@ -25,6 +25,9 @@ func TestWebhookDeliverMessageSuccess(t *testing.T) {
 		if ct := r.Header.Get("Content-Type"); ct != "application/json" {
 			t.Fatalf("expected application/json, got %s", ct)
 		}
+		if auth := r.Header.Get("Authorization"); auth != "Bearer webhook-secret" {
+			t.Fatalf("expected bearer token, got %q", auth)
+		}
 		body, _ := io.ReadAll(r.Body)
 		if err := json.Unmarshal(body, &received); err != nil {
 			t.Fatalf("unmarshal: %v", err)
@@ -34,12 +37,13 @@ func TestWebhookDeliverMessageSuccess(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	a, err := NewWebhookAdapter(WebhookConfig{NodeID: "node-1", URL: srv.URL})
+	a, err := NewWebhookAdapter(WebhookConfig{NodeID: "node-1", URL: srv.URL, AuthToken: " webhook-secret "})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	result, err := a.DeliverMessage(context.Background(), DeliverMessageRequest{
+		MessageID:  "msg-123",
 		Type:       "chat",
 		AgentID:    "agent-42",
 		From:       "peer-a",
@@ -63,6 +67,9 @@ func TestWebhookDeliverMessageSuccess(t *testing.T) {
 	if received.NodeID != "node-1" {
 		t.Fatalf("expected nodeId node-1, got %s", received.NodeID)
 	}
+	if received.MessageID != "msg-123" {
+		t.Fatalf("expected messageId msg-123, got %s", received.MessageID)
+	}
 	if received.From != "peer-a" {
 		t.Fatalf("expected from peer-a, got %s", received.From)
 	}
@@ -83,6 +90,9 @@ func TestWebhookDeliverMessageSuccess(t *testing.T) {
 func TestWebhookDeliverMessageRequestDecodesEscapedNewlines(t *testing.T) {
 	var received webhookPayload
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if auth := r.Header.Get("Authorization"); auth != "" {
+			t.Fatalf("expected no authorization header, got %q", auth)
+		}
 		body, _ := io.ReadAll(r.Body)
 		if err := json.Unmarshal(body, &received); err != nil {
 			t.Fatalf("unmarshal: %v", err)
@@ -163,11 +173,14 @@ func TestWebhookGetStatusHealthy(t *testing.T) {
 		if r.Method != http.MethodGet {
 			t.Fatalf("expected GET, got %s", r.Method)
 		}
+		if auth := r.Header.Get("Authorization"); auth != "Bearer status-secret" {
+			t.Fatalf("expected bearer token, got %q", auth)
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 
-	a, err := NewWebhookAdapter(WebhookConfig{NodeID: "n1", URL: srv.URL})
+	a, err := NewWebhookAdapter(WebhookConfig{NodeID: "n1", URL: srv.URL, AuthToken: "status-secret"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,5 +211,25 @@ func TestWebhookGetStatusUnhealthy(t *testing.T) {
 	}
 	if status.Healthy {
 		t.Fatal("expected unhealthy for 503")
+	}
+}
+
+func TestWebhookGetStatusUnhealthyWhenUnauthorized(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	a, err := NewWebhookAdapter(WebhookConfig{NodeID: "n1", URL: srv.URL, AuthToken: "wrong-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := a.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status.Healthy {
+		t.Fatal("expected unhealthy for 401")
 	}
 }

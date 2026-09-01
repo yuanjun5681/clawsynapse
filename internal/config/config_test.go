@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,6 +59,12 @@ func TestLoadFromOSReadsHomeConfig(t *testing.T) {
 	if cfg.AgentAdapterTimeout != "10m0s" {
 		t.Fatalf("expected default agent adapter timeout 10m0s, got %q", cfg.AgentAdapterTimeout)
 	}
+	if cfg.AgentProduct != "clawsynapse" {
+		t.Fatalf("expected default agent product clawsynapse, got %q", cfg.AgentProduct)
+	}
+	if len(cfg.Capabilities) != 2 || cfg.Capabilities[0] != "chat" || cfg.Capabilities[1] != "tools" {
+		t.Fatalf("unexpected default capabilities: %#v", cfg.Capabilities)
+	}
 }
 
 func TestLoadFromOSMergesDotEnvEnvAndFlags(t *testing.T) {
@@ -77,7 +84,7 @@ func TestLoadFromOSMergesDotEnvEnvAndFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := os.WriteFile(filepath.Join(project, ".env"), []byte("TRUST_MODE=open\nTRUST_AUTO_APPROVE=true\nNATS_SERVERS=nats://10.0.0.2:4222\nAGENT_ADAPTER=openclaw\nAGENT_ADAPTER_TIMEOUT=15m\nLOG_LEVEL=debug\nLOG_FORMAT=text\nLOG_ADD_SOURCE=true\nLOG_FILE_PATH=./runtime/clawsynapsed.log\nLOG_ROTATE_MAX_SIZE_MB=64\nLOG_ROTATE_MAX_BACKUPS=5\nLOG_ROTATE_MAX_AGE_DAYS=14\nLOG_ROTATE_COMPRESS=true\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(project, ".env"), []byte("TRUST_MODE=open\nTRUST_AUTO_APPROVE=true\nNATS_SERVERS=nats://10.0.0.2:4222\nAGENT_ADAPTER=openclaw\nAGENT_ADAPTER_TIMEOUT=15m\nAGENT_PRODUCT=deepseek-harness\nAGENT_VERSION=0.1.2-alpha.3\nAGENT_CAPABILITIES=chat,task,transfer\nLOG_LEVEL=debug\nLOG_FORMAT=text\nLOG_ADD_SOURCE=true\nLOG_FILE_PATH=./runtime/clawsynapsed.log\nLOG_ROTATE_MAX_SIZE_MB=64\nLOG_ROTATE_MAX_BACKUPS=5\nLOG_ROTATE_MAX_AGE_DAYS=14\nLOG_ROTATE_COMPRESS=true\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -141,6 +148,15 @@ func TestLoadFromOSMergesDotEnvEnvAndFlags(t *testing.T) {
 	}
 	if cfg.AgentAdapterTimeout != "15m0s" {
 		t.Fatalf("expected dotenv agent adapter timeout 15m0s, got %q", cfg.AgentAdapterTimeout)
+	}
+	if cfg.AgentProduct != "deepseek-harness" {
+		t.Fatalf("expected dotenv agent product deepseek-harness, got %q", cfg.AgentProduct)
+	}
+	if cfg.AgentVersion != "0.1.2-alpha.3" {
+		t.Fatalf("expected dotenv agent version 0.1.2-alpha.3, got %q", cfg.AgentVersion)
+	}
+	if len(cfg.Capabilities) != 3 || cfg.Capabilities[2] != "transfer" {
+		t.Fatalf("unexpected dotenv capabilities: %#v", cfg.Capabilities)
 	}
 }
 
@@ -213,10 +229,15 @@ func clearConfigEnv(t *testing.T) {
 		"IDENTITY_PUB_PATH",
 		"HEARTBEAT_INTERVAL_MS",
 		"ANNOUNCE_TTL_MS",
+		"AGENT_PRODUCT",
+		"AGENT_VERSION",
+		"AGENT_CAPABILITIES",
 		"TRUST_MODE",
 		"TRUST_AUTO_APPROVE",
 		"AGENT_ADAPTER",
 		"AGENT_ADAPTER_TIMEOUT",
+		"WEBHOOK_URL",
+		"WEBHOOK_AUTH_TOKEN",
 		"LOG_LEVEL",
 		"LOG_FORMAT",
 		"LOG_ADD_SOURCE",
@@ -227,6 +248,55 @@ func clearConfigEnv(t *testing.T) {
 		"LOG_ROTATE_COMPRESS",
 	} {
 		t.Setenv(key, "")
+	}
+}
+
+func TestWebhookAuthTokenComesOnlyFromProcessEnvironment(t *testing.T) {
+	home := t.TempDir()
+	project := t.TempDir()
+	t.Setenv("HOME", home)
+	clearConfigEnv(t)
+	chdirTempProject(t, project)
+
+	if err := os.WriteFile(filepath.Join(project, ".env"), []byte("WEBHOOK_AUTH_TOKEN=dotenv-secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFromOS(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WebhookAuthToken != "" {
+		t.Fatal("expected .env webhook token to be ignored")
+	}
+
+	t.Setenv("WEBHOOK_AUTH_TOKEN", " process-secret ")
+	cfg, err = LoadFromOS(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WebhookAuthToken != "process-secret" {
+		t.Fatalf("webhook token = %q, want process-secret", cfg.WebhookAuthToken)
+	}
+
+	encoded, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "process-secret") || strings.Contains(string(encoded), "webhookAuthToken") {
+		t.Fatalf("webhook token leaked through json: %s", encoded)
+	}
+
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := SaveToFile(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(saved), "process-secret") || strings.Contains(string(saved), "webhookAuthToken") {
+		t.Fatalf("webhook token leaked through yaml: %s", saved)
 	}
 }
 
@@ -321,6 +391,9 @@ func TestSaveToFileAndReadBack(t *testing.T) {
 		TrustAutoApprove:    true,
 		AgentAdapter:        "openclaw",
 		AgentAdapterTimeout: "20m",
+		AgentProduct:        "deepseek-harness",
+		AgentVersion:        "0.1.2-alpha.3",
+		Capabilities:        []string{"chat", "task", "transfer"},
 		LogLevel:            "debug",
 		LogFormat:           "text",
 		LogFilePath:         filepath.Join(dir, "clawsynapsed.log"),
@@ -357,6 +430,12 @@ func TestSaveToFileAndReadBack(t *testing.T) {
 	}
 	if loaded.AgentAdapterTimeout != 20*time.Minute {
 		t.Fatalf("expected agent adapter timeout 20m, got %s", loaded.AgentAdapterTimeout)
+	}
+	if loaded.AgentProduct != "deepseek-harness" || loaded.AgentVersion != "0.1.2-alpha.3" {
+		t.Fatalf("unexpected agent identity: product=%q version=%q", loaded.AgentProduct, loaded.AgentVersion)
+	}
+	if len(loaded.Capabilities) != 3 || loaded.Capabilities[2] != "transfer" {
+		t.Fatalf("unexpected capabilities: %#v", loaded.Capabilities)
 	}
 	if !loaded.LogAddSource {
 		t.Fatal("expected log add source true")

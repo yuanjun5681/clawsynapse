@@ -96,7 +96,27 @@ func New(cfg config.Config, version string) (*App, error) {
 		return nil, fmt.Errorf("init replay guard: %w", err)
 	}
 
-	discoverySvc := discovery.NewService(log.With(slog.String("component", "discovery")), bus, peers, fs, nodeID, nodeDID, base64.RawURLEncoding.EncodeToString(id.PublicKey), hb, ttl, cfg.TrustMode)
+	agentVersion := strings.TrimSpace(cfg.AgentVersion)
+	if agentVersion == "" {
+		agentVersion = version
+	}
+	discoverySvc := discovery.NewService(
+		log.With(slog.String("component", "discovery")),
+		bus,
+		peers,
+		fs,
+		nodeID,
+		nodeDID,
+		base64.RawURLEncoding.EncodeToString(id.PublicKey),
+		hb,
+		ttl,
+		cfg.TrustMode,
+		discovery.AnnounceConfig{
+			AgentProduct: cfg.AgentProduct,
+			AgentVersion: agentVersion,
+			Capabilities: cfg.Capabilities,
+		},
+	)
 	authSvc := auth.NewService(log.With(slog.String("component", "auth")), peers, bus, nodeID, id, replay, cfg.TrustMode)
 	discoverySvc.SetAutoAuthenticator(authSvc.StartChallenge)
 	trustSvc, err := trust.NewService(log.With(slog.String("component", "trust")), peers, bus, fs, nodeID, id, cfg.TrustAutoApprove)
@@ -139,11 +159,12 @@ func New(cfg config.Config, version string) (*App, error) {
 			"mimeType":   rec.MimeType,
 		})
 		msg := messaging.IncomingMessage{
-			Type:     "transfer.received",
-			From:     rec.PeerNode,
-			To:       nodeID,
-			Message:  string(content),
-			Metadata: rec.Metadata,
+			MessageID: "transfer.received:" + rec.TransferID,
+			Type:      "transfer.received",
+			From:      rec.PeerNode,
+			To:        nodeID,
+			Message:   string(content),
+			Metadata:  rec.Metadata,
 		}
 		if _, err := adapterHandler.HandleMessage(msg); err != nil {
 			log.Warn("deliver transfer.received to agent failed",
@@ -198,9 +219,10 @@ func newAgentAdapter(cfg config.Config, nodeID string, log *slog.Logger, fs *sto
 		})
 	case "webhook":
 		return adapter.NewWebhookAdapter(adapter.WebhookConfig{
-			NodeID: nodeID,
-			URL:    cfg.WebhookURL,
-			Logger: log.With(slog.String("component", "adapter"), slog.String("adapter", "webhook")),
+			NodeID:    nodeID,
+			URL:       cfg.WebhookURL,
+			AuthToken: cfg.WebhookAuthToken,
+			Logger:    log.With(slog.String("component", "adapter"), slog.String("adapter", "webhook")),
 		})
 	default:
 		return nil, fmt.Errorf("unsupported agent adapter: %s", cfg.AgentAdapter)

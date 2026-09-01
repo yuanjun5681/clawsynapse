@@ -12,14 +12,16 @@ import (
 )
 
 type WebhookConfig struct {
-	NodeID string
-	URL    string
-	Logger *slog.Logger
+	NodeID    string
+	URL       string
+	AuthToken string
+	Logger    *slog.Logger
 }
 
 type WebhookAdapter struct {
 	nodeID string
 	url    string
+	token  string
 	log    *slog.Logger
 	client *http.Client
 }
@@ -31,6 +33,7 @@ func NewWebhookAdapter(cfg WebhookConfig) (*WebhookAdapter, error) {
 	return &WebhookAdapter{
 		nodeID: cfg.NodeID,
 		url:    cfg.URL,
+		token:  strings.TrimSpace(cfg.AuthToken),
 		log:    cfg.Logger,
 		client: &http.Client{},
 	}, nil
@@ -38,6 +41,7 @@ func NewWebhookAdapter(cfg WebhookConfig) (*WebhookAdapter, error) {
 
 type webhookPayload struct {
 	NodeID     string         `json:"nodeId"`
+	MessageID  string         `json:"messageId"`
 	Type       string         `json:"type"`
 	AgentID    string         `json:"agentId,omitempty"`
 	From       string         `json:"from"`
@@ -59,6 +63,7 @@ type webhookResponse struct {
 func (a *WebhookAdapter) DeliverMessage(ctx context.Context, req DeliverMessageRequest) (*DeliverMessageResult, error) {
 	payload := webhookPayload{
 		NodeID:     a.nodeID,
+		MessageID:  req.MessageID,
 		Type:       req.Type,
 		AgentID:    req.AgentID,
 		From:       req.From,
@@ -85,6 +90,7 @@ func (a *WebhookAdapter) DeliverMessage(ctx context.Context, req DeliverMessageR
 		return nil, fmt.Errorf("create webhook request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	a.authorize(httpReq)
 
 	resp, err := a.client.Do(httpReq)
 	if err != nil {
@@ -172,10 +178,18 @@ func (a *WebhookAdapter) GetStatus(ctx context.Context) (*AgentStatus, error) {
 	if err != nil {
 		return &AgentStatus{Healthy: false}, err
 	}
+	a.authorize(req)
 	resp, err := a.client.Do(req)
 	if err != nil {
 		return &AgentStatus{Healthy: false}, err
 	}
 	resp.Body.Close()
-	return &AgentStatus{Healthy: resp.StatusCode < 500}, nil
+	healthy := resp.StatusCode < 500 && resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden
+	return &AgentStatus{Healthy: healthy}, nil
+}
+
+func (a *WebhookAdapter) authorize(req *http.Request) {
+	if a.token != "" {
+		req.Header.Set("Authorization", "Bearer "+a.token)
+	}
 }

@@ -45,6 +45,9 @@ func TestPublishRejectsUntrustedPeer(t *testing.T) {
 func TestAdapterMessageHandlerUsesAgentAdapter(t *testing.T) {
 	handler := NewAdapterMessageHandler(stubAgentAdapter{
 		deliver: func(_ context.Context, req adapter.DeliverMessageRequest) (*adapter.DeliverMessageResult, error) {
+			if req.MessageID != "msg-123" {
+				t.Fatalf("adapter messageId = %q, want msg-123", req.MessageID)
+			}
 			if req.AgentID != "agent-42" {
 				t.Fatalf("adapter agentId = %q, want agent-42", req.AgentID)
 			}
@@ -62,9 +65,10 @@ func TestAdapterMessageHandlerUsesAgentAdapter(t *testing.T) {
 	}, time.Second)
 
 	result, err := handler.HandleMessage(IncomingMessage{
-		AgentID: "agent-42",
-		From:    "node-alpha",
-		Message: "hello",
+		MessageID: "msg-123",
+		AgentID:   "agent-42",
+		From:      "node-alpha",
+		Message:   "hello",
 		Metadata: map[string]any{
 			"source": "test",
 		},

@@ -402,7 +402,7 @@ sig_input = messageType + "\n" + subject + "\n" + from + "\n" + to + "\n" + ts +
 | `messageId` | `string` | 是 | announce 消息 ID |
 | `messageType` | `string` | 是 | 固定为 `discovery.announce` |
 | `nodeId` | `string` | 是 | 节点唯一标识 |
-| `version` | `string` | 是 | 节点软件版本 |
+| `version` | `string` | 是 | Agent 产品版本；未配置 `agentVersion` 时使用 daemon 构建版本 |
 | `agentProduct` | `string` | 是 | 产品标识 |
 | `capabilities` | `string[]` | 是 | 节点能力列表 |
 | `inbox` | `string` | 是 | 默认收件箱 subject |

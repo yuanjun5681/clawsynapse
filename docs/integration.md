@@ -87,6 +87,7 @@ Webhook Adapter 收到的 JSON 示例：
 ```json
 {
   "nodeId": "n1-local",
+  "messageId": "transfer.received:tf_abc123",
   "type": "transfer.received",
   "from": "n1-sender",
   "message": "{\"transferId\":\"tf_abc123\",\"fileName\":\"report.pdf\",\"fileSize\":24576,\"localPath\":\"/data/transfers/tf_abc123-report.pdf\",\"mimeType\":\"application/pdf\"}",
@@ -201,6 +202,7 @@ ws.onmessage = (event) => {
 ```bash
 AGENT_ADAPTER=webhook
 WEBHOOK_URL=https://example.com/hooks/clawsynapse
+WEBHOOK_AUTH_TOKEN='<random-secret>'
 ```
 
 命令行：
@@ -217,6 +219,8 @@ agentAdapterTimeout: 10m
 webhookUrl: https://example.com/hooks/clawsynapse
 ```
 
+`WEBHOOK_AUTH_TOKEN` 是敏感值，只从 `clawsynapsed` 进程的 OS 环境读取，不支持 YAML、`.env` 或命令行参数，也不会出现在配置 API 和 `--check-config` 输出中。未设置时不发送认证头，以兼容现有 webhook；生产环境建议始终设置随机 token。
+
 ### Webhook Payload
 
 每次消息投递时，`WebhookAdapter` 向配置的 URL 发送 `POST` 请求，`Content-Type: application/json`，body 格式：
@@ -224,6 +228,7 @@ webhookUrl: https://example.com/hooks/clawsynapse
 ```json
 {
   "nodeId": "n1-2f4c6e8a0b1d3f557799aabbccddeeff",
+  "messageId": "m1-01hzy8example",
   "type": "chat.message",
   "from": "n1-11223344556677889900aabbccddeeff",
   "sessionKey": "nats:n1-11223344556677889900aabbccddeeff:n1-2f4c6e8a0b1d3f557799aabbccddeeff",
@@ -237,11 +242,20 @@ webhookUrl: https://example.com/hooks/clawsynapse
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `nodeId` | string | 本地节点 ID，由本地 DID 自动派生 |
+| `messageId` | string | ClawSynapse 原始消息 ID，可用于幂等去重、审计和关联回复 |
 | `type` | string | 消息类型（如 `chat.message`, `task.assign`） |
 | `from` | string | 发送方节点 ID |
 | `sessionKey` | string | 会话标识，可能为空 |
 | `message` | string | 消息正文 |
 | `metadata` | object | 附加元数据，可能为空 |
+
+设置 `WEBHOOK_AUTH_TOKEN` 后，POST 投递和 GET 健康检查都会携带：
+
+```http
+Authorization: Bearer <token>
+```
+
+token 不会写入请求 URL、日志或错误正文。
 
 ### 响应约定
 
@@ -265,10 +279,10 @@ webhookUrl: https://example.com/hooks/clawsynapse
 
 ### 健康检查
 
-`GetStatus` 对 webhook URL 发送 `GET` 请求：
+`GetStatus` 对 webhook URL 发送 `GET` 请求；配置 token 时使用与 POST 相同的 Bearer 认证：
 
-- 状态码 < 500 → healthy
-- 状态码 >= 500 或连接失败 → unhealthy
+- 状态码 < 500，且不是 401/403 → healthy
+- 状态码为 401/403、>= 500 或连接失败 → unhealthy
 
 ### 使用场景
 
