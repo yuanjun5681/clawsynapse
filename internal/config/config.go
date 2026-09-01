@@ -177,6 +177,7 @@ type configValues struct {
 	AgentAdapter        string
 	AgentAdapterTimeout time.Duration
 	WebhookURL          string
+	WebhookAuthToken    string
 	LogFilePath         string
 	LogRotateMaxSizeMB  int
 	LogRotateMaxBackups int
@@ -365,7 +366,7 @@ func LoadFromOS(args []string) (Config, error) {
 		AgentAdapter:        adapterName,
 		AgentAdapterTimeout: agentAdapterTimeout.String(),
 		WebhookURL:          webhookURL,
-		WebhookAuthToken:    strings.TrimSpace(os.Getenv("WEBHOOK_AUTH_TOKEN")),
+		WebhookAuthToken:    merged.WebhookAuthToken,
 		LogFilePath:         resolvedLogFilePath,
 		LogRotateMaxSizeMB:  *logRotateMaxSizeMB,
 		LogRotateMaxBackups: *logRotateMaxBackups,
@@ -458,6 +459,9 @@ func mergeConfigValues(base, override configValues) configValues {
 	}
 	if strings.TrimSpace(override.WebhookURL) != "" {
 		base.WebhookURL = strings.TrimSpace(override.WebhookURL)
+	}
+	if strings.TrimSpace(override.WebhookAuthToken) != "" {
+		base.WebhookAuthToken = strings.TrimSpace(override.WebhookAuthToken)
 	}
 	if strings.TrimSpace(override.LogFilePath) != "" {
 		base.LogFilePath = strings.TrimSpace(override.LogFilePath)

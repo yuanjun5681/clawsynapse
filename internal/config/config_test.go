@@ -251,7 +251,7 @@ func clearConfigEnv(t *testing.T) {
 	}
 }
 
-func TestWebhookAuthTokenComesOnlyFromProcessEnvironment(t *testing.T) {
+func TestWebhookAuthTokenLoadsFromDotEnvAndProcessEnv(t *testing.T) {
 	home := t.TempDir()
 	project := t.TempDir()
 	t.Setenv("HOME", home)
@@ -266,8 +266,8 @@ func TestWebhookAuthTokenComesOnlyFromProcessEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.WebhookAuthToken != "" {
-		t.Fatal("expected .env webhook token to be ignored")
+	if cfg.WebhookAuthToken != "dotenv-secret" {
+		t.Fatalf("webhook token = %q, want dotenv-secret", cfg.WebhookAuthToken)
 	}
 
 	t.Setenv("WEBHOOK_AUTH_TOKEN", " process-secret ")

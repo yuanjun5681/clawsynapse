@@ -214,6 +214,7 @@ func loadValuesFromMap(values map[string]string) configValues {
 		AgentAdapter:        strings.TrimSpace(values["AGENT_ADAPTER"]),
 		AgentAdapterTimeout: parseDurationValue(values["AGENT_ADAPTER_TIMEOUT"], 0),
 		WebhookURL:          strings.TrimSpace(values["WEBHOOK_URL"]),
+		WebhookAuthToken:    strings.TrimSpace(values["WEBHOOK_AUTH_TOKEN"]),
 		LogFilePath:         strings.TrimSpace(values["LOG_FILE_PATH"]),
 		LogRotateMaxSizeMB:  int(parseIntValue(values["LOG_ROTATE_MAX_SIZE_MB"])),
 		LogRotateMaxBackups: int(parseIntValue(values["LOG_ROTATE_MAX_BACKUPS"])),

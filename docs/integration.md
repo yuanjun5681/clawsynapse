@@ -219,7 +219,7 @@ agentAdapterTimeout: 10m
 webhookUrl: https://example.com/hooks/clawsynapse
 ```
 
-`WEBHOOK_AUTH_TOKEN` 是敏感值，只从 `clawsynapsed` 进程的 OS 环境读取，不支持 YAML、`.env` 或命令行参数，也不会出现在配置 API 和 `--check-config` 输出中。未设置时不发送认证头，以兼容现有 webhook；生产环境建议始终设置随机 token。
+`WEBHOOK_AUTH_TOKEN` 是敏感值，可从 `clawsynapsed` 进程的 OS 环境或项目根目录 `.env` 读取，不支持 YAML 或命令行参数，也不会出现在配置 API 和 `--check-config` 输出中。未设置或为空时不发送认证头，以兼容现有 webhook；生产环境建议始终设置随机 token。
 
 ### Webhook Payload
 

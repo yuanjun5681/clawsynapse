@@ -114,7 +114,7 @@ LOCAL_API_ADDR=127.0.0.1:18080
 
 `agentProduct`、`agentVersion` 和 `capabilities` 会写入 discovery announce。接入 DeepSeek Harness 时可分别设为 `deepseek-harness`、实际 Harness 版本以及插件真实支持的能力（例如 `chat,task,transfer`）。`agentVersion` 为空时使用 `clawsynapsed` 的构建版本。
 
-Webhook 共享 token 是例外：`WEBHOOK_AUTH_TOKEN` 只从 daemon 的 OS 进程环境读取，不读取 `.env`、YAML 或 CLI，且不会由配置 API 返回。
+`WEBHOOK_AUTH_TOKEN` 是敏感值：可从 daemon 的 OS 进程环境或项目根目录 `.env` 读取，不支持 YAML 或 CLI，且不会由配置 API 返回。
 
 补充配置项：
 
