@@ -235,6 +235,46 @@ func TestShouldLogLegacyAnnounceRateLimitsByPeer(t *testing.T) {
 	}
 }
 
+func TestNewAnnounceUsesConfiguredAgentIdentity(t *testing.T) {
+	svc := NewService(
+		slog.Default(),
+		nil,
+		NewRegistry(),
+		nil,
+		"node-alpha",
+		"did:key:node-alpha",
+		"public-key",
+		5*time.Second,
+		10*time.Second,
+		"tofu",
+		AnnounceConfig{
+			AgentProduct: "deepseek-harness",
+			AgentVersion: "0.1.2-alpha.3",
+			Capabilities: []string{"chat", "task", "transfer"},
+		},
+	)
+
+	msg := svc.newAnnounce()
+	if msg.AgentProduct != "deepseek-harness" {
+		t.Fatalf("agentProduct = %q, want deepseek-harness", msg.AgentProduct)
+	}
+	if msg.Version != "0.1.2-alpha.3" {
+		t.Fatalf("version = %q, want 0.1.2-alpha.3", msg.Version)
+	}
+	if got := len(msg.Capabilities); got != 3 {
+		t.Fatalf("capabilities length = %d, want 3", got)
+	}
+	if msg.Capabilities[2] != "transfer" {
+		t.Fatalf("capabilities = %#v, want transfer capability", msg.Capabilities)
+	}
+
+	msg.Capabilities[0] = "mutated"
+	second := svc.newAnnounce()
+	if second.Capabilities[0] != "chat" {
+		t.Fatalf("announce capabilities shared mutable storage: %#v", second.Capabilities)
+	}
+}
+
 func testAnnounce(t *testing.T, marker byte) protocol.DiscoveryAnnounce {
 	t.Helper()
 

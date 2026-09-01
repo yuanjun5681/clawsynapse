@@ -19,6 +19,9 @@ type fileConfig struct {
 	IdentityPubPath     string   `yaml:"identityPubPath"`
 	HeartbeatInterval   string   `yaml:"heartbeatInterval"`
 	AnnounceTTL         string   `yaml:"announceTtl"`
+	AgentProduct        string   `yaml:"agentProduct"`
+	AgentVersion        string   `yaml:"agentVersion"`
+	Capabilities        []string `yaml:"capabilities"`
 	TrustMode           string   `yaml:"trustMode"`
 	TrustAutoApprove    *bool    `yaml:"trustAutoApprove"`
 	AgentAdapter        string   `yaml:"agentAdapter"`
@@ -50,6 +53,9 @@ func toFileConfig(cfg Config) fileConfig {
 		IdentityPubPath:     cfg.IdentityPubPath,
 		HeartbeatInterval:   cfg.HeartbeatInterval,
 		AnnounceTTL:         cfg.AnnounceTTL,
+		AgentProduct:        cfg.AgentProduct,
+		AgentVersion:        cfg.AgentVersion,
+		Capabilities:        cloneStrings(cfg.Capabilities),
 		TrustMode:           cfg.TrustMode,
 		TrustAutoApprove:    &taa,
 		AgentAdapter:        cfg.AgentAdapter,
@@ -95,6 +101,9 @@ func loadConfigValues(path string, required bool) (configValues, error) {
 		DataDir:             strings.TrimSpace(cfg.DataDir),
 		IdentityKeyPath:     strings.TrimSpace(cfg.IdentityKeyPath),
 		IdentityPubPath:     strings.TrimSpace(cfg.IdentityPubPath),
+		AgentProduct:        strings.TrimSpace(cfg.AgentProduct),
+		AgentVersion:        strings.TrimSpace(cfg.AgentVersion),
+		Capabilities:        cloneStrings(cfg.Capabilities),
 		TrustMode:           strings.TrimSpace(cfg.TrustMode),
 		AgentAdapter:        strings.TrimSpace(cfg.AgentAdapter),
 		AgentAdapterTimeout: parseDurationValue(cfg.AgentAdapterTimeout, 0),
@@ -198,10 +207,14 @@ func loadValuesFromMap(values map[string]string) configValues {
 		IdentityPubPath:     strings.TrimSpace(values["IDENTITY_PUB_PATH"]),
 		Heartbeat:           parseDurationValue(values["HEARTBEAT_INTERVAL_MS"], 0),
 		AnnounceTTL:         parseDurationValue(values["ANNOUNCE_TTL_MS"], 0),
+		AgentProduct:        strings.TrimSpace(values["AGENT_PRODUCT"]),
+		AgentVersion:        strings.TrimSpace(values["AGENT_VERSION"]),
+		Capabilities:        splitCSV(values["AGENT_CAPABILITIES"]),
 		TrustMode:           strings.TrimSpace(values["TRUST_MODE"]),
 		AgentAdapter:        strings.TrimSpace(values["AGENT_ADAPTER"]),
 		AgentAdapterTimeout: parseDurationValue(values["AGENT_ADAPTER_TIMEOUT"], 0),
 		WebhookURL:          strings.TrimSpace(values["WEBHOOK_URL"]),
+		WebhookAuthToken:    strings.TrimSpace(values["WEBHOOK_AUTH_TOKEN"]),
 		LogFilePath:         strings.TrimSpace(values["LOG_FILE_PATH"]),
 		LogRotateMaxSizeMB:  int(parseIntValue(values["LOG_ROTATE_MAX_SIZE_MB"])),
 		LogRotateMaxBackups: int(parseIntValue(values["LOG_ROTATE_MAX_BACKUPS"])),

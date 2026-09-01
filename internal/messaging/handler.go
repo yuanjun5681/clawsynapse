@@ -85,6 +85,7 @@ func (h *AdapterMessageHandler) HandleMessage(msg IncomingMessage) (HandlerResul
 	defer cancel()
 
 	result, err := h.adapter.DeliverMessage(ctx, adapter.DeliverMessageRequest{
+		MessageID:  msg.MessageID,
 		Type:       msg.Type,
 		AgentID:    msg.AgentID,
 		SessionKey: msg.SessionKey,

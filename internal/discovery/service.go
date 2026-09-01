@@ -43,6 +43,9 @@ type Service struct {
 	ttl                time.Duration
 	heartbeat          time.Duration
 	trustMode          string
+	agentProduct       string
+	agentVersion       string
+	capabilities       []string
 	autoAuth           func(context.Context, string) error
 	authMu             sync.Mutex
 	authing            map[string]struct{}
@@ -50,7 +53,30 @@ type Service struct {
 	legacyAnnounceSeen map[string]time.Time
 }
 
-func NewService(log *slog.Logger, bus *natsbus.Client, peers *Registry, fs *store.FSStore, nodeID string, did string, publicKey string, heartbeat, ttl time.Duration, trustMode string) *Service {
+type AnnounceConfig struct {
+	AgentProduct string
+	AgentVersion string
+	Capabilities []string
+}
+
+func NewService(log *slog.Logger, bus *natsbus.Client, peers *Registry, fs *store.FSStore, nodeID string, did string, publicKey string, heartbeat, ttl time.Duration, trustMode string, announceConfigs ...AnnounceConfig) *Service {
+	announce := AnnounceConfig{
+		AgentProduct: "clawsynapse",
+		AgentVersion: "v0.1.0",
+		Capabilities: []string{"chat", "tools"},
+	}
+	if len(announceConfigs) > 0 {
+		configured := announceConfigs[0]
+		if configured.AgentProduct != "" {
+			announce.AgentProduct = configured.AgentProduct
+		}
+		if configured.AgentVersion != "" {
+			announce.AgentVersion = configured.AgentVersion
+		}
+		if len(configured.Capabilities) > 0 {
+			announce.Capabilities = configured.Capabilities
+		}
+	}
 	return &Service{
 		log:                log,
 		bus:                bus,
@@ -62,6 +88,9 @@ func NewService(log *slog.Logger, bus *natsbus.Client, peers *Registry, fs *stor
 		ttl:                ttl,
 		heartbeat:          heartbeat,
 		trustMode:          trustMode,
+		agentProduct:       announce.AgentProduct,
+		agentVersion:       announce.AgentVersion,
+		capabilities:       append([]string(nil), announce.Capabilities...),
 		authing:            map[string]struct{}{},
 		legacyAnnounceSeen: map[string]time.Time{},
 	}
@@ -108,24 +137,28 @@ func (s *Service) Start(ctx context.Context) error {
 }
 
 func (s *Service) publishAnnounce() error {
-	msg := protocol.DiscoveryAnnounce{
-		MessageID:    randID(),
-		MessageType:  "discovery.announce",
-		NodeID:       s.nodeID,
-		DID:          s.did,
-		Version:      "v0.1.0",
-		AgentProduct: "clawsynapse",
-		Capabilities: []string{"chat", "tools"},
-		Inbox:        "clawsynapse.msg." + s.nodeID + ".inbox",
-		PublicKey:    s.publicKey,
-		Ts:           time.Now().UnixMilli(),
-		TTLms:        s.ttl.Milliseconds(),
-	}
+	msg := s.newAnnounce()
 	if err := s.bus.PublishJSON(announceSubject, msg); err != nil {
 		return err
 	}
 	s.log.Debug("announce published", logging.Event("peer.announce.sent"), logging.Subject(announceSubject), slog.Int64("ttlMs", msg.TTLms))
 	return nil
+}
+
+func (s *Service) newAnnounce() protocol.DiscoveryAnnounce {
+	return protocol.DiscoveryAnnounce{
+		MessageID:    randID(),
+		MessageType:  "discovery.announce",
+		NodeID:       s.nodeID,
+		DID:          s.did,
+		Version:      s.agentVersion,
+		AgentProduct: s.agentProduct,
+		Capabilities: append([]string(nil), s.capabilities...),
+		Inbox:        "clawsynapse.msg." + s.nodeID + ".inbox",
+		PublicKey:    s.publicKey,
+		Ts:           time.Now().UnixMilli(),
+		TTLms:        s.ttl.Milliseconds(),
+	}
 }
 
 func (s *Service) publishDepart(reason string) error {

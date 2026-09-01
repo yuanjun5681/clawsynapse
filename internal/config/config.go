@@ -18,6 +18,8 @@ const (
 	defaultLocalAPIAddr        = "127.0.0.1:18080"
 	defaultHeartbeatInterval   = 15 * time.Second
 	defaultAnnounceTTL         = 30 * time.Second
+	defaultAgentProduct        = "clawsynapse"
+	defaultCapabilities        = "chat,tools"
 	defaultTrustMode           = "tofu"
 	defaultAgentAdapter        = "default"
 	defaultAgentAdapterTimeout = 10 * time.Minute
@@ -39,11 +41,15 @@ type Config struct {
 	IdentityPubPath     string   `json:"identityPubPath"`
 	HeartbeatInterval   string   `json:"heartbeatInterval"`
 	AnnounceTTL         string   `json:"announceTtl"`
+	AgentProduct        string   `json:"agentProduct"`
+	AgentVersion        string   `json:"agentVersion"`
+	Capabilities        []string `json:"capabilities"`
 	TrustMode           string   `json:"trustMode"`
 	TrustAutoApprove    bool     `json:"trustAutoApprove"`
 	AgentAdapter        string   `json:"agentAdapter"`
 	AgentAdapterTimeout string   `json:"agentAdapterTimeout"`
 	WebhookURL          string   `json:"webhookUrl"`
+	WebhookAuthToken    string   `json:"-"`
 	LogLevel            string   `json:"logLevel"`
 	LogFormat           string   `json:"logFormat"`
 	LogFilePath         string   `json:"logFilePath"`
@@ -131,6 +137,9 @@ type runtimeConfig struct {
 	IdentityPubPath     string
 	Heartbeat           time.Duration
 	AnnounceTTL         time.Duration
+	AgentProduct        string
+	AgentVersion        string
+	Capabilities        []string
 	TrustMode           string
 	TrustAutoApprove    bool
 	AgentAdapter        string
@@ -159,12 +168,16 @@ type configValues struct {
 	IdentityPubPath     string
 	Heartbeat           time.Duration
 	AnnounceTTL         time.Duration
+	AgentProduct        string
+	AgentVersion        string
+	Capabilities        []string
 	TrustMode           string
 	TrustAutoApprove    bool
 	TrustAutoApproveSet bool
 	AgentAdapter        string
 	AgentAdapterTimeout time.Duration
 	WebhookURL          string
+	WebhookAuthToken    string
 	LogFilePath         string
 	LogRotateMaxSizeMB  int
 	LogRotateMaxBackups int
@@ -192,6 +205,9 @@ func (c Config) Runtime() runtimeConfig {
 		IdentityPubPath:     c.IdentityPubPath,
 		Heartbeat:           h,
 		AnnounceTTL:         t,
+		AgentProduct:        c.AgentProduct,
+		AgentVersion:        c.AgentVersion,
+		Capabilities:        cloneStrings(c.Capabilities),
 		TrustMode:           c.TrustMode,
 		TrustAutoApprove:    c.TrustAutoApprove,
 		AgentAdapter:        c.AgentAdapter,
@@ -244,6 +260,9 @@ func LoadFromOS(args []string) (Config, error) {
 		identityPubPath     = fs.String("identity-pub-path", merged.IdentityPubPath, "public key file path")
 		heartbeat           = fs.Duration("heartbeat", merged.Heartbeat, "announce heartbeat interval")
 		announceTTL         = fs.Duration("announce-ttl", merged.AnnounceTTL, "announce ttl")
+		agentProduct        = fs.String("agent-product", merged.AgentProduct, "agent product advertised in discovery")
+		agentVersion        = fs.String("agent-version", merged.AgentVersion, "agent version advertised in discovery; defaults to daemon version")
+		capabilities        = fs.String("capabilities", strings.Join(merged.Capabilities, ","), "comma separated capabilities advertised in discovery")
 		trustMode           = fs.String("trust-mode", merged.TrustMode, "trust mode: open|tofu|explicit")
 		trustAutoApprove    = fs.Bool("trust-auto-approve", merged.TrustAutoApprove, "automatically approve valid inbound trust requests")
 		agentAdapter        = fs.String("agent-adapter", merged.AgentAdapter, "agent adapter: default|openclaw|opencode|webhook")
@@ -339,11 +358,15 @@ func LoadFromOS(args []string) (Config, error) {
 		IdentityPubPath:     resolvedPub,
 		HeartbeatInterval:   heartbeat.String(),
 		AnnounceTTL:         announceTTL.String(),
+		AgentProduct:        strings.TrimSpace(*agentProduct),
+		AgentVersion:        strings.TrimSpace(*agentVersion),
+		Capabilities:        splitCSV(*capabilities),
 		TrustMode:           mode,
 		TrustAutoApprove:    *trustAutoApprove,
 		AgentAdapter:        adapterName,
 		AgentAdapterTimeout: agentAdapterTimeout.String(),
 		WebhookURL:          webhookURL,
+		WebhookAuthToken:    merged.WebhookAuthToken,
 		LogFilePath:         resolvedLogFilePath,
 		LogRotateMaxSizeMB:  *logRotateMaxSizeMB,
 		LogRotateMaxBackups: *logRotateMaxBackups,
@@ -371,6 +394,8 @@ func defaultConfigValues(defaultDataDir string) configValues {
 		IdentityPubPath:     filepath.Join(defaultDataDir, "identity.pub"),
 		Heartbeat:           defaultHeartbeatInterval,
 		AnnounceTTL:         defaultAnnounceTTL,
+		AgentProduct:        defaultAgentProduct,
+		Capabilities:        splitCSV(defaultCapabilities),
 		TrustMode:           defaultTrustMode,
 		TrustAutoApprove:    false,
 		TrustAutoApproveSet: true,
@@ -410,6 +435,15 @@ func mergeConfigValues(base, override configValues) configValues {
 	if override.AnnounceTTL > 0 {
 		base.AnnounceTTL = override.AnnounceTTL
 	}
+	if strings.TrimSpace(override.AgentProduct) != "" {
+		base.AgentProduct = strings.TrimSpace(override.AgentProduct)
+	}
+	if strings.TrimSpace(override.AgentVersion) != "" {
+		base.AgentVersion = strings.TrimSpace(override.AgentVersion)
+	}
+	if len(override.Capabilities) > 0 {
+		base.Capabilities = cloneStrings(override.Capabilities)
+	}
 	if strings.TrimSpace(override.TrustMode) != "" {
 		base.TrustMode = strings.TrimSpace(override.TrustMode)
 	}
@@ -425,6 +459,9 @@ func mergeConfigValues(base, override configValues) configValues {
 	}
 	if strings.TrimSpace(override.WebhookURL) != "" {
 		base.WebhookURL = strings.TrimSpace(override.WebhookURL)
+	}
+	if strings.TrimSpace(override.WebhookAuthToken) != "" {
+		base.WebhookAuthToken = strings.TrimSpace(override.WebhookAuthToken)
 	}
 	if strings.TrimSpace(override.LogFilePath) != "" {
 		base.LogFilePath = strings.TrimSpace(override.LogFilePath)

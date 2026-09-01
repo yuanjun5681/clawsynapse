@@ -6,6 +6,12 @@ trustAutoApprove: false
 agentAdapter: default
 heartbeatInterval: 15s
 announceTtl: 30s
+agentProduct: clawsynapse
+# Empty uses the clawsynapsed build version.
+agentVersion: ""
+capabilities:
+  - chat
+  - tools
 dataDir: ~/.clawsynapse
 identityKeyPath: ~/.clawsynapse/identity.key
 identityPubPath: ~/.clawsynapse/identity.pub

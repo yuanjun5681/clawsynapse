@@ -5,7 +5,7 @@ title: "ClawSynapse"
 
 # ClawSynapse
 
-最后更新：2026-03-12
+最后更新：2026-08-31
 
 ClawSynapse 是一个面向多 Agent 产品互联的本地通信网络层。它运行在与 Agent 相同的物理设备上，作为一个独立的 Go 守护进程，对外连接 NATS，对内通过适配层调用本地 Agent 的公开 API。
 
@@ -21,6 +21,7 @@ ClawSynapse 采用分层命名：
 ## 文档导航
 
 - `docs/overview.md`：总览、命名、架构入口
+- [Agent Internet 愿景](./agent-internet.md)
 - [核心概念](./concepts.md)
 - [消息与协议](./messaging.md)
 - [信任与认证](./trust.md)
@@ -31,12 +32,13 @@ ClawSynapse 采用分层命名：
 建议阅读顺序：
 
 1. `docs/overview.md`
-2. `docs/concepts.md`
-3. `docs/messaging.md`
-4. `docs/trust.md`
-5. `docs/integration.md`
-6. `docs/cli.md`
-7. `docs/operations.md`
+2. `docs/agent-internet.md`
+3. `docs/concepts.md`
+4. `docs/messaging.md`
+5. `docs/trust.md`
+6. `docs/integration.md`
+7. `docs/cli.md`
+8. `docs/operations.md`
 
 ## 架构总览
 
