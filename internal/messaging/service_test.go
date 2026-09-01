@@ -272,3 +272,21 @@ func TestNewSessionKeyUsesUUIDv4Format(t *testing.T) {
 		t.Fatalf("sessionKey = %q, want UUID v4", sessionKey)
 	}
 }
+
+func TestPeerPublicKeyResolvesSelfIdentity(t *testing.T) {
+	peers := discovery.NewRegistry()
+	base := t.TempDir()
+	id, err := identity.LoadOrCreate(base+"/identity.key", base+"/identity.pub")
+	if err != nil {
+		t.Fatalf("identity init failed: %v", err)
+	}
+	svc := NewService(slog.Default(), peers, nil, "node-alpha", id, "tofu", nil)
+
+	pub, err := svc.peerPublicKey("node-alpha")
+	if err != nil {
+		t.Fatalf("self public key resolution failed: %v", err)
+	}
+	if string(pub) != string(id.PublicKey) {
+		t.Fatal("self public key mismatch")
+	}
+}

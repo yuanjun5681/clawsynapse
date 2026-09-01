@@ -347,6 +347,10 @@ func cloneMetadata(in map[string]any) map[string]any {
 }
 
 func (s *Service) peerPublicKey(peerNode string) (ed25519.PublicKey, error) {
+	if peerNode == s.nodeID {
+		// Self-delivered messages (single-node smoke tests) verify against our own identity.
+		return s.identity.PublicKey, nil
+	}
 	peer, ok := s.peers.Get(peerNode)
 	if !ok {
 		return nil, errors.New("peer not found")
