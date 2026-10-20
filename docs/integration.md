@@ -5,7 +5,7 @@ title: "ClawSynapse Integration"
 
 # ClawSynapse Integration
 
-最后更新：2026-03-17
+最后更新：2026-10-20
 
 本文档介绍如何通过 Agent Adapter 适配层将不同 Agent 产品接入 ClawSynapse。
 
@@ -26,10 +26,14 @@ type AgentAdapter interface {
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
+| `MessageID` | string | 当前消息 ID |
+| `RequestID` / `RunID` / `Seq` | string / string / uint64 | 执行事件关联字段 |
 | `Type` | string | 消息类型（如 `chat.message`, `task.assign`） |
-| `AgentID` | string | 可选的目标智能体 ID，用于覆盖接收端本地路由 bindings |
-| `SessionKey` | string | 会话标识，用于关联上下文 |
-| `Message` | string | 消息正文 |
+| `AgentID` | string | 接收节点本地授权列表内的目标 Agent；不支持时明确拒绝 |
+| `SessionKey` | string | LLM 调用已按发送方和 Agent 隔离的会话键；Webhook 保留原键 |
+| `Message` | string | 文本快捷输入；结构化任务以 Payload 为准 |
+| `Payload` | protocol.MessagePayload | text、instruction/input 或执行反馈 |
+| `Emit` | func(OutputEvent) error | 同步背压的答案增量回调；错误须停止执行 |
 | `From` | string | 发送方节点 ID |
 | `Metadata` | map[string]any | 附加元数据 |
 
@@ -39,6 +43,7 @@ type AgentAdapter interface {
 |------|------|------|
 | `Success` | bool | 投递是否成功 |
 | `Accepted` | bool | Agent 是否接受了消息 |
+| `Completed` | bool | 已确认同步终态；只有 Accepted 不表示完成 |
 | `RunID` | string | Agent 运行 ID（如适用） |
 | `Reply` | string | Agent 的回复内容 |
 | `Error` | string | 错误描述（失败时） |
@@ -48,6 +53,7 @@ type AgentAdapter interface {
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `Healthy` | bool | Agent 是否健康 |
+| `Degraded` / `Detail` | bool / string | 探针限制与非敏感诊断，不把 CLI 存在等同于模型可用 |
 
 ### 系统消息投递
 
@@ -61,7 +67,7 @@ type AgentAdapter interface {
 
 当远端节点向本节点发送文件，文件下载并保存到本地后，守护进程自动通过 Adapter 投递一条 `transfer.received` 消息。
 
-`Message` 字段为 JSON，包含传输固有信息：
+`Payload.Input` 为结构化 JSON，包含传输固有信息：
 
 | 键 | 类型 | 说明 |
 |----|------|------|
@@ -71,18 +77,11 @@ type AgentAdapter interface {
 | `localPath` | string | 本地文件路径 |
 | `mimeType` | string | 文件 MIME 类型 |
 
-`AgentID` 用于显式指定接收端本地 Agent，适配器可将其映射为底层路由参数；对 OpenClaw Adapter 会转换为 `--agent <id>`。
+`AgentID` 不允许任意覆盖本地路由；OpenClaw/OpenCode 只接受 `agentAllowedIds` 中的名称，Codex 拒绝所有非空 AgentID。
 
 `Metadata` 字段为发送方附带的业务扩展元数据（如 `taskId`、`todoId`），与 `POST /v1/publish` 中 `metadata` 的语义一致。
 
-OpenClaw Adapter 收到的格式示例：
-
-```
-[clawsynapse type=transfer.received from=n1-sender to=n1-local taskId=task-001]
-{"transferId":"tf_abc123","fileName":"report.pdf","fileSize":24576,"localPath":"/data/transfers/tf_abc123-report.pdf","mimeType":"application/pdf"}
-```
-
-Webhook Adapter 收到的 JSON 示例：
+CLI Adapter 将请求编码为 JSON prompt，不再拼接未转义的 `key=value` header。Webhook 同样接收结构化 payload，例如：
 
 ```json
 {
@@ -90,10 +89,17 @@ Webhook Adapter 收到的 JSON 示例：
   "messageId": "transfer.received:tf_abc123",
   "type": "transfer.received",
   "from": "n1-sender",
-  "message": "{\"transferId\":\"tf_abc123\",\"fileName\":\"report.pdf\",\"fileSize\":24576,\"localPath\":\"/data/transfers/tf_abc123-report.pdf\",\"mimeType\":\"application/pdf\"}",
-  "metadata": {
-    "taskId": "task-001"
-  }
+  "message": "",
+  "payload": {
+    "input": {
+      "transferId": "tf_abc123",
+      "fileName": "report.pdf",
+      "fileSize": 24576,
+      "localPath": "/data/transfers/tf_abc123-report.pdf",
+      "mimeType": "application/pdf"
+    }
+  },
+  "metadata": {"taskId": "task-001"}
 }
 ```
 
@@ -103,10 +109,24 @@ Webhook Adapter 收到的 JSON 示例：
 |--------|---------------------|------|
 | `DefaultAdapter` | `default` | 内置默认，echo 回显，用于调试和测试 |
 | `OpenClawAdapter` | `openclaw` | 调用本地 OpenClaw CLI 投递消息 |
+| `OpenCodeAdapter` | `opencode` | 通过原生 JSONL 事件增量投递答案 |
+| `CodexAdapter` | `codex` | stdin prompt、原生 JSONL、明确 turn.completed 终态 |
 | `WebhookAdapter` | `webhook` | 通过 HTTP POST 将消息 JSON 转发到外部 URL |
 
 通过环境变量 `AGENT_ADAPTER` 或命令行 `--agent-adapter` 选择适配器。
 消息投递超时默认是 10 分钟，可通过 `AGENT_ADAPTER_TIMEOUT`、`--agent-adapter-timeout` 或 YAML 中的 `agentAdapterTimeout` 覆盖。
+
+### CLI 可靠性契约
+
+- Codex/OpenCode 增量读取原生事件；只发布答案，不转发 thinking、reasoning 或工具事件。Codex 必须出现 `turn.completed`；OpenCode 要求成功 `step_finish`，`tool-calls` 不是最终完成。
+- OpenClaw 保留 Gateway-backed `agent --json` 调用，以明确成功 status/result 判定；一次性 JSON 响应不宣称原生流式。
+- 未知输出、登录提示、仅启动事件、非零退出或中断不报完成；会话失效不自动新建重跑。
+- 单原生事件或一次性 JSON 响应最多 256 KiB，累计输出最多 4 MiB，stderr 最多 8 KiB；prompt 最多 32 KiB，argv prompt 最多 16 KiB。超限明确失败，不静默截断成功。
+- 首个答案立即发布，后续小片段按最多 4 KiB 合并，终止时刷新。回调背压同步传到进程，回调错误会取消执行。
+- Unix 使用独立进程组，Windows 使用 Job Object 管理进程树；超时、取消与 WaitDelay 有界。Windows 已交叉编译，实际运行仍需目标 OS 验收。
+- 产品会话读写失败显式报错。仅受当前原生事件契约支持的 CLI 可用；help/auth/health 探针只验证非交互能力，不替代真实模型任务验收。
+- 有 Emit 时结果不再重复返回完整 Reply；失败使用 ExecutionError 的 code、stage 和 indeterminate，不泄露原生 stdout/stderr。
+
 
 ---
 
@@ -116,21 +136,14 @@ Webhook Adapter 收到的 JSON 示例：
 
 ### 消息格式
 
-投递时将请求格式化为带 header 的文本：
+投递时把来源、消息关联、会话、payload 和 metadata 编码为 JSON prompt，字段值不再解释为可拼接的 header。JSON 结构不能消除提示词注入；授权和工具限制必须由本地策略落实。
 
-```
-[clawsynapse type=chat.message from=<peer-node-id> to=<local-node-id> session=sess-1 key=value]
-消息正文内容
-```
-
-header 中包含 `type`、`from`、`to`、`session` 以及 metadata 中的键值对。
-
-如果 `AgentID` 非空，OpenClaw Adapter 会额外附加 `--agent <id>`，用于覆盖 OpenClaw 的默认 bindings 路由。
+只有配置在 `agentAllowedIds`／`AGENT_ALLOWED_IDS`／`--agent-allowed-ids` 中的 AgentID 才会转换为 `--agent`；默认只允许产品默认 Agent。
 
 ### 会话映射
 
-- 优先使用请求中的 `SessionKey`
-- 如果为空，自动生成 `cs-{from}-{localNodeId}` 格式的会话 ID
+- 正常消息的产品会话由发送方、目标 Agent 与 sessionKey 的作用域摘要确定。
+- 缺少会话键时使用独立消息关联；已失效会话明确失败，由调用方显式创建新会话。
 
 ### 网关通信验证
 
@@ -233,6 +246,7 @@ webhookUrl: https://example.com/hooks/clawsynapse
   "from": "n1-11223344556677889900aabbccddeeff",
   "sessionKey": "nats:n1-11223344556677889900aabbccddeeff:n1-2f4c6e8a0b1d3f557799aabbccddeeff",
   "message": "请汇总最新报告",
+  "payload": {"text": "请汇总最新报告"},
   "metadata": { "priority": "high" }
 }
 ```
@@ -243,10 +257,12 @@ webhookUrl: https://example.com/hooks/clawsynapse
 |------|------|------|
 | `nodeId` | string | 本地节点 ID，由本地 DID 自动派生 |
 | `messageId` | string | ClawSynapse 原始消息 ID，可用于幂等去重、审计和关联回复 |
+| `requestId` / `runId` / `seq` | string / string / uint64 | run 事件的原请求、节点执行 ID 和序号 |
 | `type` | string | 消息类型（如 `chat.message`, `task.assign`） |
 | `from` | string | 发送方节点 ID |
 | `sessionKey` | string | 会话标识，可能为空 |
 | `message` | string | 消息正文 |
+| `payload` | object | 结构化请求或执行事件；不能只消费 message |
 | `metadata` | object | 附加元数据，可能为空 |
 
 设置 `WEBHOOK_AUTH_TOKEN` 后，POST 投递和 GET 健康检查都会携带：
@@ -259,19 +275,19 @@ token 不会写入请求 URL、日志或错误正文。
 
 ### 响应约定
 
-- **2xx**：视为投递成功
-- 若响应是纯文本，响应 body 原样作为 `Reply`
-- 若响应是 JSON 字符串，例如 `"done"`，会解码后作为 `Reply`
-- 若响应是 JSON 对象，优先读取 `reply`，其次读取 `message`
-- JSON 对象可选携带 `runId`、`sessionId`、`accepted`、`success`、`error`
-- **非 2xx**：视为投递失败，状态码和响应 body 记入错误信息
+- **2xx**：按返回内容区分完成与异步接纳；空响应只表示 Accepted。
+- 纯文本或 JSON 字符串作为同步答案；结构化对象读取 reply/message，以及 runId、sessionId、accepted、success、completed、error。
+- `completed: false` 不发布答案完成；`completed: true` 只表示 Webhook 契约确认的执行终态，不是设备物理凭据。
+- 响应超过 4 KiB 或读取失败会报错，不以截断正文判成功。
+- **非 2xx**：视为投递失败，仅返回状态码，不把响应正文泄露到错误中。
 
 推荐 Node webhook 直接返回结构化 JSON，例如：
 
 ```json
 {
   "reply": "line1\nline2",
-  "accepted": true
+  "accepted": true,
+  "completed": true
 }
 ```
 

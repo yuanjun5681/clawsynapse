@@ -2,50 +2,46 @@ package messaging
 
 import (
 	"context"
-	"fmt"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
 	"clawsynapse/internal/adapter"
+	"clawsynapse/internal/protocol"
 )
 
 type IncomingMessage struct {
+	Context    context.Context
 	MessageID  string
 	Type       string
+	RequestID  string
+	RunID      string
+	Seq        uint64
 	AgentID    string
 	From       string
 	To         string
 	Message    string
+	Payload    protocol.MessagePayload
 	SessionKey string
 	Metadata   map[string]any
+	Emit       func(adapter.OutputEvent) error
 }
 
 type HandlerResult struct {
-	Reply string
-	RunID string
+	Reply    string
+	RunID    string
+	Accepted bool
 }
 
 type MessageHandler interface {
 	HandleMessage(msg IncomingMessage) (HandlerResult, error)
 }
-
 type MessageHandlerFunc func(msg IncomingMessage) (HandlerResult, error)
 
-func (f MessageHandlerFunc) HandleMessage(msg IncomingMessage) (HandlerResult, error) {
-	return f(msg)
-}
-
-type DefaultMessageHandler struct {
-	nodeID string
-}
-
-func NewDefaultMessageHandler(nodeID string) *DefaultMessageHandler {
-	return &DefaultMessageHandler{nodeID: nodeID}
-}
-
-func (h *DefaultMessageHandler) HandleMessage(msg IncomingMessage) (HandlerResult, error) {
-	return HandlerResult{Reply: fmt.Sprintf("node %s handled message from %s: %s", h.nodeID, msg.From, msg.Message)}, nil
-}
+func (f MessageHandlerFunc) HandleMessage(msg IncomingMessage) (HandlerResult, error) { return f(msg) }
 
 type AdapterMessageHandler struct {
 	adapter        adapter.AgentAdapter
@@ -53,14 +49,9 @@ type AdapterMessageHandler struct {
 	acceptFeedback bool
 }
 
-// HandlerOption customizes an AdapterMessageHandler at construction time.
 type HandlerOption func(*AdapterMessageHandler)
 
-// WithFeedbackDelivery lets the handler forward .response / .error messages to
-// the underlying adapter. Use it for passthrough adapters (e.g. webhook) where
-// the remote endpoint can consume arbitrary notifications. Do NOT use it for
-// LLM-based adapters (openclaw, opencode, codex) — they would re-ingest the
-// reply text as a new prompt and create feedback loops.
+// WithFeedbackDelivery is only for non-LLM consumers such as webhook.
 func WithFeedbackDelivery() HandlerOption {
 	return func(h *AdapterMessageHandler) { h.acceptFeedback = true }
 }
@@ -80,50 +71,40 @@ func (h *AdapterMessageHandler) HandleMessage(msg IncomingMessage) (HandlerResul
 	if !h.acceptFeedback && isFeedbackType(msg.Type) {
 		return HandlerResult{}, nil
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), h.timeout)
+	if h.adapter == nil {
+		return HandlerResult{}, errors.New("adapter unavailable")
+	}
+	parent := msg.Context
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, h.timeout)
 	defer cancel()
-
-	result, err := h.adapter.DeliverMessage(ctx, adapter.DeliverMessageRequest{
-		MessageID:  msg.MessageID,
-		Type:       msg.Type,
-		AgentID:    msg.AgentID,
-		SessionKey: msg.SessionKey,
-		Message:    msg.Message,
-		From:       msg.From,
-		Metadata:   msg.Metadata,
-	})
+	sessionKey := msg.SessionKey
+	if !h.acceptFeedback {
+		if sessionKey == "" {
+			sessionKey = msg.MessageID
+		}
+		scope, _ := json.Marshal([]string{msg.From, msg.AgentID, sessionKey})
+		digest := sha256.Sum256(scope)
+		sessionKey = hex.EncodeToString(digest[:])
+	}
+	result, err := h.adapter.DeliverMessage(ctx, adapter.DeliverMessageRequest{MessageID: msg.MessageID, RequestID: msg.RequestID, RunID: msg.RunID, Seq: msg.Seq, Type: msg.Type, AgentID: msg.AgentID, SessionKey: sessionKey, Message: msg.Message, Payload: msg.Payload, From: msg.From, Metadata: msg.Metadata, Emit: msg.Emit})
 	if err != nil {
 		return HandlerResult{}, err
 	}
-	if result == nil {
-		return HandlerResult{}, fmt.Errorf("adapter returned nil result")
+	if err := ctx.Err(); err != nil {
+		return HandlerResult{}, err
 	}
-	if result.Error != "" {
-		return HandlerResult{}, fmt.Errorf("adapter error: %s", result.Error)
+	if result == nil || !result.Success || result.Error != "" {
+		return HandlerResult{}, errors.New("adapter did not accept execution")
 	}
-	if !result.Success {
-		return HandlerResult{}, fmt.Errorf("adapter did not complete successfully")
+	if !result.Completed && !result.Accepted {
+		return HandlerResult{}, errors.New("adapter returned no execution state")
 	}
-	if result.Reply != "" {
-		reply := result.Reply
-		if result.RunID != "" && !strings.Contains(reply, "runId="+result.RunID) {
-			reply = fmt.Sprintf("%s (runId=%s)", reply, result.RunID)
-		}
-		return HandlerResult{Reply: reply, RunID: result.RunID}, nil
-	}
-	if result.Accepted {
-		reply := "accepted"
-		if result.RunID != "" {
-			reply = fmt.Sprintf("accepted (runId=%s)", result.RunID)
-		}
-		return HandlerResult{Reply: reply, RunID: result.RunID}, nil
-	}
-	return HandlerResult{}, fmt.Errorf("adapter did not accept message")
+	return HandlerResult{Reply: result.Reply, RunID: result.RunID, Accepted: !result.Completed}, nil
 }
 
-// isFeedbackType 判断消息是否属于"反馈类"（上一条消息的响应或错误）。
-// 这类消息不应投递给 LLM 类适配器，也不应触发新的回复（见 service.replyToSender）。
 func isFeedbackType(t string) bool {
-	return strings.HasSuffix(t, ".response") || strings.HasSuffix(t, ".error")
+	return strings.HasPrefix(t, "run.") || strings.HasSuffix(t, ".response") || strings.HasSuffix(t, ".error")
 }

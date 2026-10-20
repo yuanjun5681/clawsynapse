@@ -66,7 +66,11 @@ func parseArgs(args []string, stderr io.Writer, opts Options) (config, error) {
 		defaultAPIAddr = strings.TrimSpace(os.Getenv("LOCAL_API_ADDR"))
 	}
 	if defaultAPIAddr == "" {
-		defaultAPIAddr = "127.0.0.1:18080"
+		localCfg, err := appconfig.LoadFromOS(nil)
+		if err != nil {
+			return config{}, err
+		}
+		defaultAPIAddr = localCfg.LocalAPIAddr
 	}
 
 	timeout := opts.Timeout
@@ -279,7 +283,18 @@ func initConfigFields() []configField {
 		{Label: "Capabilities", Key: "capabilities", Group: "Discovery", Kind: cfkStringSlice},
 		{Label: "Trust Mode", Key: "trustMode", Group: "Security", Kind: cfkEnum, Enums: []string{"open", "tofu", "explicit"}},
 		{Label: "Trust Auto Approve", Key: "trustAutoApprove", Group: "Security", Kind: cfkBool},
-		{Label: "Agent Adapter", Key: "agentAdapter", Group: "Agent", Kind: cfkEnum, Enums: []string{"default", "openclaw", "opencode", "webhook"}},
+		{Label: "API Token Path", Key: "apiTokenPath", Group: "Security", Kind: cfkText},
+		{Label: "Allow Remote API", Key: "allowRemoteAPI", Group: "Security", Kind: cfkBool},
+		{Label: "API TLS Certificate", Key: "apiTLSCertFile", Group: "Security", Kind: cfkText},
+		{Label: "API TLS Key", Key: "apiTLSKeyFile", Group: "Security", Kind: cfkText},
+		{Label: "Production", Key: "production", Group: "Security", Kind: cfkBool},
+		{Label: "NATS Credentials File", Key: "natsCredentialsFile", Group: "Security", Kind: cfkText},
+		{Label: "NATS TLS CA", Key: "natsTLSCAFile", Group: "Security", Kind: cfkText},
+		{Label: "NATS TLS Client Certificate", Key: "natsTLSCertFile", Group: "Security", Kind: cfkText},
+		{Label: "NATS TLS Client Key", Key: "natsTLSKeyFile", Group: "Security", Kind: cfkText},
+		{Label: "NATS TLS Server Name", Key: "natsTLSServerName", Group: "Security", Kind: cfkText},
+		{Label: "Agent Adapter", Key: "agentAdapter", Group: "Agent", Kind: cfkEnum, Enums: []string{"default", "openclaw", "opencode", "codex", "webhook"}},
+		{Label: "Authorized Agent IDs", Key: "agentAllowedIds", Group: "Agent", Kind: cfkStringSlice},
 		{Label: "Agent Adapter Timeout", Key: "agentAdapterTimeout", Group: "Agent", Kind: cfkText},
 		{Label: "Webhook URL", Key: "webhookUrl", Group: "Agent", Kind: cfkText},
 		{Label: "Deliverable Prefixes", Key: "deliverablePrefixes", Group: "Agent", Kind: cfkStringSlice},

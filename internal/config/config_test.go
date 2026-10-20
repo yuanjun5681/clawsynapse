@@ -222,6 +222,17 @@ func TestLoadFromOSCanDisableTrustAutoApproveFromEnvAndFlag(t *testing.T) {
 func clearConfigEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
+		"API_TOKEN_PATH",
+		"ALLOW_REMOTE_API",
+		"API_TLS_CERT_FILE",
+		"API_TLS_KEY_FILE",
+		"PRODUCTION",
+		"NATS_CREDENTIALS_FILE",
+		"NATS_TLS_CA_FILE",
+		"NATS_TLS_CERT_FILE",
+		"NATS_TLS_KEY_FILE",
+		"NATS_TLS_SERVER_NAME",
+		"AGENT_ALLOWED_IDS",
 		"NATS_SERVERS",
 		"LOCAL_API_ADDR",
 		"DATA_DIR",

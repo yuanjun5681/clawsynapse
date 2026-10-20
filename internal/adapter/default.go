@@ -16,13 +16,35 @@ func NewDefaultAdapter(nodeID string) *DefaultAdapter {
 	return &DefaultAdapter{nodeID: nodeID}
 }
 
-func (a *DefaultAdapter) DeliverMessage(_ context.Context, req DeliverMessageRequest) (*DeliverMessageResult, error) {
+func (a *DefaultAdapter) DeliverMessage(ctx context.Context, req DeliverMessageRequest) (*DeliverMessageResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, cancellationError(err, false)
+	}
 	runID := defaultRunID()
+	message := req.Payload.Text
+	if message == "" {
+		message = req.Payload.Instruction
+	}
+	if message == "" {
+		message = req.Message
+	}
+	reply := fmt.Sprintf("node %s handled message from %s (runId=%s): %s", a.nodeID, req.From, runID, message)
+	emitter := &answerEmitter{emit: req.Emit}
+	if err := emitter.add(reply); err != nil {
+		return nil, err
+	}
+	if err := emitter.flush(); err != nil {
+		return nil, err
+	}
+	if req.Emit != nil {
+		reply = ""
+	}
 	return &DeliverMessageResult{
-		Success:  true,
-		Accepted: true,
-		RunID:    runID,
-		Reply:    fmt.Sprintf("node %s handled message from %s (runId=%s): %s", a.nodeID, req.From, runID, req.Message),
+		Success:   true,
+		Accepted:  true,
+		Completed: true,
+		RunID:     runID,
+		Reply:     reply,
 	}, nil
 }
 

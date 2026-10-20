@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+
+	"clawsynapse/internal/protocol"
 )
 
 type WebhookConfig struct {
@@ -40,14 +42,18 @@ func NewWebhookAdapter(cfg WebhookConfig) (*WebhookAdapter, error) {
 }
 
 type webhookPayload struct {
-	NodeID     string         `json:"nodeId"`
-	MessageID  string         `json:"messageId"`
-	Type       string         `json:"type"`
-	AgentID    string         `json:"agentId,omitempty"`
-	From       string         `json:"from"`
-	SessionKey string         `json:"sessionKey,omitempty"`
-	Message    string         `json:"message"`
-	Metadata   map[string]any `json:"metadata,omitempty"`
+	NodeID     string                  `json:"nodeId"`
+	MessageID  string                  `json:"messageId"`
+	RequestID  string                  `json:"requestId,omitempty"`
+	RunID      string                  `json:"runId,omitempty"`
+	Seq        uint64                  `json:"seq,omitempty"`
+	Type       string                  `json:"type"`
+	AgentID    string                  `json:"agentId,omitempty"`
+	From       string                  `json:"from"`
+	SessionKey string                  `json:"sessionKey,omitempty"`
+	Message    string                  `json:"message"`
+	Payload    protocol.MessagePayload `json:"payload"`
+	Metadata   map[string]any          `json:"metadata,omitempty"`
 }
 
 type webhookResponse struct {
@@ -58,18 +64,23 @@ type webhookResponse struct {
 	Error     string `json:"error"`
 	Accepted  *bool  `json:"accepted"`
 	Success   *bool  `json:"success"`
+	Completed *bool  `json:"completed"`
 }
 
 func (a *WebhookAdapter) DeliverMessage(ctx context.Context, req DeliverMessageRequest) (*DeliverMessageResult, error) {
 	payload := webhookPayload{
 		NodeID:     a.nodeID,
 		MessageID:  req.MessageID,
+		RequestID:  req.RequestID,
+		RunID:      req.RunID,
+		Seq:        req.Seq,
 		Type:       req.Type,
 		AgentID:    req.AgentID,
 		From:       req.From,
 		SessionKey: req.SessionKey,
 		Message:    req.Message,
 		Metadata:   req.Metadata,
+		Payload:    req.Payload,
 	}
 
 	body, err := json.Marshal(payload)
@@ -98,15 +109,37 @@ func (a *WebhookAdapter) DeliverMessage(ctx context.Context, req DeliverMessageR
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 4097))
+	if err != nil {
+		return nil, &ExecutionError{Code: "response_read", Stage: "webhook", Indeterminate: true}
+	}
+	if len(respBody) > 4096 {
+		return nil, &ExecutionError{Code: "response_limit", Stage: "webhook", Indeterminate: true}
+	}
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return parseWebhookSuccess(respBody), nil
+		result := parseWebhookSuccess(respBody)
+		if !result.Completed {
+			result.Reply = ""
+		}
+		if result.Success && result.Completed && result.Reply != "" {
+			emitter := &answerEmitter{emit: req.Emit}
+			if err := emitter.add(result.Reply); err != nil {
+				return nil, err
+			}
+			if err := emitter.flush(); err != nil {
+				return nil, err
+			}
+			if req.Emit != nil {
+				result.Reply = ""
+			}
+		}
+		return result, nil
 	}
 
 	return &DeliverMessageResult{
 		Success: false,
-		Error:   fmt.Sprintf("webhook returned status %d: %s", resp.StatusCode, string(respBody)),
+		Error:   fmt.Sprintf("webhook returned status %d", resp.StatusCode),
 	}, nil
 }
 
@@ -122,9 +155,10 @@ func parseWebhookSuccess(body []byte) *DeliverMessageResult {
 	var reply string
 	if err := json.Unmarshal(body, &reply); err == nil {
 		return &DeliverMessageResult{
-			Success:  true,
-			Accepted: true,
-			Reply:    reply,
+			Success:   true,
+			Accepted:  true,
+			Completed: true,
+			Reply:     reply,
 		}
 	}
 
@@ -144,13 +178,22 @@ func parseWebhookSuccess(body []byte) *DeliverMessageResult {
 		if resp.Accepted != nil {
 			result.Accepted = *resp.Accepted
 		}
+		result.Completed = result.Success && result.Reply != ""
+		if resp.Completed != nil {
+			result.Completed = *resp.Completed && result.Success
+		}
+		if result.Error != "" {
+			result.Success = false
+			result.Completed = false
+		}
 		return result
 	}
 
 	return &DeliverMessageResult{
-		Success:  true,
-		Accepted: true,
-		Reply:    text,
+		Success:   true,
+		Accepted:  true,
+		Completed: true,
+		Reply:     text,
 	}
 }
 
@@ -161,7 +204,7 @@ func hasStructuredWebhookReply(resp webhookResponse) bool {
 		strings.TrimSpace(resp.SessionID) != "" ||
 		strings.TrimSpace(resp.Error) != "" ||
 		resp.Accepted != nil ||
-		resp.Success != nil
+		resp.Success != nil || resp.Completed != nil
 }
 
 func firstStructuredWebhookText(values ...string) string {

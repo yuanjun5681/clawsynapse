@@ -12,6 +12,7 @@ import (
 )
 
 type fileConfig struct {
+	SecurityValues      `yaml:",inline"`
 	NATSServers         []string `yaml:"natsServers"`
 	LocalAPIAddr        string   `yaml:"localApiAddr"`
 	DataDir             string   `yaml:"dataDir"`
@@ -25,6 +26,7 @@ type fileConfig struct {
 	TrustMode           string   `yaml:"trustMode"`
 	TrustAutoApprove    *bool    `yaml:"trustAutoApprove"`
 	AgentAdapter        string   `yaml:"agentAdapter"`
+	AgentAllowedIDs     []string `yaml:"agentAllowedIds"`
 	AgentAdapterTimeout string   `yaml:"agentAdapterTimeout"`
 	WebhookURL          string   `yaml:"webhookUrl"`
 	LogFilePath         string   `yaml:"logFilePath"`
@@ -46,6 +48,7 @@ func toFileConfig(cfg Config) fileConfig {
 	taa := cfg.TrustAutoApprove
 	mfs := cfg.TransferMaxFileSize
 	return fileConfig{
+		SecurityValues:      securityValuesFromConfig(cfg),
 		NATSServers:         cfg.NATSServers,
 		LocalAPIAddr:        cfg.LocalAPIAddr,
 		DataDir:             cfg.DataDir,
@@ -59,6 +62,7 @@ func toFileConfig(cfg Config) fileConfig {
 		TrustMode:           cfg.TrustMode,
 		TrustAutoApprove:    &taa,
 		AgentAdapter:        cfg.AgentAdapter,
+		AgentAllowedIDs:     cloneStrings(cfg.AgentAllowedIDs),
 		AgentAdapterTimeout: cfg.AgentAdapterTimeout,
 		WebhookURL:          cfg.WebhookURL,
 		LogFilePath:         cfg.LogFilePath,
@@ -96,6 +100,7 @@ func loadConfigValues(path string, required bool) (configValues, error) {
 	}
 
 	values := configValues{
+		SecurityValues:      cfg.SecurityValues,
 		NATSServers:         cloneStrings(cfg.NATSServers),
 		LocalAPIAddr:        strings.TrimSpace(cfg.LocalAPIAddr),
 		DataDir:             strings.TrimSpace(cfg.DataDir),
@@ -106,6 +111,7 @@ func loadConfigValues(path string, required bool) (configValues, error) {
 		Capabilities:        cloneStrings(cfg.Capabilities),
 		TrustMode:           strings.TrimSpace(cfg.TrustMode),
 		AgentAdapter:        strings.TrimSpace(cfg.AgentAdapter),
+		AgentAllowedIDs:     append([]string(nil), cfg.AgentAllowedIDs...),
 		AgentAdapterTimeout: parseDurationValue(cfg.AgentAdapterTimeout, 0),
 		WebhookURL:          strings.TrimSpace(cfg.WebhookURL),
 		LogFilePath:         strings.TrimSpace(cfg.LogFilePath),
@@ -114,6 +120,15 @@ func loadConfigValues(path string, required bool) (configValues, error) {
 		LogLevel:            strings.TrimSpace(cfg.LogLevel),
 		LogFormat:           strings.TrimSpace(cfg.LogFormat),
 	}
+	var securityFlags struct {
+		AllowRemoteAPI *bool `yaml:"allowRemoteAPI"`
+		Production     *bool `yaml:"production"`
+	}
+	if err := yaml.Unmarshal(data, &securityFlags); err != nil {
+		return configValues{}, fmt.Errorf("parse security config: %w", err)
+	}
+	values.allowRemoteSet = securityFlags.AllowRemoteAPI != nil
+	values.productionSet = securityFlags.Production != nil
 	if cfg.LogRotateMaxSizeMB != nil {
 		values.LogRotateMaxSizeMB = *cfg.LogRotateMaxSizeMB
 	}
@@ -200,6 +215,20 @@ func loadOSEnvValues() configValues {
 func loadValuesFromMap(values map[string]string) configValues {
 	trustAutoApproveRaw := strings.TrimSpace(values["TRUST_AUTO_APPROVE"])
 	cfg := configValues{
+		SecurityValues: SecurityValues{
+			APITokenPath:        strings.TrimSpace(values["API_TOKEN_PATH"]),
+			AllowRemoteAPI:      parseBoolValue(values["ALLOW_REMOTE_API"]),
+			APITLSCertFile:      strings.TrimSpace(values["API_TLS_CERT_FILE"]),
+			APITLSKeyFile:       strings.TrimSpace(values["API_TLS_KEY_FILE"]),
+			Production:          parseBoolValue(values["PRODUCTION"]),
+			NATSCredentialsFile: strings.TrimSpace(values["NATS_CREDENTIALS_FILE"]),
+			NATSTLSCAFile:       strings.TrimSpace(values["NATS_TLS_CA_FILE"]),
+			NATSTLSCertFile:     strings.TrimSpace(values["NATS_TLS_CERT_FILE"]),
+			NATSTLSKeyFile:      strings.TrimSpace(values["NATS_TLS_KEY_FILE"]),
+			NATSTLSServerName:   strings.TrimSpace(values["NATS_TLS_SERVER_NAME"]),
+			allowRemoteSet:      strings.TrimSpace(values["ALLOW_REMOTE_API"]) != "",
+			productionSet:       strings.TrimSpace(values["PRODUCTION"]) != "",
+		},
 		NATSServers:         splitCSV(values["NATS_SERVERS"]),
 		LocalAPIAddr:        strings.TrimSpace(values["LOCAL_API_ADDR"]),
 		DataDir:             strings.TrimSpace(values["DATA_DIR"]),
@@ -212,6 +241,7 @@ func loadValuesFromMap(values map[string]string) configValues {
 		Capabilities:        splitCSV(values["AGENT_CAPABILITIES"]),
 		TrustMode:           strings.TrimSpace(values["TRUST_MODE"]),
 		AgentAdapter:        strings.TrimSpace(values["AGENT_ADAPTER"]),
+		AgentAllowedIDs:     splitCSV(values["AGENT_ALLOWED_IDS"]),
 		AgentAdapterTimeout: parseDurationValue(values["AGENT_ADAPTER_TIMEOUT"], 0),
 		WebhookURL:          strings.TrimSpace(values["WEBHOOK_URL"]),
 		WebhookAuthToken:    strings.TrimSpace(values["WEBHOOK_AUTH_TOKEN"]),

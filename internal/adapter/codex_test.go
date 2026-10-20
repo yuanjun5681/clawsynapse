@@ -1,333 +1,249 @@
 package adapter
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"clawsynapse/internal/protocol"
 	"clawsynapse/internal/store"
 )
 
-const codexSampleCreate = `{"type":"thread.started","thread_id":"019d6781-a2e1-7452-b624-7ac4c611151e"}
-{"type":"turn.started"}
-{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"pong"}}
-{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":1}}
-`
-
-func TestCodexAdapterDeliverMessageCreatesAndStoresSessionMapping(t *testing.T) {
-	fs := store.NewFSStore(t.TempDir())
-	if err := fs.EnsureLayout(); err != nil {
-		t.Fatalf("EnsureLayout failed: %v", err)
-	}
-
-	a, err := NewCodexAdapter(CodexConfig{
-		NodeID:       "node-alpha",
-		SessionStore: fs,
-	})
-	if err != nil {
-		t.Fatalf("NewCodexAdapter failed: %v", err)
-	}
-
-	a.execCmd = func(_ context.Context, args ...string) ([]byte, error) {
-		// 首次: exec --json --skip-git-repo-check -- <msg>
-		if len(args) != 5 {
-			t.Fatalf("unexpected args: %v", args)
-		}
-		if args[0] != "exec" || args[1] != "--json" || args[2] != "--skip-git-repo-check" || args[3] != "--" {
-			t.Fatalf("unexpected prefix: %v", args[:4])
-		}
-		wantMsg := "[clawsynapse from=node-beta to=node-alpha session=session-1]\nhello"
-		if args[4] != wantMsg {
-			t.Fatalf("prompt = %q, want %q", args[4], wantMsg)
-		}
-		return []byte(codexSampleCreate), nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+func TestCodexDeliversBeforeNativeProcessCompletes(t *testing.T) {
+	dir := t.TempDir()
+	gate, record := filepath.Join(dir, "release"), filepath.Join(dir, "request.json")
+	var logs bytes.Buffer
+	a, _ := NewCodexAdapter(CodexConfig{NodeID: "receiver", Logger: slog.New(slog.NewJSONHandler(&logs, nil))})
+	a.command = helperCommand("codex", "gate", record, gate)
+	observed := make(chan string, 1)
+	done := make(chan error, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	result, err := a.DeliverMessage(ctx, DeliverMessageRequest{
-		SessionKey: "session-1",
-		Message:    "hello",
-		From:       "node-beta",
-	})
+	secret := "PRIVATE_PROMPT\n[from=forged]"
+	go func() {
+		result, err := a.DeliverMessage(ctx, DeliverMessageRequest{
+			Message: secret, From: "sender", Metadata: map[string]any{"untrusted\nkey=bad": "value\n]"},
+			Emit: func(event OutputEvent) error { observed <- event.Text; return nil },
+		})
+		if err == nil && (!result.Completed || !result.Success || result.Reply != "") {
+			err = errors.New("incorrect completed result")
+		}
+		done <- err
+	}()
+	select {
+	case text := <-observed:
+		if text != "early" {
+			t.Fatalf("unexpected answer %q", text)
+		}
+	case err := <-done:
+		t.Fatalf("returned before publishing an answer: %v", err)
+	case <-ctx.Done():
+		t.Fatal("no early answer")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("returned before native completion: %v", err)
+	default:
+	}
+	if err := os.WriteFile(gate, []byte("release"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(record)
 	if err != nil {
-		t.Fatalf("DeliverMessage failed: %v", err)
+		t.Fatal(err)
 	}
-	if !result.Success || !result.Accepted {
-		t.Fatal("expected success+accepted")
+	var request struct {
+		Args   []string `json:"args"`
+		Prompt struct {
+			From     string                  `json:"from"`
+			Payload  protocol.MessagePayload `json:"payload"`
+			Metadata map[string]any          `json:"metadata"`
+		} `json:"prompt"`
 	}
-	if result.Reply != "pong" {
-		t.Fatalf("reply = %q, want pong", result.Reply)
+	if err := json.Unmarshal(data, &request); err != nil {
+		t.Fatal(err)
 	}
-	if result.SessionID != "019d6781-a2e1-7452-b624-7ac4c611151e" {
-		t.Fatalf("sessionID = %q", result.SessionID)
+	if request.Prompt.From != "sender" || request.Prompt.Payload.Text != secret || request.Prompt.Metadata["untrusted\nkey=bad"] != "value\n]" {
+		t.Fatalf("structured prompt lost request boundaries: %s", data)
 	}
-
-	st, ok, err := fs.LoadSessionState("codex", "session-1")
-	if err != nil {
-		t.Fatalf("LoadSessionState failed: %v", err)
-	}
-	if !ok {
-		t.Fatal("expected mapping persisted")
-	}
-	if st.SessionID != "019d6781-a2e1-7452-b624-7ac4c611151e" {
-		t.Fatalf("saved sessionID = %q", st.SessionID)
+	if strings.Contains(strings.Join(request.Args, " "), secret) || strings.Contains(logs.String(), "PRIVATE_PROMPT") {
+		t.Fatal("private prompt escaped stdin into argv or logs")
 	}
 }
 
-func TestCodexAdapterDeliverMessageUsesMappedSessionID(t *testing.T) {
-	fs := store.NewFSStore(t.TempDir())
-	if err := fs.EnsureLayout(); err != nil {
-		t.Fatalf("EnsureLayout failed: %v", err)
-	}
-	if err := fs.SaveSessionState(store.SessionState{
-		Adapter:     "codex",
-		SessionKey:  "session-1",
-		SessionID:   "thread-existing",
-		CreatedAtMs: 1000,
-		UpdatedAtMs: 1000,
-	}); err != nil {
-		t.Fatalf("SaveSessionState failed: %v", err)
-	}
-
-	a, _ := NewCodexAdapter(CodexConfig{NodeID: "node-1", SessionStore: fs})
-	a.execCmd = func(_ context.Context, args ...string) ([]byte, error) {
-		// 恢复: exec resume --json --skip-git-repo-check <id> -- <msg>
-		if len(args) != 7 {
-			t.Fatalf("unexpected args: %v", args)
-		}
-		if args[0] != "exec" || args[1] != "resume" {
-			t.Fatalf("want exec resume, got %v", args[:2])
-		}
-		if args[4] != "thread-existing" {
-			t.Fatalf("session id arg = %q", args[4])
-		}
-		if args[5] != "--" {
-			t.Fatalf("want -- separator, got %q", args[5])
-		}
-		return []byte(`{"type":"thread.started","thread_id":"thread-existing"}
-{"type":"item.completed","item":{"type":"agent_message","text":"done"}}
-`), nil
-	}
-
-	result, err := a.DeliverMessage(context.Background(), DeliverMessageRequest{
-		SessionKey: "session-1",
-		Message:    "hello",
-		From:       "node-2",
-	})
-	if err != nil {
-		t.Fatalf("DeliverMessage failed: %v", err)
-	}
-	if result.SessionID != "thread-existing" {
-		t.Fatalf("sessionID = %q", result.SessionID)
-	}
-	if result.Reply != "done" {
-		t.Fatalf("reply = %q", result.Reply)
-	}
-}
-
-func TestCodexAdapterRetriesUnknownMappedSession(t *testing.T) {
-	fs := store.NewFSStore(t.TempDir())
-	if err := fs.EnsureLayout(); err != nil {
-		t.Fatalf("EnsureLayout failed: %v", err)
-	}
-	if err := fs.SaveSessionState(store.SessionState{
-		Adapter:    "codex",
-		SessionKey: "session-1",
-		SessionID:  "stale-thread",
-	}); err != nil {
-		t.Fatalf("SaveSessionState failed: %v", err)
-	}
-
-	a, _ := NewCodexAdapter(CodexConfig{NodeID: "node-alpha", SessionStore: fs})
-	var calls int
-	a.execCmd = func(_ context.Context, args ...string) ([]byte, error) {
-		calls++
-		switch calls {
-		case 1:
-			if args[1] != "resume" {
-				t.Fatalf("first call should be resume, got %v", args)
+func TestCodexPartialOutputCannotBecomeSuccess(t *testing.T) {
+	for _, tc := range []struct{ mode, code string }{
+		{"partial-failure", "native_failed"}, {"nonzero", "exit_failed"},
+		{"raw", "native_schema"}, {"empty", "incomplete_output"}, {"start-only", "incomplete_output"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			a, _ := NewCodexAdapter(CodexConfig{})
+			a.command = helperCommand("codex", tc.mode, "", "")
+			var answer strings.Builder
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			result, err := a.DeliverMessage(ctx, DeliverMessageRequest{Message: "task", Emit: func(event OutputEvent) error { answer.WriteString(event.Text); return nil }})
+			assertExecutionCode(t, err, tc.code)
+			if result != nil && result.Success {
+				t.Fatal("incomplete or failed native turn was reported as success")
 			}
-			return nil, errors.New("session not found: stale-thread")
-		case 2:
-			if len(args) != 5 || args[1] != "--json" {
-				t.Fatalf("retry should be fresh exec, got %v", args)
+			if tc.mode == "partial-failure" && answer.String() != "early" {
+				t.Fatal("permitted partial answer was not delivered before failure")
 			}
-			return []byte(`{"type":"thread.started","thread_id":"fresh-thread"}
-{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}
-`), nil
-		}
-		t.Fatalf("unexpected call count %d", calls)
-		return nil, nil
+		})
 	}
+}
 
-	result, err := a.DeliverMessage(context.Background(), DeliverMessageRequest{
-		SessionKey: "session-1",
-		Message:    "hi",
-		From:       "node-beta",
+func TestNativeOutputLimitsStopTheProcess(t *testing.T) {
+	for _, tc := range []struct{ mode, code, stage string }{
+		{"event-limit", "event_limit", "stdout"}, {"total-limit", "output_limit", "stdout"}, {"stderr-limit", "output_limit", "stderr"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			a, _ := NewCodexAdapter(CodexConfig{})
+			a.command = helperCommand("codex", tc.mode, "", "")
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, err := a.DeliverMessage(ctx, DeliverMessageRequest{Message: "task"})
+			failure := assertExecutionCode(t, err, tc.code)
+			if failure.Stage != tc.stage || !failure.Indeterminate {
+				t.Fatalf("wrong failure classification: %+v", failure)
+			}
+		})
+	}
+}
+
+func TestEmitFailureTerminatesNativeProcess(t *testing.T) {
+	a, _ := NewCodexAdapter(CodexConfig{})
+	a.command = helperCommand("codex", "block", "", "")
+	consumerErr := errors.New("consumer stopped")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := a.DeliverMessage(ctx, DeliverMessageRequest{Message: "task", Emit: func(OutputEvent) error { return consumerErr }})
+	failure := assertExecutionCode(t, err, "emit_failed")
+	if !errors.Is(failure, consumerErr) {
+		t.Fatal("emit cause was lost")
+	}
+}
+
+func TestCancellationStopsNativeDescendants(t *testing.T) {
+	dir := t.TempDir()
+	gate, escaped := filepath.Join(dir, "release-child"), filepath.Join(dir, "escaped")
+	a, _ := NewCodexAdapter(CodexConfig{})
+	a.command = helperCommand("codex", "tree", escaped, gate)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	deadline, stop := context.WithTimeout(ctx, 5*time.Second)
+	defer stop()
+	_, err := a.DeliverMessage(deadline, DeliverMessageRequest{Message: "task", Emit: func(OutputEvent) error { cancel(); return nil }})
+	failure := assertExecutionCode(t, err, "canceled")
+	if !failure.Indeterminate {
+		t.Fatal("canceled running task must be indeterminate")
+	}
+	if err := os.WriteFile(gate, []byte("release"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if _, err := os.Stat(escaped); !os.IsNotExist(err) {
+		t.Fatalf("native descendant escaped cancellation: %v", err)
+	}
+}
+
+func TestNativeTimeoutIsStructured(t *testing.T) {
+	a, _ := NewCodexAdapter(CodexConfig{})
+	a.command = helperCommand("codex", "block", "", "")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err := a.DeliverMessage(ctx, DeliverMessageRequest{Message: "task"})
+	failure := assertExecutionCode(t, err, "timeout")
+	if !errors.Is(failure, context.DeadlineExceeded) || !failure.Indeterminate {
+		t.Fatalf("timeout classification: %+v", failure)
+	}
+}
+
+func TestCodexUnavailableSessionIsNotRetried(t *testing.T) {
+	fs := store.NewFSStore(t.TempDir())
+	if err := fs.SaveSessionState(store.SessionState{Adapter: "codex", SessionKey: "conversation", SessionID: "thread_existing"}); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := NewCodexAdapter(CodexConfig{SessionStore: fs})
+	factory := helperCommand("codex", "unknown-session", "", "")
+	calls := 0
+	a.command = func(ctx context.Context, args ...string) *exec.Cmd { calls++; return factory(ctx, args...) }
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := a.DeliverMessage(ctx, DeliverMessageRequest{Message: "task", SessionKey: "conversation"})
+	assertExecutionCode(t, err, "session_unavailable")
+	if calls != 1 || !strings.Contains(err.Error(), "create a new session") {
+		t.Fatalf("unavailable session must not cause duplicate execution: calls=%d err=%v", calls, err)
+	}
+	state, found, err := fs.LoadSessionState("codex", "conversation")
+	if err != nil || !found || state.SessionID != "thread_existing" {
+		t.Fatalf("unavailable mapping was silently replaced: %+v %v", state, err)
+	}
+}
+
+func TestSessionStoreFailuresAreNotSilentlyIgnored(t *testing.T) {
+	t.Run("load", func(t *testing.T) {
+		fs := store.NewFSStore(t.TempDir())
+		path, _ := fs.SessionPath("codex", "conversation")
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("broken JSON"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		a, _ := NewCodexAdapter(CodexConfig{SessionStore: fs})
+		_, err := a.DeliverMessage(context.Background(), DeliverMessageRequest{Message: "task", SessionKey: "conversation"})
+		failure := assertExecutionCode(t, err, "session_store")
+		if failure.Stage != "session_load" || failure.Indeterminate {
+			t.Fatalf("load failure classification: %+v", failure)
+		}
 	})
-	if err != nil {
-		t.Fatalf("DeliverMessage failed: %v", err)
-	}
-	if result.SessionID != "fresh-thread" {
-		t.Fatalf("sessionID = %q", result.SessionID)
-	}
+	t.Run("save after completion", func(t *testing.T) {
+		fs := store.NewFSStore(t.TempDir())
+		blocked := filepath.Join(t.TempDir(), "file")
+		if err := os.WriteFile(blocked, []byte("not a directory"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		a, _ := NewCodexAdapter(CodexConfig{SessionStore: fs})
+		a.command = helperCommand("codex", "success", "", "")
+		_, err := a.DeliverMessage(context.Background(), DeliverMessageRequest{Message: "task", SessionKey: "conversation", Emit: func(OutputEvent) error { fs.BaseDir = blocked; return nil }})
+		failure := assertExecutionCode(t, err, "session_store")
+		if failure.Stage != "session_save" || !failure.Indeterminate {
+			t.Fatalf("save failure classification: %+v", failure)
+		}
+	})
+}
 
-	st, _, _ := fs.LoadSessionState("codex", "session-1")
-	if st.SessionID != "fresh-thread" {
-		t.Fatalf("saved sessionID = %q", st.SessionID)
+func TestCodexStatusDoesNotMistakeVersionForReadiness(t *testing.T) {
+	for _, mode := range []string{"status-version-only", "status-no-auth"} {
+		t.Run(mode, func(t *testing.T) {
+			a, _ := NewCodexAdapter(CodexConfig{})
+			a.command = helperCommand("codex", mode, "", "")
+			status, _ := a.GetStatus(context.Background())
+			if status.Healthy || !status.Degraded {
+				t.Fatalf("unsupported/not authenticated CLI reported ready: %+v", status)
+			}
+		})
 	}
 }
 
-func TestCodexAdapterCommandFailure(t *testing.T) {
+func TestCodexRejectsAgentSelection(t *testing.T) {
 	a, _ := NewCodexAdapter(CodexConfig{})
-	a.execCmd = func(_ context.Context, _ ...string) ([]byte, error) {
-		return nil, errors.New("command not found")
-	}
-	_, err := a.DeliverMessage(context.Background(), DeliverMessageRequest{Message: "hi"})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestCodexAdapterGetStatus(t *testing.T) {
-	a, _ := NewCodexAdapter(CodexConfig{})
-	a.execCmd = func(_ context.Context, args ...string) ([]byte, error) {
-		if len(args) != 1 || args[0] != "--version" {
-			t.Fatalf("unexpected args: %v", args)
-		}
-		return []byte("codex 0.40.0\n"), nil
-	}
-	status, err := a.GetStatus(context.Background())
-	if err != nil {
-		t.Fatalf("GetStatus failed: %v", err)
-	}
-	if !status.Healthy {
-		t.Fatal("expected healthy")
-	}
-}
-
-func TestParseCodexResultJSONL(t *testing.T) {
-	result, err := parseCodexResult([]byte(codexSampleCreate))
-	if err != nil {
-		t.Fatalf("parseCodexResult failed: %v", err)
-	}
-	if !result.Success {
-		t.Fatal("expected success")
-	}
-	if result.Reply != "pong" {
-		t.Fatalf("reply = %q", result.Reply)
-	}
-	if result.SessionID != "019d6781-a2e1-7452-b624-7ac4c611151e" {
-		t.Fatalf("sessionID = %q", result.SessionID)
-	}
-}
-
-func TestParseCodexResultMultipleAgentMessagesTakesLast(t *testing.T) {
-	data := []byte(`{"type":"thread.started","thread_id":"t1"}
-{"type":"item.completed","item":{"type":"agent_message","text":"first"}}
-{"type":"item.completed","item":{"type":"agent_message","text":"final"}}
-`)
-	result, err := parseCodexResult(data)
-	if err != nil {
-		t.Fatalf("parseCodexResult failed: %v", err)
-	}
-	if result.Reply != "final" {
-		t.Fatalf("reply = %q", result.Reply)
-	}
-}
-
-func TestParseCodexResultDecodesEscapedNewlines(t *testing.T) {
-	data := []byte(`{"type":"thread.started","thread_id":"t1"}
-{"type":"item.completed","item":{"type":"agent_message","text":"line1\nline2"}}
-`)
-	result, err := parseCodexResult(data)
-	if err != nil {
-		t.Fatalf("parseCodexResult failed: %v", err)
-	}
-	if result.Reply != "line1\nline2" {
-		t.Fatalf("reply = %q, want decoded multiline text", result.Reply)
-	}
-}
-
-func TestParseCodexResultIgnoresNonAgentMessageItems(t *testing.T) {
-	data := []byte(`{"type":"thread.started","thread_id":"t1"}
-{"type":"item.completed","item":{"type":"reasoning","text":"thinking"}}
-{"type":"item.completed","item":{"type":"agent_message","text":"answer"}}
-`)
-	result, _ := parseCodexResult(data)
-	if result.Reply != "answer" {
-		t.Fatalf("reply = %q", result.Reply)
-	}
-}
-
-func TestParseCodexResultTurnFailed(t *testing.T) {
-	data := []byte(`{"type":"thread.started","thread_id":"t1"}
-{"type":"turn.failed","message":"rate limited"}
-`)
-	result, _ := parseCodexResult(data)
-	if result.Success {
-		t.Fatal("expected failure")
-	}
-	if result.Error != "rate limited" {
-		t.Fatalf("error = %q", result.Error)
-	}
-}
-
-func TestParseCodexResultEmpty(t *testing.T) {
-	result, _ := parseCodexResult([]byte(""))
-	if result.Success {
-		t.Fatal("expected failure for empty output")
-	}
-}
-
-func TestIsCodexUnknownSessionError(t *testing.T) {
-	cases := []struct {
-		msg  string
-		want bool
-	}{
-		{"session not found", true},
-		{"no such session: abc", true},
-		{"unknown session id", true},
-		{"no recorded session matching --last", true},
-		{"permission denied", false},
-		{"", false},
-	}
-	for _, c := range cases {
-		var err error
-		if c.msg != "" {
-			err = errors.New(c.msg)
-		}
-		if got := isCodexUnknownSessionError(err); got != c.want {
-			t.Errorf("isCodexUnknownSessionError(%q) = %v, want %v", c.msg, got, c.want)
-		}
-	}
-}
-
-func TestFormatCodexCommandForLogTruncatesPrompt(t *testing.T) {
-	prompt := strings.Repeat("x", 400)
-	got := formatCodexCommandForLog([]string{"exec", "--json", "--skip-git-repo-check", "--", prompt})
-	if !strings.Contains(got, `codex "exec" "--json"`) {
-		t.Fatalf("command = %q, missing prefix", got)
-	}
-	if !strings.Contains(got, "truncated, 400 bytes total") {
-		t.Fatalf("command = %q, missing truncation marker", got)
-	}
-}
-
-func TestRedactedCodexSessionIDResume(t *testing.T) {
-	args := []string{"exec", "resume", "--json", "--skip-git-repo-check", "thread-xyz", "--", "hello"}
-	if got := redactedCodexSessionID(args); got != "thread-xyz" {
-		t.Fatalf("got %q, want thread-xyz", got)
-	}
-}
-
-func TestRedactedCodexSessionIDFreshExec(t *testing.T) {
-	args := []string{"exec", "--json", "--skip-git-repo-check", "--", "hello"}
-	if got := redactedCodexSessionID(args); got != "" {
-		t.Fatalf("got %q, want empty", got)
+	_, err := a.DeliverMessage(context.Background(), DeliverMessageRequest{AgentID: "build", Message: "task"})
+	failure := assertExecutionCode(t, err, "unsupported_agent")
+	if failure.Indeterminate {
+		t.Fatal("rejected routing must not imply execution")
 	}
 }

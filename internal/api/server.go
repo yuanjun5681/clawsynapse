@@ -2,8 +2,11 @@ package api
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
+	"fmt"
 	"net/http"
+	"path/filepath"
 	"time"
 
 	"clawsynapse/internal/adapter"
@@ -39,7 +42,25 @@ type SelfInfo struct {
 	TrustMode           string
 }
 
-func NewServer(addr string, peers *discovery.Registry, authSvc *auth.Service, trustSvc *trust.Service, messagingSvc *messaging.Service, transferSvc *transfer.Service, natsClient *natsbus.Client, agentAdapter adapter.AgentAdapter, agentAdapterName string, self SelfInfo, version string, cfg config.Config) *Server {
+func NewServer(addr string, peers *discovery.Registry, authSvc *auth.Service, trustSvc *trust.Service, messagingSvc *messaging.Service, transferSvc *transfer.Service, natsClient *natsbus.Client, agentAdapter adapter.AgentAdapter, agentAdapterName string, self SelfInfo, version string, cfg config.Config) (*Server, error) {
+	if err := config.ValidateAPIListener(addr, cfg.AllowRemoteAPI, cfg.APITLSCertFile, cfg.APITLSKeyFile); err != nil {
+		return nil, err
+	}
+	if cfg.APITLSCertFile != "" {
+		if _, err := tls.LoadX509KeyPair(cfg.APITLSCertFile, cfg.APITLSKeyFile); err != nil {
+			return nil, fmt.Errorf("load API TLS certificate: %w", err)
+		}
+	}
+	if cfg.APITokenPath == "" {
+		if cfg.DataDir == "" {
+			return nil, errors.New("API token path or data directory is required")
+		}
+		cfg.APITokenPath = filepath.Join(cfg.DataDir, "api.token")
+	}
+	token, err := ensureToken(cfg.APITokenPath)
+	if err != nil {
+		return nil, err
+	}
 	s := &Server{
 		peers:       peers,
 		auth:        authSvc,
@@ -75,15 +96,21 @@ func NewServer(addr string, peers *discovery.Registry, authSvc *auth.Service, tr
 
 	s.httpServer = &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           bearerAuth(token, mux),
 		ReadHeaderTimeout: 5 * time.Second,
+		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12},
 	}
 
-	return s
+	return s, nil
 }
 
 func (s *Server) Start() error {
-	err := s.httpServer.ListenAndServe()
+	var err error
+	if s.cfg.APITLSCertFile != "" {
+		err = s.httpServer.ListenAndServeTLS(s.cfg.APITLSCertFile, s.cfg.APITLSKeyFile)
+	} else {
+		err = s.httpServer.ListenAndServe()
+	}
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

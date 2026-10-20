@@ -34,6 +34,16 @@ const (
 )
 
 type Config struct {
+	APITokenPath        string   `json:"apiTokenPath"`
+	AllowRemoteAPI      bool     `json:"allowRemoteAPI"`
+	APITLSCertFile      string   `json:"apiTLSCertFile"`
+	APITLSKeyFile       string   `json:"apiTLSKeyFile"`
+	Production          bool     `json:"production"`
+	NATSCredentialsFile string   `json:"natsCredentialsFile"`
+	NATSTLSCAFile       string   `json:"natsTLSCAFile"`
+	NATSTLSCertFile     string   `json:"natsTLSCertFile"`
+	NATSTLSKeyFile      string   `json:"natsTLSKeyFile"`
+	NATSTLSServerName   string   `json:"natsTLSServerName"`
 	NATSServers         []string `json:"natsServers"`
 	LocalAPIAddr        string   `json:"localApiAddr"`
 	DataDir             string   `json:"dataDir"`
@@ -47,6 +57,7 @@ type Config struct {
 	TrustMode           string   `json:"trustMode"`
 	TrustAutoApprove    bool     `json:"trustAutoApprove"`
 	AgentAdapter        string   `json:"agentAdapter"`
+	AgentAllowedIDs     []string `json:"agentAllowedIds"`
 	AgentAdapterTimeout string   `json:"agentAdapterTimeout"`
 	WebhookURL          string   `json:"webhookUrl"`
 	WebhookAuthToken    string   `json:"-"`
@@ -67,6 +78,9 @@ type Config struct {
 }
 
 func Validate(cfg Config) error {
+	if err := ValidateSecurity(cfg); err != nil {
+		return err
+	}
 	if len(cfg.NATSServers) == 0 {
 		return errors.New("nats servers is empty")
 	}
@@ -78,8 +92,8 @@ func Validate(cfg Config) error {
 	if adapterName == "" {
 		adapterName = defaultAgentAdapter
 	}
-	if adapterName != "default" && adapterName != "openclaw" && adapterName != "opencode" && adapterName != "webhook" {
-		return errors.New("agent adapter must be one of: default|openclaw|opencode|webhook")
+	if adapterName != "default" && adapterName != "openclaw" && adapterName != "opencode" && adapterName != "codex" && adapterName != "webhook" {
+		return errors.New("agent adapter must be one of: default|openclaw|opencode|codex|webhook")
 	}
 	if strings.TrimSpace(cfg.AgentAdapterTimeout) != "" {
 		d, err := time.ParseDuration(strings.TrimSpace(cfg.AgentAdapterTimeout))
@@ -130,7 +144,8 @@ func SaveToFile(path string, cfg Config) error {
 }
 
 type runtimeConfig struct {
-	NATSServers         []string
+	NATSServers []string
+	SecurityValues
 	LocalAPIAddr        string
 	DataDir             string
 	IdentityKeyPath     string
@@ -143,6 +158,7 @@ type runtimeConfig struct {
 	TrustMode           string
 	TrustAutoApprove    bool
 	AgentAdapter        string
+	AgentAllowedIDs     []string
 	AgentAdapterTimeout time.Duration
 	WebhookURL          string
 	LogFilePath         string
@@ -161,7 +177,8 @@ type runtimeConfig struct {
 }
 
 type configValues struct {
-	NATSServers         []string
+	NATSServers []string
+	SecurityValues
 	LocalAPIAddr        string
 	DataDir             string
 	IdentityKeyPath     string
@@ -175,6 +192,7 @@ type configValues struct {
 	TrustAutoApprove    bool
 	TrustAutoApproveSet bool
 	AgentAdapter        string
+	AgentAllowedIDs     []string
 	AgentAdapterTimeout time.Duration
 	WebhookURL          string
 	WebhookAuthToken    string
@@ -198,6 +216,7 @@ func (c Config) Runtime() runtimeConfig {
 	tt, _ := time.ParseDuration(c.TransferTTL)
 	at, _ := time.ParseDuration(c.AgentAdapterTimeout)
 	return runtimeConfig{
+		SecurityValues:      securityValuesFromConfig(c),
 		NATSServers:         c.NATSServers,
 		LocalAPIAddr:        c.LocalAPIAddr,
 		DataDir:             c.DataDir,
@@ -211,6 +230,7 @@ func (c Config) Runtime() runtimeConfig {
 		TrustMode:           c.TrustMode,
 		TrustAutoApprove:    c.TrustAutoApprove,
 		AgentAdapter:        c.AgentAdapter,
+		AgentAllowedIDs:     cloneStrings(c.AgentAllowedIDs),
 		AgentAdapterTimeout: at,
 		WebhookURL:          c.WebhookURL,
 		LogFilePath:         c.LogFilePath,
@@ -253,6 +273,16 @@ func LoadFromOS(args []string) (Config, error) {
 	fs := flag.NewFlagSet("clawsynapsed", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var (
+		apiTokenPath        = fs.String("api-token-path", merged.APITokenPath, "local API bearer token file")
+		allowRemoteAPI      = fs.Bool("allow-remote-api", merged.AllowRemoteAPI, "explicitly allow non-loopback HTTPS API")
+		apiTLSCertFile      = fs.String("api-tls-cert-file", merged.APITLSCertFile, "API TLS certificate file")
+		apiTLSKeyFile       = fs.String("api-tls-key-file", merged.APITLSKeyFile, "API TLS private key file")
+		production          = fs.Bool("production", merged.Production, "require authenticated TLS NATS and non-open trust")
+		natsCredentialsFile = fs.String("nats-credentials-file", merged.NATSCredentialsFile, "NATS credentials file")
+		natsTLSCAFile       = fs.String("nats-tls-ca-file", merged.NATSTLSCAFile, "NATS trusted CA file")
+		natsTLSCertFile     = fs.String("nats-tls-cert-file", merged.NATSTLSCertFile, "NATS TLS client certificate")
+		natsTLSKeyFile      = fs.String("nats-tls-key-file", merged.NATSTLSKeyFile, "NATS TLS client private key")
+		natsTLSServerName   = fs.String("nats-tls-server-name", merged.NATSTLSServerName, "NATS TLS server name to verify")
 		natsServers         = fs.String("nats-servers", strings.Join(merged.NATSServers, ","), "comma separated nats servers")
 		apiAddr             = fs.String("local-api-addr", merged.LocalAPIAddr, "http api address")
 		dataDir             = fs.String("data-dir", merged.DataDir, "state directory")
@@ -265,7 +295,8 @@ func LoadFromOS(args []string) (Config, error) {
 		capabilities        = fs.String("capabilities", strings.Join(merged.Capabilities, ","), "comma separated capabilities advertised in discovery")
 		trustMode           = fs.String("trust-mode", merged.TrustMode, "trust mode: open|tofu|explicit")
 		trustAutoApprove    = fs.Bool("trust-auto-approve", merged.TrustAutoApprove, "automatically approve valid inbound trust requests")
-		agentAdapter        = fs.String("agent-adapter", merged.AgentAdapter, "agent adapter: default|openclaw|opencode|webhook")
+		agentAdapter        = fs.String("agent-adapter", merged.AgentAdapter, "agent adapter: default|openclaw|opencode|codex|webhook")
+		agentAllowedIDs     = fs.String("agent-allowed-ids", strings.Join(merged.AgentAllowedIDs, ","), "comma separated authorized local agent routing IDs")
 		agentAdapterTimeout = fs.Duration("agent-adapter-timeout", merged.AgentAdapterTimeout, "timeout for delivering a message to the agent adapter")
 		webhookURLFlag      = fs.String("webhook-url", merged.WebhookURL, "webhook url for webhook adapter")
 		logLevel            = fs.String("log-level", merged.LogLevel, "log level: debug|info|warn|error")
@@ -301,8 +332,8 @@ func LoadFromOS(args []string) (Config, error) {
 	if adapterName == "" {
 		adapterName = defaultAgentAdapter
 	}
-	if adapterName != "default" && adapterName != "openclaw" && adapterName != "opencode" && adapterName != "webhook" {
-		return Config{}, errors.New("agent adapter must be one of: default|openclaw|opencode|webhook")
+	if adapterName != "default" && adapterName != "openclaw" && adapterName != "opencode" && adapterName != "codex" && adapterName != "webhook" {
+		return Config{}, errors.New("agent adapter must be one of: default|openclaw|opencode|codex|webhook")
 	}
 
 	webhookURL := strings.TrimSpace(*webhookURLFlag)
@@ -350,7 +381,17 @@ func LoadFromOS(args []string) (Config, error) {
 		return Config{}, err
 	}
 
-	return Config{
+	cfg := Config{
+		APITokenPath:        *apiTokenPath,
+		AllowRemoteAPI:      *allowRemoteAPI,
+		APITLSCertFile:      *apiTLSCertFile,
+		APITLSKeyFile:       *apiTLSKeyFile,
+		Production:          *production,
+		NATSCredentialsFile: *natsCredentialsFile,
+		NATSTLSCAFile:       *natsTLSCAFile,
+		NATSTLSCertFile:     *natsTLSCertFile,
+		NATSTLSKeyFile:      *natsTLSKeyFile,
+		NATSTLSServerName:   *natsTLSServerName,
 		NATSServers:         rawServers,
 		LocalAPIAddr:        strings.TrimSpace(*apiAddr),
 		DataDir:             resolvedDataDir,
@@ -364,6 +405,7 @@ func LoadFromOS(args []string) (Config, error) {
 		TrustMode:           mode,
 		TrustAutoApprove:    *trustAutoApprove,
 		AgentAdapter:        adapterName,
+		AgentAllowedIDs:     splitCSV(*agentAllowedIDs),
 		AgentAdapterTimeout: agentAdapterTimeout.String(),
 		WebhookURL:          webhookURL,
 		WebhookAuthToken:    merged.WebhookAuthToken,
@@ -381,7 +423,14 @@ func LoadFromOS(args []string) (Config, error) {
 		LogAddSource:        *logAddSource,
 		CheckConfig:         *checkConfig,
 		ConfigPath:          configPath,
-	}, nil
+	}
+	if err := resolveSecurityPaths(&cfg); err != nil {
+		return Config{}, err
+	}
+	if err := ValidateSecurity(cfg); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
 }
 
 func defaultConfigValues(defaultDataDir string) configValues {
@@ -414,6 +463,10 @@ func defaultConfigValues(defaultDataDir string) configValues {
 }
 
 func mergeConfigValues(base, override configValues) configValues {
+	base.SecurityValues = mergeSecurityValues(base.SecurityValues, override.SecurityValues)
+	if len(override.AgentAllowedIDs) > 0 {
+		base.AgentAllowedIDs = append([]string(nil), override.AgentAllowedIDs...)
+	}
 	if len(override.NATSServers) > 0 {
 		base.NATSServers = append([]string(nil), override.NATSServers...)
 	}

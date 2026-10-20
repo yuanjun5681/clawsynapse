@@ -5,7 +5,7 @@ title: "ClawSynapse Protocol"
 
 # ClawSynapse Protocol
 
-最后更新：2026-03-12
+最后更新：2026-10-20
 
 ## 目录
 
@@ -173,29 +173,30 @@ clawsynapse.control.trust.poll
 
 ## 消息签名
 
-控制消息与需要认证的点对点消息都应支持签名。推荐使用 Ed25519。
+Messaging 与 Discovery 使用 `protocolVersion: "v2"`，不接收旧版未完整签名消息。升级须协调所有节点；没有自动回退或双协议兼容层。Auth 的 challenge proof 与 Trust 的控制消息沿用各自握手／签名契约，不应套用下述数据面编码。
 
-### 签名串规范
+### v2 签名输入
 
-为避免不同语言、不同实现出现签名不一致，建议使用稳定 canonical string：
+Ed25519 签名的原文是下列 JSON 对象的 UTF-8 字节，而不是字段换行拼接：
 
-```text
-sig_input = messageType + "\n" + subject + "\n" + from + "\n" + to + "\n" + ts + "\n" + sha256(canonical_json(payload_without_signature))
+```json
+{
+  "domain": "clawsynapse/wire/v2",
+  "subject": "clawsynapse.msg.<targetNodeId>.inbox",
+  "message": {}
+}
 ```
 
-要求：
+`message` 放入完整消息对象，只移除顶层 `sig`／`signature`；路由、Agent、会话、正文、metadata、版本、有效期与关联字段全部参与签名。外层字段顺序固定为 `domain`、`subject`、`message`，内部对象按 Go `encoding/json` 的键排序与转义规则编码，包括 HTML 与 U+2028/U+2029 转义；数组保持顺序。数字使用 `json.Number` 保留 JSON 数字字面量，不允许接收端先转为 float64 再验签。这不是 RFC 8785/JCS，其他语言实现须按相同规则生成字节。
 
-- JSON 使用稳定键排序
-- 不将 `signature` 字段本身纳入签名
-- `subject` 必须参与签名，防止跨 subject 重放
-- `messageType` 必须参与签名，防止跨语义重放
+这些 v2 接收消息拒绝未知结构字段、任意深度的重复键、尾随 JSON、无效 UTF-8、超过 32 层嵌套及超限数据。metadata／input 内允许业务键，但不允许重复键。验签后仍需检查权限、时效与去重。
 
-### 推荐原则
+### 安全边界
 
-- 长期身份密钥只用于认证和签名
-- 数据面优先使用临时会话密钥 + 对称加密
-- 将 `messageType`、`subject`、`ts` 纳入签名内容，避免跨用途重放
-- 支持会话密钥轮换，减少单次泄露的影响范围
+- 签名证明声明来自持钥节点，不证明业务身份、设备审批或标签内容真实。
+- 消息与发现重放窗口目前在内存中；重启恢复与持久幂等尚未实现。
+- 传输保密依赖 NATS TLS 与服务端 account/subject 权限，不宣称已经提供端到端正文加密或密钥轮换。
+
 
 ## 返回格式
 
@@ -399,9 +400,11 @@ sig_input = messageType + "\n" + subject + "\n" + from + "\n" + to + "\n" + ts +
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
+| `protocolVersion` | `string` | 是 | 固定为 `v2` |
 | `messageId` | `string` | 是 | announce 消息 ID |
 | `messageType` | `string` | 是 | 固定为 `discovery.announce` |
 | `nodeId` | `string` | 是 | 节点唯一标识 |
+| `did` | `string` | 是 | 与公钥及 NodeID 派生关系一致的 DID |
 | `version` | `string` | 是 | Agent 产品版本；未配置 `agentVersion` 时使用 daemon 构建版本 |
 | `agentProduct` | `string` | 是 | 产品标识 |
 | `capabilities` | `string[]` | 是 | 节点能力列表 |
@@ -409,26 +412,28 @@ sig_input = messageType + "\n" + subject + "\n" + from + "\n" + to + "\n" + ts +
 | `publicKey` | `string` | 是 | 节点公钥 |
 | `ts` | `number` | 是 | 发布时间 |
 | `ttlMs` | `number` | 是 | 节点租约时长 |
-| `metadata` | `object` | 否 | 扩展元数据，例如 hostname、platform |
-| `signature` | `string` | 否 | 可选签名，用于高安全场景 |
+| `metadata` | `object` | 否 | 有界扩展声明；当前不导入 peer 业务属性 |
+| `signature` | `string` | 是 | 全字段及 subject 绑定的 Ed25519 签名 |
 
 ### `discovery.depart`
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
+| `protocolVersion` | `string` | 是 | 固定为 `v2` |
 | `messageId` | `string` | 是 | depart 消息 ID |
 | `messageType` | `string` | 是 | 固定为 `discovery.depart` |
 | `nodeId` | `string` | 是 | 下线节点 ID |
 | `reason` | `string` | 否 | 下线原因 |
 | `ts` | `number` | 是 | 下线时间 |
-| `signature` | `string` | 否 | 可选签名 |
+| `signature` | `string` | 是 | 使用已知节点公钥验证的完整声明签名 |
 
 ### 处理约定
 
-- 收到 `announce` 时更新本地 peer 目录与 TTL
-- 收到 `depart` 时立即驱逐节点
-- 若未收到 `depart`，则依靠 TTL 超时驱逐
-- `Discovery` 暴露的只是最小必要元数据，敏感连接信息仍应受 `Trust` 约束
+- announce/depart 均检查真实 subject、消息类型、派生身份、签名、时间与消息 ID；`open` 模式不跳过签名。
+- 发现消息最多 32 KiB，metadata 最多 8 KiB，TTL 最大 2 分钟，未来时间偏差最大 30 秒；无效声明被拒绝。
+- `lastSeenMs` 使用本地接收时间，不信任远端时间戳延长存活。
+- 已知节点的有效 depart 才能驱逐；保留有界的新鲜度／重放记录，旧 announce 不能立即复活已下线节点。
+- 认证和信任状态由本地维护，不受声明覆盖；发现自报能力不授予权限。
 
 ## Messaging / Events
 
@@ -446,36 +451,39 @@ sig_input = messageType + "\n" + subject + "\n" + from + "\n" + to + "\n" + ts +
 
 ### Envelope
 
-所有业务消息载荷使用 UTF-8 JSON 编码，并统一使用 Envelope：
+业务消息使用 UTF-8 JSON，每个对象对应一条 NATS 消息，不在一条消息中封装持续增长的 JSONL。完整消息最大 256 KiB。
 
-```go
-type Envelope struct {
-    ID              string         `json:"id"`
-    Type            string         `json:"type"`
-    AgentID         string         `json:"agentId,omitempty"`
-    From            string         `json:"from"`
-    To              string         `json:"to,omitempty"`
-    Content         string         `json:"content,omitempty"`
-    SessionKey      string         `json:"sessionKey,omitempty"`
-    Ts              int64          `json:"ts"`
-    Sig             string         `json:"sig,omitempty"`
-    Metadata        map[string]any `json:"metadata,omitempty"`
-    ProtocolVersion string         `json:"protocolVersion,omitempty"`
+```json
+{
+  "id": "message-id",
+  "type": "task.request",
+  "from": "n1-sender",
+  "to": "n1-receiver",
+  "payload": {
+    "instruction": "分析日志",
+    "input": {"log": "database timeout"}
+  },
+  "sessionKey": "session-17",
+  "ts": 1792454400000,
+  "expiresAt": 1792454460000,
+  "protocolVersion": "v2",
+  "sig": "<signature>"
 }
 ```
+
+NodeID 与签名在此仅作结构示意，不能直接用于实际验签。
 
 ### `Envelope.type` 预留值
 
 可投递类型（会被转发给本地 Agent handler，由 `deliverablePrefixes` 配置项控制，默认 `chat,task`）：
 
-- `chat.message` — 聊天消息
-- `chat.stream` — 流式聊天
-- `task.assign` — 任务分配
-- `task.result` — 任务结果
+- `chat.message` — 文本输入，放入 `payload.text`
+- `task.request`、`task.assign` — 结构化任务，使用 `payload.instruction/input`
 
 非投递类型（仅存入 inbox，不转发）：
 
 - `event.forward` — 事件转发
+- `run.started`、`run.output.delta`、`run.completed`、`run.failed`、`run.accepted` — 执行反馈，不进入 LLM；Webhook 可消费，但不产生反馈回复
 
 可通过配置 `deliverablePrefixes` 扩展可投递前缀，详见环境变量 `DELIVERABLE_PREFIXES`。
 
@@ -485,22 +493,29 @@ type Envelope struct {
 |------|------|------|
 | `id` | 是 | 消息唯一标识，用于去重 |
 | `type` | 是 | 消息类型 |
-| `agentId` | 否 | 目标节点本地智能体 ID，用于 adapter 覆盖默认路由 |
+| `agentId` | 否 | 本地授权列表内的 Agent；Codex 不支持命名 Agent 路由 |
 | `from` | 是 | 发送方节点 ID |
-| `to` | 否 | 目标节点 ID |
-| `content` | 否 | 文本或序列化正文 |
+| `to` | 是 | 精确目标 NodeID，必须与 subject 一致 |
+| `payload` | 是 | 结构化正文；支持 text、instruction、input，以及执行事件的 channel、code、stage、indeterminate、adapterRunId |
 | `sessionKey` | 否 | 会话标识 |
 | `ts` | 是 | 发送时间戳 |
-| `sig` | 否 | 消息签名 |
+| `expiresAt` | 是 | Unix 毫秒有效期；默认 10 分钟，最大 ts + 10 分钟，排队后执行前再次检查 |
+| `requestId` | 执行事件必填 | 原请求消息 ID |
+| `runId` | 执行事件必填 | 接收节点生成的一次执行 ID，不等于产品会话 ID |
+| `seq` | 执行事件必填 | 同一执行中从 1 开始递增的序号 |
+| `sig` | 是 | 完整 v2 消息签名 |
 | `metadata` | 否 | 扩展字段 |
-| `protocolVersion` | 否 | 协议版本 |
+| `protocolVersion` | 是 | 固定为 `v2` |
 
 ### 处理约定
 
-- 点对点消息默认投递到 `clawsynapse.msg.<targetNodeId>.inbox`
-- 对话连续性由 `sessionKey` 维护，后续消息应复用同一会话键
-- 业务消息若要求强认证，应在投递前确保 peer 已处于 `authenticated` 或 `trusted`
-- 事件消息优先用于观测、审计、编排，不直接等价为业务命令
+- 使用精确 inbox subject，按原请求 ID 关联执行事件；终态不重复携带已通过 delta 发出的全文。
+- 正常模式要求双方认证与信任；`open` 仅用于非生产环境，仍要求已发现身份和有效签名。
+- 8 个串行工作分片，每分片最多等待 16 条；按发送方、Agent、会话分片，过载返回结构化失败，不启动无界 goroutine。
+- LLM 会话按发送方、Agent、原会话键隔离；Webhook 保留原会话键与事件关联字段。
+- `run.accepted` 只表示异步接纳，`payload.adapterRunId` 可用于业务端回查；`run.completed` 也不等于设备物理动作完成。
+- 结果未知时 `run.failed.payload.indeterminate=true`，不能据此自动重跑。
+- Core NATS 发布不是持久接纳；断连时拒绝发布，不使用重连缓冲积压命令。事件序号可检测缺口，但目前不提供事件回放或持久执行查询。
 
 ## PubSub
 

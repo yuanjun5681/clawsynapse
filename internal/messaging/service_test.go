@@ -1,292 +1,253 @@
 package messaging
 
 import (
+	"bufio"
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"io"
 	"log/slog"
+	"os"
+	"os/exec"
 	"regexp"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"clawsynapse/internal/adapter"
 	"clawsynapse/internal/discovery"
 	"clawsynapse/internal/identity"
+	"clawsynapse/internal/natsbus"
 	"clawsynapse/internal/protocol"
 	"clawsynapse/pkg/types"
 )
 
-type stubAgentAdapter struct {
-	deliver func(ctx context.Context, req adapter.DeliverMessageRequest) (*adapter.DeliverMessageResult, error)
-}
+type resultAdapter struct{ result *adapter.DeliverMessageResult }
 
-func (s stubAgentAdapter) DeliverMessage(ctx context.Context, req adapter.DeliverMessageRequest) (*adapter.DeliverMessageResult, error) {
-	return s.deliver(ctx, req)
+func (a resultAdapter) DeliverMessage(context.Context, adapter.DeliverMessageRequest) (*adapter.DeliverMessageResult, error) {
+	return a.result, nil
 }
-
-func (s stubAgentAdapter) GetStatus(_ context.Context) (*adapter.AgentStatus, error) {
+func (a resultAdapter) GetStatus(context.Context) (*adapter.AgentStatus, error) {
 	return &adapter.AgentStatus{Healthy: true}, nil
 }
 
-func TestPublishRejectsUntrustedPeer(t *testing.T) {
-	peers := discovery.NewRegistry()
-	peers.Upsert(types.Peer{NodeID: "node-beta", AuthStatus: types.AuthAuthenticated, TrustStatus: types.TrustNone})
-
-	base := t.TempDir()
-	id, err := identity.LoadOrCreate(base+"/identity.key", base+"/identity.pub")
-	if err != nil {
-		t.Fatalf("identity init failed: %v", err)
-	}
-
-	svc := NewService(slog.Default(), peers, nil, "node-alpha", id, "tofu", nil)
-	if _, err := svc.Publish(PublishRequest{TargetNode: "node-beta", Message: "hello"}); err == nil {
-		t.Fatal("expected publish to fail for untrusted peer")
+func TestHandlerDistinguishesAcceptanceFromCompletion(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		result   *adapter.DeliverMessageResult
+		accepted bool
+		failure  bool
+	}{
+		{"asynchronous", &adapter.DeliverMessageResult{Success: true, Accepted: true, RunID: "external-run"}, true, false},
+		{"completed", &adapter.DeliverMessageResult{Success: true, Completed: true}, false, false},
+		{"missing-state", &adapter.DeliverMessageResult{Success: true}, false, true},
+		{"rejected", &adapter.DeliverMessageResult{Success: false, Accepted: true}, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := NewAdapterMessageHandler(resultAdapter{tc.result}, time.Second)
+			got, err := h.HandleMessage(IncomingMessage{Type: "task.request"})
+			if (err != nil) != tc.failure {
+				t.Fatalf("error = %v", err)
+			}
+			if !tc.failure && got.Accepted != tc.accepted {
+				t.Fatalf("accepted=%v", got.Accepted)
+			}
+		})
 	}
 }
 
-func TestAdapterMessageHandlerUsesAgentAdapter(t *testing.T) {
-	handler := NewAdapterMessageHandler(stubAgentAdapter{
-		deliver: func(_ context.Context, req adapter.DeliverMessageRequest) (*adapter.DeliverMessageResult, error) {
-			if req.MessageID != "msg-123" {
-				t.Fatalf("adapter messageId = %q, want msg-123", req.MessageID)
+func startMessagingBus(t *testing.T) *natsbus.Client {
+	t.Helper()
+	binary := os.Getenv("NATS_SERVER_BIN")
+	if binary == "" {
+		binary, _ = exec.LookPath("nats-server")
+	}
+	if binary == "" {
+		t.Skip("nats-server unavailable; set NATS_SERVER_BIN to exercise broker integration")
+	}
+	cmd := exec.Command(binary, "-a", "127.0.0.1", "-p", "-1")
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	ready := make(chan string, 1)
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		pattern := regexp.MustCompile(`Listening for client connections on (127\.0\.0\.1:[0-9]+)`)
+		for scanner.Scan() {
+			if match := pattern.FindStringSubmatch(scanner.Text()); len(match) > 1 {
+				select {
+				case ready <- "nats://" + match[1]:
+				default:
+				}
 			}
-			if req.AgentID != "agent-42" {
-				t.Fatalf("adapter agentId = %q, want agent-42", req.AgentID)
-			}
-			if req.From != "node-alpha" {
-				t.Fatalf("adapter from = %q, want node-alpha", req.From)
-			}
-			if req.Message != "hello" {
-				t.Fatalf("adapter message = %q, want hello", req.Message)
-			}
-			if req.Metadata["source"] != "test" {
-				t.Fatalf("adapter metadata source = %v, want test", req.Metadata["source"])
-			}
-			return &adapter.DeliverMessageResult{Success: true, Accepted: true, RunID: "run-123", Reply: "handled-by-adapter"}, nil
-		},
-	}, time.Second)
+		}
+	}()
+	var address string
+	select {
+	case address = <-ready:
+	case <-time.After(5 * time.Second):
+		t.Fatal("NATS did not become ready")
+	}
+	bus, err := natsbus.Connect(context.Background(), []string{address}, "messaging-regression")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(bus.Close)
+	return bus
+}
 
-	result, err := handler.HandleMessage(IncomingMessage{
-		MessageID: "msg-123",
-		AgentID:   "agent-42",
-		From:      "node-alpha",
-		Message:   "hello",
-		Metadata: map[string]any{
-			"source": "test",
-		},
+func TestBrokerStreamingRejectsReplayAndRouteTampering(t *testing.T) {
+	bus := startMessagingBus(t)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	peers := discovery.NewRegistry()
+	ids := make([]*identity.Identity, 2)
+	nodes := make([]string, 2)
+	services := make([]*Service, 2)
+	for i := range ids {
+		dir := t.TempDir()
+		id, err := identity.LoadOrCreate(dir+"/identity.key", dir+"/identity.pub")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[i] = id
+		nodes[i] = identity.DeriveNodeID(identity.DeriveNodeDID(id.PublicKey))
+		peers.Upsert(types.Peer{NodeID: nodes[i], AuthStatus: types.AuthAuthenticated, TrustStatus: types.TrustTrusted, Metadata: map[string]any{"publicKey": base64.RawURLEncoding.EncodeToString(id.PublicKey)}})
+		services[i] = NewService(log, peers, bus, nodes[i], id, "explicit", nil)
+		t.Cleanup(services[i].Close)
+	}
+	events := make(chan protocol.MessageEnvelope, 32)
+	requests := make(chan protocol.MessageEnvelope, 8)
+	_, err := bus.Subscribe(inboxSubject(nodes[0]), func(_ string, data []byte) {
+		var env protocol.MessageEnvelope
+		if protocol.DecodeStrict(data, &env) == nil {
+			events <- env
+		}
 	})
 	if err != nil {
-		t.Fatalf("HandleMessage failed: %v", err)
+		t.Fatal(err)
 	}
-	if result.Reply != "handled-by-adapter (runId=run-123)" {
-		t.Fatalf("reply = %q, want handled-by-adapter with runId", result.Reply)
-	}
-	if result.RunID != "run-123" {
-		t.Fatalf("runId = %q, want run-123", result.RunID)
-	}
-}
-
-func TestAdapterMessageHandlerReturnsAcceptedWithRunID(t *testing.T) {
-	handler := NewAdapterMessageHandler(stubAgentAdapter{
-		deliver: func(_ context.Context, _ adapter.DeliverMessageRequest) (*adapter.DeliverMessageResult, error) {
-			return &adapter.DeliverMessageResult{Success: true, Accepted: true, RunID: "run-456"}, nil
-		},
-	}, time.Second)
-
-	result, err := handler.HandleMessage(IncomingMessage{From: "node-alpha", Message: "hello"})
+	_, err = bus.Subscribe(inboxSubject(nodes[1]), func(_ string, data []byte) {
+		var env protocol.MessageEnvelope
+		if protocol.DecodeStrict(data, &env) == nil {
+			requests <- env
+		}
+	})
 	if err != nil {
-		t.Fatalf("HandleMessage failed: %v", err)
+		t.Fatal(err)
 	}
-	if result.Reply != "accepted (runId=run-456)" {
-		t.Fatalf("reply = %q, want accepted with runId", result.Reply)
-	}
-	if result.RunID != "run-456" {
-		t.Fatalf("runId = %q, want run-456", result.RunID)
-	}
-}
-
-func TestMaybeDeliverForwardsDeliverableTypes(t *testing.T) {
-	peers := discovery.NewRegistry()
-	base := t.TempDir()
-	id, err := identity.LoadOrCreate(base+"/identity.key", base+"/identity.pub")
-	if err != nil {
-		t.Fatalf("identity init failed: %v", err)
-	}
-
-	delivered := make(chan string, 10)
-	svc := NewService(slog.Default(), peers, nil, "node-alpha", id, "open", nil)
-	svc.SetMessageHandler(MessageHandlerFunc(func(msg IncomingMessage) (HandlerResult, error) {
-		delivered <- msg.Type + "|" + msg.Message
-		return HandlerResult{Reply: "ok"}, nil
-	}))
-
-	svc.maybeDeliver(protocol.MessageEnvelope{Type: "chat.message", Content: "[reply] Task completed."})
-	svc.maybeDeliver(protocol.MessageEnvelope{Type: "chat.message", Content: "[end] Closing conversation."})
-	svc.maybeDeliver(protocol.MessageEnvelope{Type: "event.forward", Content: "ignored"})
-	svc.maybeDeliver(protocol.MessageEnvelope{Type: "task.assign", Content: "do this"})
-	svc.maybeDeliver(protocol.MessageEnvelope{Type: "chat.message", Content: "[request] Do something."})
-
-	want := map[string]bool{
-		"chat.message|[reply] Task completed.":     false,
-		"chat.message|[end] Closing conversation.": false,
-		"chat.message|[request] Do something.":     false,
-		"task.assign|do this":                      false,
-	}
-
-	deadline := time.After(1 * time.Second)
-	for i := 0; i < len(want); i++ {
+	release := make(chan struct{})
+	defer func() {
 		select {
-		case msg := <-delivered:
-			if _, ok := want[msg]; !ok {
-				t.Fatalf("unexpected delivered message: %q", msg)
-			}
-			want[msg] = true
-		case <-deadline:
-			t.Fatal("expected message delivery")
+		case <-release:
+		default:
+			close(release)
 		}
-	}
-
-	for msg, got := range want {
-		if !got {
-			t.Fatalf("message %q was not delivered", msg)
+	}()
+	var executions atomic.Int32
+	services[1].SetMessageHandler(MessageHandlerFunc(func(msg IncomingMessage) (HandlerResult, error) {
+		executions.Add(1)
+		if msg.Message == "barrier" {
+			return HandlerResult{}, nil
 		}
-	}
-}
-
-func TestMaybeDeliverForwardsAgentID(t *testing.T) {
-	peers := discovery.NewRegistry()
-	base := t.TempDir()
-	id, err := identity.LoadOrCreate(base+"/identity.key", base+"/identity.pub")
-	if err != nil {
-		t.Fatalf("identity init failed: %v", err)
-	}
-
-	delivered := make(chan IncomingMessage, 1)
-	svc := NewService(slog.Default(), peers, nil, "node-alpha", id, "open", nil)
-	svc.SetMessageHandler(MessageHandlerFunc(func(msg IncomingMessage) (HandlerResult, error) {
-		delivered <- msg
-		return HandlerResult{Reply: "ok"}, nil
+		if err := msg.Emit(adapter.OutputEvent{Text: "early output"}); err != nil {
+			return HandlerResult{}, err
+		}
+		select {
+		case <-release:
+		case <-msg.Context.Done():
+			return HandlerResult{}, msg.Context.Err()
+		}
+		return HandlerResult{}, &adapter.ExecutionError{Code: "timeout", Stage: "execution", Indeterminate: true, Err: context.DeadlineExceeded}
 	}))
-
-	svc.maybeDeliver(protocol.MessageEnvelope{
-		Type:    "chat.message",
-		AgentID: "agent-42",
-		From:    "node-beta",
-		Content: "hello",
-	})
-
+	for _, svc := range services {
+		if err := svc.Start(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := bus.FlushTimeout(time.Second); err != nil {
+		t.Fatal(err)
+	}
+	result, err := services[0].Publish(PublishRequest{TargetNode: nodes[1], Type: "task.request", SessionKey: "same-session", Message: "analyze"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request protocol.MessageEnvelope
 	select {
-	case msg := <-delivered:
-		if msg.AgentID != "agent-42" {
-			t.Fatalf("AgentID = %q, want agent-42", msg.AgentID)
+	case request = <-requests:
+	case <-time.After(3 * time.Second):
+		t.Fatal("request not received")
+	}
+	next := func() protocol.MessageEnvelope {
+		t.Helper()
+		select {
+		case event := <-events:
+			return event
+		case <-time.After(3 * time.Second):
+			t.Fatal("execution event missing")
+			return protocol.MessageEnvelope{}
 		}
-	case <-time.After(time.Second):
-		t.Fatal("expected message delivery")
 	}
-}
-
-func TestMaybeDeliverRoutesTransferAvailableToTransferHandler(t *testing.T) {
-	peers := discovery.NewRegistry()
-	base := t.TempDir()
-	id, err := identity.LoadOrCreate(base+"/identity.key", base+"/identity.pub")
-	if err != nil {
-		t.Fatalf("identity init failed: %v", err)
+	start := next()
+	delta := next()
+	if start.Type != "run.started" || delta.Type != "run.output.delta" || delta.Payload.Text != "early output" || delta.RequestID != result.MessageID || delta.RunID != start.RunID || delta.Seq != start.Seq+1 {
+		t.Fatalf("invalid stream: %#v %#v", start, delta)
 	}
-
-	received := make(chan protocol.MessageEnvelope, 1)
-	svc := NewService(slog.Default(), peers, nil, "node-alpha", id, "open", nil)
-	svc.SetTransferHandler(func(env protocol.MessageEnvelope) {
-		received <- env
-	})
-
-	// Should NOT be delivered to message handler
-	messageDelivered := false
-	svc.SetMessageHandler(MessageHandlerFunc(func(msg IncomingMessage) (HandlerResult, error) {
-		messageDelivered = true
-		return HandlerResult{}, nil
-	}))
-
-	svc.maybeDeliver(protocol.MessageEnvelope{
-		Type:    "transfer.available",
-		From:    "node-beta",
-		Content: `{"transferId":"tf-1","bucket":"clawsynapse-transfer-node-alpha"}`,
-	})
-
+	// The product is still blocked: this delta proves delivery before completion.
 	select {
-	case env := <-received:
-		if env.Type != "transfer.available" {
-			t.Fatalf("Type = %q, want transfer.available", env.Type)
-		}
-		if env.From != "node-beta" {
-			t.Fatalf("From = %q, want node-beta", env.From)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("transfer handler not called within timeout")
+	case event := <-events:
+		t.Fatalf("premature terminal event: %#v", event)
+	default:
 	}
-
-	if messageDelivered {
-		t.Fatal("transfer.available should not be delivered to message handler")
+	if err := bus.PublishJSON(inboxSubject(nodes[1]), request); err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestIsDeliverableType(t *testing.T) {
-	defaultPrefixes := []string{"chat", "task"}
-	cases := []struct {
-		typ  string
-		want bool
-	}{
-		{"chat.message", true},
-		{"chat.stream", true},
-		{"task.assign", true},
-		{"task.result", true},
-		{"event.forward", false},
-		{"discovery.announce", false},
-		{"", false},
+	tampered := request
+	tampered.ID = "tampered"
+	tampered.AgentID = "another-agent"
+	if err := bus.PublishJSON(inboxSubject(nodes[1]), tampered); err != nil {
+		t.Fatal(err)
 	}
-	for _, tc := range cases {
-		if got := isDeliverableType(tc.typ, defaultPrefixes); got != tc.want {
-			t.Fatalf("isDeliverableType(%q) = %v, want %v", tc.typ, got, tc.want)
-		}
-	}
-}
-
-func TestIsDeliverableTypeCustomPrefixes(t *testing.T) {
-	custom := []string{"control", "task"}
-	cases := []struct {
-		typ  string
-		want bool
-	}{
-		{"control.shutdown", true},
-		{"task.assign", true},
-		{"chat.message", false},
-	}
-	for _, tc := range cases {
-		if got := isDeliverableType(tc.typ, custom); got != tc.want {
-			t.Fatalf("isDeliverableType(%q, custom) = %v, want %v", tc.typ, got, tc.want)
-		}
-	}
-}
-
-func TestNewSessionKeyUsesUUIDv4Format(t *testing.T) {
-	sessionKey := newSessionKey()
-	pattern := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
-	if !pattern.MatchString(sessionKey) {
-		t.Fatalf("sessionKey = %q, want UUID v4", sessionKey)
-	}
-}
-
-func TestPeerPublicKeyResolvesSelfIdentity(t *testing.T) {
-	peers := discovery.NewRegistry()
-	base := t.TempDir()
-	id, err := identity.LoadOrCreate(base+"/identity.key", base+"/identity.pub")
+	expired := request
+	expired.ID = "expired"
+	expired.Ts = time.Now().Add(-time.Minute).UnixMilli()
+	expired.ExpiresAt = time.Now().Add(-time.Second).UnixMilli()
+	input, err := protocol.SignedBytes(inboxSubject(nodes[1]), expired)
 	if err != nil {
-		t.Fatalf("identity init failed: %v", err)
+		t.Fatal(err)
 	}
-	svc := NewService(slog.Default(), peers, nil, "node-alpha", id, "tofu", nil)
-
-	pub, err := svc.peerPublicKey("node-alpha")
+	expired.Sig = identity.Sign(ids[0].PrivateKey, input)
+	if err := bus.PublishJSON(inboxSubject(nodes[1]), expired); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	terminal := next()
+	if terminal.Type != "run.failed" || terminal.Payload.Code != "timeout" || !terminal.Payload.Indeterminate || terminal.RequestID != result.MessageID || terminal.Seq != delta.Seq+1 {
+		t.Fatalf("partial failure misreported: %#v", terminal)
+	}
+	barrier, err := services[0].Publish(PublishRequest{TargetNode: nodes[1], Type: "task.request", SessionKey: "same-session", Message: "barrier"})
 	if err != nil {
-		t.Fatalf("self public key resolution failed: %v", err)
+		t.Fatal(err)
 	}
-	if string(pub) != string(id.PublicKey) {
-		t.Fatal("self public key mismatch")
+	for {
+		event := next()
+		if event.RequestID == barrier.MessageID && event.Type == "run.completed" {
+			break
+		}
+		if event.RequestID != barrier.MessageID {
+			t.Fatalf("replayed or tampered execution: %#v", event)
+		}
+	}
+	if executions.Load() != 2 {
+		t.Fatalf("unexpected executions: %d", executions.Load())
+	}
+	stored := services[1].RecentMessages(10)
+	if len(stored) != 2 {
+		data, _ := json.Marshal(stored)
+		t.Fatalf("rejected messages stored: %s", data)
 	}
 }

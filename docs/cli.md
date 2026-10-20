@@ -5,7 +5,7 @@ title: "ClawSynapse CLI"
 
 # ClawSynapse CLI
 
-最后更新：2026-03-18
+最后更新：2026-10-20
 
 `clawsynapse` 是 ClawSynapse 的本地命令行入口。它不直接连接 NATS，而是通过 `clawsynapsed` 暴露的本地 HTTP API 执行查询、消息发送与信任管理操作。
 
@@ -24,6 +24,8 @@ clawsynapse <command>
 ```
 
 默认本地 API 地址为 `127.0.0.1:18080`。
+
+所有 API 路由已启用 Bearer 认证。daemon 首次启动生成 `DataDir/api.token`（0600）；CLI 自动读取本地配置中的 token 路径，或通过 `API_TOKEN_PATH` 指定。缺失文件会明确失败，不会匿名降级。远端 API 必须使用受信任证书的 HTTPS；本地客户端不跟随重定向。
 
 当前支持的顶层命令：
 
@@ -233,7 +235,9 @@ POST /v1/publish
 
 普通输出会单独显示 `targetNode`、`messageId` 和 `sessionKey`；如果需要完整结构，使用 `--json`。
 
-可选地通过 `--agent <id>` 指定目标节点本地智能体 ID；当接收端使用支持该参数的 adapter（如 `openclaw`）时，会覆盖默认路由 bindings。
+publish 成功不是 Agent 完成。文本会映射为 v2 `payload.text`，结构化任务可通过本地 HTTP API 的 `payload` 提交；`messages --json` 可查看关联的 `run.*` 事件。当前没有持久执行查询、事件补取或 publish 等待完成选项。
+
+可通过 `--agent <id>` 请求命名 Agent，但接收端 OpenClaw/OpenCode 必须先在 `agentAllowedIds` 中授权该名称；默认拒绝命名路由。Codex 不支持此参数，明确返回执行失败，而非静默使用默认 Agent。
 
 ### Auth Challenge
 

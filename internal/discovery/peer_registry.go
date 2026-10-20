@@ -45,6 +45,26 @@ func (r *Registry) Upsert(peer types.Peer) {
 	r.peers[peer.NodeID] = peer
 }
 
+// refreshDiscovery updates remotely advertised fields without racing local
+// authentication and trust changes.
+func (r *Registry) refreshDiscovery(peer types.Peer) (types.Peer, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	old, exists := r.peers[peer.NodeID]
+	if exists {
+		peer.AuthStatus = old.AuthStatus
+		peer.TrustStatus = old.TrustStatus
+	}
+	if peer.AuthStatus == "" {
+		peer.AuthStatus = types.AuthSeen
+	}
+	if peer.TrustStatus == "" {
+		peer.TrustStatus = types.TrustNone
+	}
+	r.peers[peer.NodeID] = peer
+	return old, exists
+}
+
 func (r *Registry) SetAuthStatus(nodeID, authStatus string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()

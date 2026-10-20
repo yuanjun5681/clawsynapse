@@ -46,9 +46,6 @@ func run(args []string, stdout, stderr *os.File) int {
 	}
 
 	defaultAPIAddr := strings.TrimSpace(os.Getenv("LOCAL_API_ADDR"))
-	if defaultAPIAddr == "" {
-		defaultAPIAddr = "127.0.0.1:18080"
-	}
 
 	apiAddr := fs.String("api-addr", defaultAPIAddr, "local API address")
 	timeout := fs.Duration("timeout", 5*time.Second, "local API timeout")

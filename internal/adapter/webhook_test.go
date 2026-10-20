@@ -3,10 +3,14 @@ package adapter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"clawsynapse/internal/protocol"
 )
 
 func TestWebhookAdapterRequiresURL(t *testing.T) {
@@ -231,5 +235,77 @@ func TestWebhookGetStatusUnhealthyWhenUnauthorized(t *testing.T) {
 	}
 	if status.Healthy {
 		t.Fatal("expected unhealthy for 401")
+	}
+}
+
+func TestWebhookFeedbackPreservesStructuredPayloadAndCorrelation(t *testing.T) {
+	received := make(chan webhookPayload, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload webhookPayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, "bad request", 400)
+			return
+		}
+		received <- payload
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+	a, _ := NewWebhookAdapter(WebhookConfig{URL: srv.URL})
+	result, err := a.DeliverMessage(context.Background(), DeliverMessageRequest{
+		Type: "run.failed", MessageID: "event", RequestID: "request", RunID: "run", Seq: 3,
+		Payload: protocol.MessagePayload{Text: "partial", Code: "timeout", Stage: "execution", Indeterminate: true},
+	})
+	if err != nil || !result.Success || !result.Accepted || result.Completed {
+		t.Fatalf("async webhook acknowledgment: %+v %v", result, err)
+	}
+	payload := <-received
+	if payload.Message != "" || payload.RequestID != "request" || payload.RunID != "run" || payload.Seq != 3 || payload.Payload.Text != "partial" || payload.Payload.Code != "timeout" || !payload.Payload.Indeterminate {
+		t.Fatalf("feedback lost its payload or correlation: %+v", payload)
+	}
+}
+
+func TestWebhookDistinguishesCompletedAndAcceptedResponses(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		completed  bool
+	}{
+		{"accepted", `{"accepted":true,"runId":"remote-run"}`, false},
+		{"explicit async despite text", `{"accepted":true,"completed":false,"reply":"queued"}`, false},
+		{"sync reply", `{"reply":"answer"}`, true},
+		{"explicit empty completion", `{"completed":true}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(tc.body)) }))
+			defer srv.Close()
+			a, _ := NewWebhookAdapter(WebhookConfig{URL: srv.URL})
+			var emitted string
+			result, err := a.DeliverMessage(context.Background(), DeliverMessageRequest{Message: "task", Emit: func(event OutputEvent) error { emitted += event.Text; return nil }})
+			if err != nil || result.Completed != tc.completed {
+				t.Fatalf("wrong completion semantics: %+v %v", result, err)
+			}
+			if !tc.completed && emitted != "" {
+				t.Fatal("async acceptance was published as a completed answer")
+			}
+			if tc.name == "sync reply" && (emitted != "answer" || result.Reply != "") {
+				t.Fatalf("answer was lost or duplicated: %+v / %q", result, emitted)
+			}
+		})
+	}
+}
+
+func TestWebhookRejectsOversizedReplyBeforeEmitting(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, strings.Repeat("answer", 1000))
+	}))
+	defer srv.Close()
+	a, err := NewWebhookAdapter(WebhookConfig{NodeID: "local", URL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emitted := false
+	_, err = a.DeliverMessage(context.Background(), DeliverMessageRequest{Emit: func(OutputEvent) error { emitted = true; return nil }})
+	var failure *ExecutionError
+	if !errors.As(err, &failure) || failure.Code != "response_limit" || !failure.Indeterminate || emitted {
+		t.Fatalf("oversized reply was not rejected safely: %v, emitted=%v", err, emitted)
 	}
 }

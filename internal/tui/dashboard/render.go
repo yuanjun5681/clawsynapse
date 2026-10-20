@@ -307,7 +307,7 @@ func formatMessageListHeader(cols messageColumns) string {
 }
 
 func formatMessageRow(prefix string, item protocol.MessageEnvelope, cols messageColumns) string {
-	preview := normalizeSingleLine(item.Content)
+	preview := normalizeSingleLine(messagePreview(item))
 	if preview == "" {
 		preview = "-"
 	}
@@ -320,6 +320,16 @@ func formatMessageRow(prefix string, item protocol.MessageEnvelope, cols message
 		preview,
 		cols,
 	)
+}
+
+func messagePreview(item protocol.MessageEnvelope) string {
+	if item.Payload.Text != "" {
+		return item.Payload.Text
+	}
+	if item.Payload.Instruction != "" {
+		return item.Payload.Instruction
+	}
+	return item.Payload.Code
 }
 
 func formatMessageColumns(prefix, msgType, from, to, ts, preview string, cols messageColumns) string {

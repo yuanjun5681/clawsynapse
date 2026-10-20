@@ -1,12 +1,12 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"time"
 
 	"clawsynapse/internal/config"
 	"clawsynapse/internal/messaging"
+	"clawsynapse/internal/protocol"
 	"clawsynapse/internal/transfer"
 	"clawsynapse/pkg/types"
 )
@@ -32,12 +32,14 @@ type trustRevokeReq struct {
 }
 
 type publishReq struct {
-	TargetNode string         `json:"targetNode"`
-	Type       string         `json:"type,omitempty"`
-	AgentID    string         `json:"agentId,omitempty"`
-	Message    string         `json:"message"`
-	SessionKey string         `json:"sessionKey,omitempty"`
-	Metadata   map[string]any `json:"metadata,omitempty"`
+	TargetNode string                   `json:"targetNode"`
+	Type       string                   `json:"type,omitempty"`
+	AgentID    string                   `json:"agentId,omitempty"`
+	Message    *string                  `json:"message,omitempty"`
+	Payload    *protocol.MessagePayload `json:"payload,omitempty"`
+	ExpiresAt  int64                    `json:"expiresAt,omitempty"`
+	SessionKey string                   `json:"sessionKey,omitempty"`
+	Metadata   map[string]any           `json:"metadata,omitempty"`
 }
 
 func (s *Server) handlePeers(w http.ResponseWriter, _ *http.Request) {
@@ -66,7 +68,7 @@ func (s *Server) listRemotePeers() []types.Peer {
 
 func (s *Server) handleAuthChallenge(w http.ResponseWriter, r *http.Request) {
 	var req challengeReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeRequest(r, &req); err != nil {
 		respondJSON(w, http.StatusBadRequest, types.APIResult{
 			OK:      false,
 			Code:    "invalid_argument",
@@ -142,6 +144,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		}
 		if st != nil {
 			adapterStatus["healthy"] = st.Healthy
+			adapterStatus["degraded"] = st.Degraded
+			adapterStatus["detail"] = st.Detail
 		}
 	}
 
@@ -167,7 +171,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleTrustRequest(w http.ResponseWriter, r *http.Request) {
 	var req trustRequestReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeRequest(r, &req); err != nil {
 		respondJSON(w, http.StatusBadRequest, types.APIResult{OK: false, Code: "invalid_argument", Message: "invalid json payload", TS: time.Now().UnixMilli()})
 		return
 	}
@@ -208,7 +212,7 @@ func (s *Server) handleTrustReject(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleTrustDecision(w http.ResponseWriter, r *http.Request, decision string) {
 	var req trustDecisionReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeRequest(r, &req); err != nil {
 		respondJSON(w, http.StatusBadRequest, types.APIResult{OK: false, Code: "invalid_argument", Message: "invalid json payload", TS: time.Now().UnixMilli()})
 		return
 	}
@@ -238,7 +242,7 @@ func (s *Server) handleTrustDecision(w http.ResponseWriter, r *http.Request, dec
 
 func (s *Server) handleTrustRevoke(w http.ResponseWriter, r *http.Request) {
 	var req trustRevokeReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeRequest(r, &req); err != nil {
 		respondJSON(w, http.StatusBadRequest, types.APIResult{OK: false, Code: "invalid_argument", Message: "invalid json payload", TS: time.Now().UnixMilli()})
 		return
 	}
@@ -273,16 +277,30 @@ func (s *Server) handleTrustPending(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	var req publishReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeRequest(r, &req); err != nil {
 		respondJSON(w, http.StatusBadRequest, types.APIResult{OK: false, Code: "invalid_argument", Message: "invalid json payload", TS: time.Now().UnixMilli()})
 		return
+	}
+	if req.Message != nil && req.Payload != nil {
+		respondJSON(w, http.StatusBadRequest, types.APIResult{OK: false, Code: "invalid_argument", Message: "message and payload are mutually exclusive", TS: time.Now().UnixMilli()})
+		return
+	}
+	var message string
+	var payload protocol.MessagePayload
+	if req.Message != nil {
+		message = *req.Message
+	}
+	if req.Payload != nil {
+		payload = *req.Payload
 	}
 
 	result, err := s.messaging.Publish(messaging.PublishRequest{
 		TargetNode: req.TargetNode,
 		Type:       req.Type,
 		AgentID:    req.AgentID,
-		Message:    req.Message,
+		Message:    message,
+		Payload:    payload,
+		ExpiresAt:  req.ExpiresAt,
 		SessionKey: req.SessionKey,
 		Metadata:   req.Metadata,
 	})
@@ -343,7 +361,7 @@ func (s *Server) handleTransferSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req transferSendReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeRequest(r, &req); err != nil {
 		respondJSON(w, http.StatusBadRequest, types.APIResult{OK: false, Code: "invalid_argument", Message: "invalid json payload", TS: time.Now().UnixMilli()})
 		return
 	}
@@ -484,7 +502,7 @@ func (s *Server) handleConfigGet(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handleConfigSave(w http.ResponseWriter, r *http.Request) {
 	var cfg config.Config
-	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+	if err := decodeRequest(r, &cfg); err != nil {
 		respondJSON(w, http.StatusBadRequest, types.APIResult{
 			OK:      false,
 			Code:    "invalid_argument",

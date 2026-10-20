@@ -227,7 +227,7 @@ func (s *Service) SendFile(req SendFileRequest) (SendFileResult, error) {
 	s.transfers[transferID] = rec
 	s.mu.Unlock()
 
-	notifyContent, _ := json.Marshal(map[string]any{
+	notifyPayload, _ := json.Marshal(map[string]any{
 		"transferId": transferID,
 		"fileName":   fileName,
 		"size":       info.Size(),
@@ -237,7 +237,7 @@ func (s *Service) SendFile(req SendFileRequest) (SendFileResult, error) {
 	_, _ = s.messaging.Publish(messaging.PublishRequest{
 		TargetNode: req.TargetNode,
 		Type:       "transfer.available",
-		Message:    string(notifyContent),
+		Payload:    protocol.MessagePayload{Input: notifyPayload},
 		Metadata:   req.Metadata,
 	})
 
@@ -265,8 +265,11 @@ func (s *Service) HandleTransferNotification(env protocol.MessageEnvelope) {
 	var payload struct {
 		TransferID string `json:"transferId"`
 		Bucket     string `json:"bucket"`
+		FileName   string `json:"fileName"`
+		Size       int64  `json:"size"`
+		MimeType   string `json:"mimeType"`
 	}
-	if err := json.Unmarshal([]byte(env.Content), &payload); err != nil {
+	if err := protocol.DecodeStrict(env.Payload.Input, &payload); err != nil {
 		s.log.Warn("decode transfer notification failed", slog.String("error", err.Error()))
 		return
 	}

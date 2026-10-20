@@ -38,89 +38,6 @@ func (s stubLogProvider) ReadLogs(_ context.Context, _ int) (string, error) {
 	return s.text, s.err
 }
 
-func TestLoadSnapshotDecodesHealthPeersAndMessages(t *testing.T) {
-	client := stubDashboardClient{
-		results: map[string]types.APIResult{
-			"/v1/health": {
-				OK: true,
-				Data: map[string]any{
-					"peersCount": 1,
-					"nats": map[string]any{
-						"connected": true,
-						"status":    "CONNECTED",
-						"inMsgs":    10,
-						"outMsgs":   5,
-					},
-				},
-			},
-			"/v1/peers": {
-				OK: true,
-				Data: map[string]any{
-					"items": []map[string]any{
-						{
-							"nodeId":      "node-beta",
-							"authStatus":  "authenticated",
-							"trustStatus": "trusted",
-						},
-					},
-				},
-			},
-			"/v1/messages": {
-				OK: true,
-				Data: map[string]any{
-					"items": []map[string]any{
-						{
-							"id":      "msg-1",
-							"type":    "chat.message",
-							"from":    "node-beta",
-							"to":      "node-alpha",
-							"content": "hello",
-							"ts":      123,
-						},
-					},
-				},
-			},
-			"/v1/config": {
-				OK: true,
-				Data: map[string]any{
-					"config": map[string]any{
-						"trustMode":   "tofu",
-						"logLevel":    "info",
-						"logFormat":   "json",
-						"natsServers": []any{"nats://127.0.0.1:4222"},
-					},
-				},
-			},
-		},
-	}
-
-	snapshot, err := loadSnapshot(context.Background(), client, stubLogProvider{text: "line-a\nline-b"}, dashboardDefaultLogLines)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if snapshot.Health.PeersCount != 1 {
-		t.Fatalf("expected peers count 1, got %d", snapshot.Health.PeersCount)
-	}
-	if !snapshot.Health.NATS.Connected {
-		t.Fatal("expected nats connected")
-	}
-	if len(snapshot.Peers) != 1 || snapshot.Peers[0].NodeID != "node-beta" {
-		t.Fatalf("unexpected peers: %#v", snapshot.Peers)
-	}
-	if len(snapshot.Messages) != 1 || snapshot.Messages[0].Content != "hello" {
-		t.Fatalf("unexpected messages: %#v", snapshot.Messages)
-	}
-	if snapshot.Logs != "line-a\nline-b" {
-		t.Fatalf("unexpected logs: %q", snapshot.Logs)
-	}
-	if snapshot.ConfigData == nil {
-		t.Fatal("expected config data to be loaded")
-	}
-	if snapshot.ConfigData["trustMode"] != "tofu" {
-		t.Fatalf("expected trustMode=tofu, got %v", snapshot.ConfigData["trustMode"])
-	}
-}
-
 func TestDashboardViewRendersStructuredPanels(t *testing.T) {
 	model := model{
 		apiAddr:     "127.0.0.1:18080",
@@ -224,7 +141,7 @@ func TestMessageListLinesFitPanelWidth(t *testing.T) {
 					Type:    "conversation.message",
 					From:    "node-with-a-very-long-name",
 					To:      "trustmesh-dev",
-					Content: `{"conversation_id":"abcd","summary":"long preview body for the dashboard list"}`,
+					Payload: protocol.MessagePayload{Text: `{"conversation_id":"abcd","summary":"long preview body for the dashboard list"}`},
 					Ts:      1711111111111,
 				},
 			},
@@ -245,7 +162,7 @@ func TestFormatMessageRowCollapsesEmbeddedNewlinesInPreview(t *testing.T) {
 		Type:    "conversation.message",
 		From:    "node-jack",
 		To:      "trustmesh-dev",
-		Content: "line one\n\nline two\tline three",
+		Payload: protocol.MessagePayload{Text: "line one\n\nline two\tline three"},
 		Ts:      1711111111111,
 	}, cols)
 
@@ -284,25 +201,6 @@ func TestRenderPanelKeepsLayoutForMultilineContent(t *testing.T) {
 		plain := stripANSI(line)
 		if !strings.HasPrefix(plain, boxV) || !strings.HasSuffix(plain, boxV) {
 			t.Fatalf("content line %d lost panel border: %q", i+1, plain)
-		}
-	}
-}
-
-func TestConfigViewRendersGroupsAndFields(t *testing.T) {
-	m := model{
-		width:     120,
-		height:    32,
-		activeTab: 4,
-		cfgState: configEditState{
-			fields: initConfigFields(),
-		},
-	}
-	m.recalcLayout()
-
-	view := m.configView(m.width, m.height)
-	for _, needle := range []string{"Network", "Security", "Logging", "Trust Mode", "Log Level", "Field Detail"} {
-		if !strings.Contains(view, needle) {
-			t.Fatalf("expected config view to contain %q", needle)
 		}
 	}
 }

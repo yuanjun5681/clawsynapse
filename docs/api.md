@@ -5,11 +5,20 @@ title: "ClawSynapse API Reference"
 
 # ClawSynapse API Reference
 
-最后更新：2026-03-18
+最后更新：2026-10-20
 
 `clawsynapsed` 在本地暴露 HTTP API，供 Agent、CLI 或外部系统调用。默认监听 `127.0.0.1:18080`，可通过 `LOCAL_API_ADDR` 或 `--local-api-addr` 配置。
 
 ## 通用约定
+
+### 访问保护与请求限制
+
+所有路由，包括 health/config，均要求 `Authorization: Bearer <token>`，缺失或错误返回 HTTP 401。首次启动自动生成 `DataDir/api.token`，文件权限必须为 0600；可用 `API_TOKEN_PATH`／`--api-token-path`／`apiTokenPath` 指定路径。不要把 token 放入 URL、日志或版本库。CLI 与 Go Client 自动读取本地配置中的 token 文件。
+
+非 loopback 监听必须显式配置 `allowRemoteAPI: true`，同时提供 `apiTLSCertFile` 和 `apiTLSKeyFile`，实际以 HTTPS 启动；客户端拒绝远端明文和重定向，证书须由客户端信任的 CA 签发。
+
+请求 body 最多 256 KiB，必须是单个 JSON 对象；未知结构字段、重复键、尾随对象和非法编码返回 400。
+
 
 ### 统一响应格式
 
@@ -201,7 +210,7 @@ title: "ClawSynapse API Reference"
 
 ## POST /v1/publish
 
-向目标节点发布消息。守护进程负责路由、签名和投递。
+向目标节点发布 v2 结构化消息。成功仅表示当前 Core NATS 发布调用成功，不表示对端持久接纳或 Agent 完成。连接断开时拒绝发布，不积压待重连执行的命令。
 
 **请求**
 
@@ -210,7 +219,7 @@ title: "ClawSynapse API Reference"
   "targetNode": "n1-11223344556677889900aabbccddeeff",
   "type": "chat.message",
   "agentId": "agent-42",
-  "message": "请汇总最新报告",
+  "payload": {"instruction": "请汇总最新报告", "input": {"period": "today"}},
   "sessionKey": "nats:n1-localnodeid:n1-11223344556677889900aabbccddeeff",
   "metadata": { "priority": "high" }
 }
@@ -220,8 +229,10 @@ title: "ClawSynapse API Reference"
 |------|------|------|------|
 | `targetNode` | string | 是 | 目标节点 ID，由对端 DID 自动派生 |
 | `type` | string | 否 | 消息类型（如 `chat.message`, `task.assign`） |
-| `agentId` | string | 否 | 目标节点本地智能体 ID；若 adapter 支持，可覆盖默认路由 bindings |
-| `message` | string | 是 | 消息正文 |
+| `agentId` | string | 否 | 目标本地授权列表内的 Agent；Codex 不支持指定 Agent |
+| `message` | string | 否 | 文本快捷输入，映射为 payload.text；与 payload 互斥 |
+| `payload` | object | 否 | text 或 instruction/input 等结构化正文 |
+| `expiresAt` | int64 | 否 | Unix 毫秒有效期；默认 10 分钟，最长发送时间起 10 分钟 |
 | `sessionKey` | string | 否 | 会话标识，用于关联上下文 |
 | `metadata` | object | 否 | 附加元数据 |
 
@@ -259,7 +270,7 @@ title: "ClawSynapse API Reference"
 
 ## GET /v1/messages
 
-获取最近收到的消息（最多 100 条）。
+获取最近收到的消息与执行事件（最多 100 条），仅保存在内存中，不是持久收件箱或完整事件回放。消费者用 requestId/runId/seq 关联输出；run.completed 不重复附带全文，不能把终态正文再次追加到 delta。
 
 **响应**
 
@@ -275,12 +286,13 @@ title: "ClawSynapse API Reference"
         "type": "chat.message",
         "from": "n1-11223344556677889900aabbccddeeff",
         "to": "n1-localnodeid",
-        "content": "报告已完成",
+        "payload": {"text": "报告已完成"},
         "sessionKey": "nats:n1-localnodeid:n1-11223344556677889900aabbccddeeff",
         "ts": 1710000000000,
+        "expiresAt": 1710000600000,
         "sig": "base64-signature",
         "metadata": {},
-        "protocolVersion": "1.0"
+        "protocolVersion": "v2"
       }
     ]
   },
@@ -297,12 +309,19 @@ title: "ClawSynapse API Reference"
 | `agentId` | string | 目标节点本地智能体 ID，可能为空 |
 | `from` | string | 发送方节点 ID |
 | `to` | string | 接收方节点 ID |
-| `content` | string | 消息正文 |
+| `payload` | object | 结构化正文或执行事件的 text/channel/code/stage/indeterminate/adapterRunId |
 | `sessionKey` | string | 会话标识 |
 | `ts` | int64 | 消息时间戳，Unix 毫秒 |
+| `expiresAt` | int64 | 消息失效时间 |
+| `requestId` | string | 执行事件的原请求 ID |
+| `runId` | string | 节点生成的执行 ID |
+| `seq` | uint64 | 单次执行事件序号，从 1 开始 |
 | `sig` | string | 消息签名（Base64） |
 | `metadata` | object | 附加元数据 |
 | `protocolVersion` | string | 协议版本号 |
+
+执行类型为 `run.started`、`run.output.delta`、`run.completed`、`run.failed`、`run.accepted`。accepted 是异步接纳；failed 中的 indeterminate=true 表示可能已产生副作用，不能自动重跑。公开事件不自动重新投递给 LLM。
+
 
 ---
 

@@ -113,7 +113,7 @@ func parseInitArgs(args []string, stderr io.Writer) (initConfig, error) {
 	fs.StringVar(&cfg.LocalAPIAddr, "local-api-addr", cfg.LocalAPIAddr, "local API address")
 	fs.StringVar(&cfg.TrustMode, "trust-mode", cfg.TrustMode, "trust mode: open|tofu|explicit")
 	fs.BoolVar(&cfg.TrustAutoApprove, "trust-auto-approve", false, "automatically approve valid inbound trust requests")
-	fs.StringVar(&cfg.AgentAdapter, "agent-adapter", cfg.AgentAdapter, "agent adapter: default|openclaw|webhook")
+	fs.StringVar(&cfg.AgentAdapter, "agent-adapter", cfg.AgentAdapter, "agent adapter: default|openclaw|opencode|codex|webhook")
 	fs.StringVar(&cfg.AgentAdapterTimeout, "agent-adapter-timeout", cfg.AgentAdapterTimeout, "timeout for delivering a message to the agent adapter")
 	fs.StringVar(&cfg.WebhookURL, "webhook-url", cfg.WebhookURL, "webhook URL when using webhook adapter")
 	fs.StringVar(&cfg.DeliverablePrefixes, "deliverable-prefixes", cfg.DeliverablePrefixes, "comma-separated deliverable prefixes")
@@ -147,7 +147,7 @@ func promptInitConfig(stdin io.Reader, stdout io.Writer, cfg *initConfig) error 
 	if cfg.NATSServers, err = promptValue(reader, stdout, "NATS servers (comma-separated)", cfg.NATSServers); err != nil {
 		return err
 	}
-	if cfg.AgentAdapter, err = promptChoice(reader, stdout, "Agent adapter", cfg.AgentAdapter, []string{"default", "openclaw", "webhook"}); err != nil {
+	if cfg.AgentAdapter, err = promptChoice(reader, stdout, "Agent adapter", cfg.AgentAdapter, []string{"default", "openclaw", "opencode", "codex", "webhook"}); err != nil {
 		return err
 	}
 	if cfg.AgentAdapter == "webhook" {
@@ -230,7 +230,7 @@ func finalizeInitConfig(cfg *initConfig) error {
 		return fmt.Errorf("invalid trust mode: %s", cfg.TrustMode)
 	}
 	switch cfg.AgentAdapter {
-	case "default", "openclaw", "webhook":
+	case "default", "openclaw", "opencode", "codex", "webhook":
 	default:
 		return fmt.Errorf("invalid agent adapter: %s", cfg.AgentAdapter)
 	}

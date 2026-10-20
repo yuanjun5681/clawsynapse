@@ -5,7 +5,7 @@ title: "ClawSynapse Operations"
 
 # ClawSynapse Operations
 
-最后更新：2026-03-12
+最后更新：2026-10-20
 
 ## Go 实现
 
@@ -45,7 +45,7 @@ pkg/types/
 
 - 一个 goroutine 管理 NATS 生命周期
 - 一个 goroutine 管理节点心跳
-- subscription handler 按消息独立处理
+- 消息执行固定为 8 个串行工作分片，每分片最多等待 16 条；过载明确失败，同会话保持顺序
 - 一个后台清理协程处理过期 peer、握手超时和去重缓存
 - 每个外部调用使用 `context.WithTimeout`
 
@@ -116,14 +116,38 @@ LOCAL_API_ADDR=127.0.0.1:18080
 
 `WEBHOOK_AUTH_TOKEN` 是敏感值：可从 daemon 的 OS 进程环境或项目根目录 `.env` 读取，不支持 YAML 或 CLI，且不会由配置 API 返回。
 
-补充配置项：
+### 本地访问与生产连接
 
-```bash
-NATS_TOKEN=
-NATS_CREDS_FILE=/path/to/creds
-TRUSTED_KEYS_DIR=~/.clawsynapse/peers/
-BRIDGE_EVENTS=agent_end,message_sent
+本地 API 首次启动生成 `DataDir/api.token`（0600），所有路由均需 Bearer token。客户端自动读取本地配置；迁移自定义 HTTP 调用方时必须补认证头。token 不出现在配置 API 或日志中。
+
+以下是生产连接配置示意，文件必须由部署方实际提供，不能直接复制占位路径启动：
+
+```yaml
+production: true
+trustMode: explicit
+natsServers:
+  - tls://nats.example:4222
+natsCredentialsFile: /private/node.creds
+natsTLSCAFile: /private/ca.pem
+# 如使用双向 TLS，可提供下列两项；也可同时使用 credentials。
+natsTLSCertFile: /private/client.pem
+natsTLSKeyFile: /private/client.key
+natsTLSServerName: nats.example
+apiTokenPath: /private/clawsynapse/api.token
+allowRemoteAPI: false
+agentAllowedIds: []
 ```
+
+对应环境变量为 `PRODUCTION`、`NATS_CREDENTIALS_FILE`、`NATS_TLS_CA_FILE`、`NATS_TLS_CERT_FILE`、`NATS_TLS_KEY_FILE`、`NATS_TLS_SERVER_NAME`、`API_TOKEN_PATH` 和 `AGENT_ALLOWED_IDS`。不支持旧示意中的 `NATS_TOKEN`、`NATS_CREDS_FILE`、`TRUSTED_KEYS_DIR`、`BRIDGE_EVENTS`。
+
+非 loopback API 监听必须显式设置 `ALLOW_REMOTE_API=true`、`API_TLS_CERT_FILE`、`API_TLS_KEY_FILE`，实际启用 HTTPS；客户端拒绝远端明文和重定向，须使用可信 CA。所有 TLS 配置默认验证证书，不提供跳过验证的降级。
+
+`production: true` 拒绝 open 信任、非 TLS NATS URL、URL 内嵌凭据和缺失 NATS 身份凭据。凭据使用 credentials 文件或客户端证书，API token 内容不得写入 YAML、URL 或日志。
+
+NATS account／subject ACL 必须在 server 或 JWT 管理端配置，客户端配置 TLS 不会自动建立隔离。对每个节点只授权本节点 inbox 的订阅、获准目标 inbox 的发布、必要的 discovery/auth/trust subject；文件功能还需单独限制 ObjectStore bucket/API，不可全局放开 `$JS.>`。
+
+当前 daemon 启动会初始化文件 bucket，本次端到端验收使用启用 JetStream 的 broker；不要把仅创建 JetStream 客户端对象视为存储能力已就绪。断连时普通消息发布失败，不进入重连缓冲。
+
 
 ## 启动流程
 
@@ -349,15 +373,14 @@ CI 自动发布入口：
 
 ### 传输层
 
-- 为 NATS 启用 token、NKey 或凭证文件认证
-- 跨网络部署时启用 TLS
+- 为 NATS 配置 credentials 或双向 TLS，并在服务器限制 account/subject 权限。
+- 正式部署启用 production 校验，使用受信任证书的 TLS；不嵌入共享长期明文密码。
 
 ### 应用层
 
 - 使用 Ed25519 挑战响应握手验证节点身份
-- 对点对点消息进行签名校验
-- 校验消息时间戳，执行重放保护
-- 支持密钥轮换与公钥更新
+- 对 v2 消息与发现声明执行完整签名、时间和进程内重放检查。
+- 不承诺持久重放保护、端到端正文加密或自动密钥轮换；这些能力未由当前 P0 实现。
 
 ### Agent 网关层
 

@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -345,7 +346,7 @@ func (m model) overviewActivityLines() []string {
 			break
 		}
 		lines = append(lines, taggedLine(dashboardTagAccent, fmt.Sprintf("  %s %s %s %s", arrowR, compactType(item.Type), fallbackString(item.From, "-"), fallbackString(item.To, "-"))))
-		lines = append(lines, taggedLine(dashboardTagMuted, "    "+truncateRight(strings.TrimSpace(item.Content), 48)))
+		lines = append(lines, taggedLine(dashboardTagMuted, "    "+truncateRight(strings.TrimSpace(messagePreview(item)), 48)))
 	}
 	return lines
 }
@@ -472,13 +473,16 @@ func (m model) selectedMessageLines() []string {
 		fmt.Sprintf("  to   %s", fallbackString(item.To, "-")),
 		fmt.Sprintf("  key  %s", fallbackString(item.SessionKey, "-")),
 		fmt.Sprintf("  ts   %s", formatUnixMilli(item.Ts)),
+		fmt.Sprintf("  request %s", fallbackString(item.RequestID, "-")),
+		fmt.Sprintf("  run %s / seq %d", fallbackString(item.RunID, "-"), item.Seq),
 		"",
-		taggedLine(dashboardTagSection, arrowR+" Content"),
+		taggedLine(dashboardTagSection, arrowR+" Payload"),
 	}
-	if strings.TrimSpace(item.Content) == "" {
-		lines = append(lines, taggedLine(dashboardTagMuted, "  -"))
+	payload, err := json.MarshalIndent(item.Payload, "", "  ")
+	if err != nil {
+		lines = append(lines, taggedLine(dashboardTagMuted, "  invalid payload"))
 	} else {
-		lines = append(lines, "  "+item.Content)
+		lines = append(lines, string(payload))
 	}
 	if len(item.Metadata) > 0 {
 		lines = append(lines, "", taggedLine(dashboardTagSection, arrowR+" Metadata"))
@@ -959,6 +963,16 @@ func buildConfigFromFields(fields []configField) appconfig.Config {
 	return appconfig.Config{
 		NATSServers:         csv("natsServers"),
 		LocalAPIAddr:        v("localApiAddr"),
+		APITokenPath:        v("apiTokenPath"),
+		AllowRemoteAPI:      v("allowRemoteAPI") == "true",
+		APITLSCertFile:      v("apiTLSCertFile"),
+		APITLSKeyFile:       v("apiTLSKeyFile"),
+		Production:          v("production") == "true",
+		NATSCredentialsFile: v("natsCredentialsFile"),
+		NATSTLSCAFile:       v("natsTLSCAFile"),
+		NATSTLSCertFile:     v("natsTLSCertFile"),
+		NATSTLSKeyFile:      v("natsTLSKeyFile"),
+		NATSTLSServerName:   v("natsTLSServerName"),
 		DataDir:             v("dataDir"),
 		IdentityKeyPath:     v("identityKeyPath"),
 		IdentityPubPath:     v("identityPubPath"),
@@ -971,6 +985,7 @@ func buildConfigFromFields(fields []configField) appconfig.Config {
 		TrustAutoApprove:    v("trustAutoApprove") == "true",
 		AgentAdapter:        v("agentAdapter"),
 		AgentAdapterTimeout: v("agentAdapterTimeout"),
+		AgentAllowedIDs:     csv("agentAllowedIds"),
 		WebhookURL:          v("webhookUrl"),
 		DeliverablePrefixes: csv("deliverablePrefixes"),
 		TransferDir:         v("transferDir"),

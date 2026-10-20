@@ -18,6 +18,7 @@ import (
 	"clawsynapse/internal/logging"
 	"clawsynapse/internal/messaging"
 	"clawsynapse/internal/natsbus"
+	"clawsynapse/internal/protocol"
 	"clawsynapse/internal/store"
 	"clawsynapse/internal/transfer"
 	"clawsynapse/internal/trust"
@@ -25,17 +26,18 @@ import (
 )
 
 type App struct {
-	log       *slog.Logger
-	cfg       config.Config
-	api       *api.Server
-	discovery *discovery.Service
-	auth      *auth.Service
-	trust     *trust.Service
-	messaging *messaging.Service
-	transfer  *transfer.Service
-	bus       *natsbus.Client
-	peers     *discovery.Registry
-	identity  *identity.Identity
+	log             *slog.Logger
+	cfg             config.Config
+	api             *api.Server
+	discovery       *discovery.Service
+	auth            *auth.Service
+	trust           *trust.Service
+	messaging       *messaging.Service
+	transfer        *transfer.Service
+	bus             *natsbus.Client
+	peers           *discovery.Registry
+	identity        *identity.Identity
+	executionCancel context.CancelFunc
 }
 
 func New(cfg config.Config, version string) (*App, error) {
@@ -86,7 +88,13 @@ func New(cfg config.Config, version string) (*App, error) {
 		return nil, fmt.Errorf("parse announce ttl: %w", err)
 	}
 
-	bus, err := natsbus.Connect(context.Background(), cfg.NATSServers, "clawsynapsed-"+nodeID)
+	bus, err := natsbus.Connect(context.Background(), cfg.NATSServers, "clawsynapsed-"+nodeID, natsbus.Options{
+		CredentialsFile: cfg.NATSCredentialsFile,
+		TLSCAFile:       cfg.NATSTLSCAFile,
+		TLSCertFile:     cfg.NATSTLSCertFile,
+		TLSKeyFile:      cfg.NATSTLSKeyFile,
+		TLSServerName:   cfg.NATSTLSServerName,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("connect nats: %w", err)
 	}
@@ -115,6 +123,7 @@ func New(cfg config.Config, version string) (*App, error) {
 			AgentProduct: cfg.AgentProduct,
 			AgentVersion: agentVersion,
 			Capabilities: cfg.Capabilities,
+			Identity:     id,
 		},
 	)
 	authSvc := auth.NewService(log.With(slog.String("component", "auth")), peers, bus, nodeID, id, replay, cfg.TrustMode)
@@ -150,6 +159,7 @@ func New(cfg config.Config, version string) (*App, error) {
 	)
 	messagingSvc.SetTransferHandler(transferSvc.HandleTransferNotification)
 
+	executionCtx, executionCancel := context.WithCancel(context.Background())
 	transferSvc.OnReceived(func(rec transfer.TransferRecord) {
 		content, _ := json.Marshal(map[string]any{
 			"transferId": rec.TransferID,
@@ -159,11 +169,12 @@ func New(cfg config.Config, version string) (*App, error) {
 			"mimeType":   rec.MimeType,
 		})
 		msg := messaging.IncomingMessage{
+			Context:   executionCtx,
 			MessageID: "transfer.received:" + rec.TransferID,
 			Type:      "transfer.received",
 			From:      rec.PeerNode,
 			To:        nodeID,
-			Message:   string(content),
+			Payload:   protocol.MessagePayload{Input: content},
 			Metadata:  rec.Metadata,
 		}
 		if _, err := adapterHandler.HandleMessage(msg); err != nil {
@@ -174,25 +185,31 @@ func New(cfg config.Config, version string) (*App, error) {
 		}
 	})
 
-	apiServer := api.NewServer(cfg.LocalAPIAddr, peers, authSvc, trustSvc, messagingSvc, transferSvc, bus, agentAdapter, cfg.AgentAdapter, api.SelfInfo{
+	apiServer, err := api.NewServer(cfg.LocalAPIAddr, peers, authSvc, trustSvc, messagingSvc, transferSvc, bus, agentAdapter, cfg.AgentAdapter, api.SelfInfo{
 		NodeID:              nodeID,
 		DID:                 nodeDID,
 		IdentityFingerprint: identity.Fingerprint(id.PublicKey),
 		TrustMode:           cfg.TrustMode,
 	}, version, cfg)
+	if err != nil {
+		executionCancel()
+		bus.Close()
+		return nil, fmt.Errorf("init local API: %w", err)
+	}
 
 	return &App{
-		log:       log,
-		cfg:       cfg,
-		api:       apiServer,
-		discovery: discoverySvc,
-		auth:      authSvc,
-		trust:     trustSvc,
-		messaging: messagingSvc,
-		transfer:  transferSvc,
-		bus:       bus,
-		peers:     peers,
-		identity:  id,
+		log:             log,
+		cfg:             cfg,
+		api:             apiServer,
+		discovery:       discoverySvc,
+		auth:            authSvc,
+		trust:           trustSvc,
+		messaging:       messagingSvc,
+		transfer:        transferSvc,
+		bus:             bus,
+		peers:           peers,
+		identity:        id,
+		executionCancel: executionCancel,
 	}, nil
 }
 
@@ -202,14 +219,16 @@ func newAgentAdapter(cfg config.Config, nodeID string, log *slog.Logger, fs *sto
 		return adapter.NewDefaultAdapter(nodeID), nil
 	case "openclaw":
 		return adapter.NewOpenClawAdapter(adapter.OpenClawConfig{
-			NodeID: nodeID,
-			Logger: log.With(slog.String("component", "adapter"), slog.String("adapter", "openclaw")),
+			NodeID:        nodeID,
+			Logger:        log.With(slog.String("component", "adapter"), slog.String("adapter", "openclaw")),
+			AllowAgentIDs: cfg.AgentAllowedIDs,
 		})
 	case "opencode":
 		return adapter.NewOpenCodeAdapter(adapter.OpenCodeConfig{
-			NodeID:       nodeID,
-			Logger:       log.With(slog.String("component", "adapter"), slog.String("adapter", "opencode")),
-			SessionStore: fs,
+			NodeID:        nodeID,
+			Logger:        log.With(slog.String("component", "adapter"), slog.String("adapter", "opencode")),
+			SessionStore:  fs,
+			AllowAgentIDs: cfg.AgentAllowedIDs,
 		})
 	case "codex":
 		return adapter.NewCodexAdapter(adapter.CodexConfig{
@@ -242,6 +261,11 @@ func resolveAgentAdapterTimeout(cfg config.Config) (time.Duration, error) {
 }
 
 func (a *App) Run(ctx context.Context) error {
+	defer func() {
+		a.executionCancel()
+		a.messaging.Close()
+		a.bus.Close()
+	}()
 	a.log.Info("starting clawsynapsed",
 		slog.String("apiAddr", a.cfg.LocalAPIAddr),
 		slog.String("trustMode", a.cfg.TrustMode),
@@ -287,6 +311,8 @@ func (a *App) Run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
+		a.executionCancel()
+		a.messaging.Close()
 		a.bus.Close()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
