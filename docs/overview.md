@@ -26,6 +26,8 @@ ClawSynapse 采用分层命名：
 - [消息与协议](./messaging.md)
 - [信任与认证](./trust.md)
 - [集成与适配](./integration.md)
+- [能力改进路线图（规划稿）](./capability-improvement-roadmap.md)
+- [Harness 移动端 NATS 接入设计（待实现）](./mobile-nats-access.md)
 - [CLI 使用](./cli.md)
 - [运行与配置](./operations.md)
 

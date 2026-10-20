@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Harness 移动端 NATS 接入设计：完整离线阅读页"><title>Harness 移动端 NATS 接入设计 · ClawSynapse</title><style data-enhancement="notation">:root {
+  --notation-color: currentColor;
+  --notation-highlight: rgba(127, 127, 127, .2);
+  --notation-highlight-ink: inherit;
+}
+[data-notation] {
+  text-decoration: underline;
+  text-decoration-color: var(--notation-color);
+  text-underline-offset: .18em;
+}
+[data-notation="highlight"] {
+  color: var(--notation-highlight-ink);
+  background: var(--notation-highlight);
+  text-decoration: none;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+@media screen {
+  [data-notation].notation-ready { text-decoration: none; background: transparent; }
+}
+@media print {
+  .rough-annotation { display: none !important; }
+  [data-notation] { text-decoration-color: currentColor; }
+  [data-notation="highlight"] {
+    color: inherit;
+    background: transparent;
+    text-decoration: underline;
+  }
+}
+</style><style>
+:root{--fg:#1c3246;--muted:#52697b;--border:#b7cbd7;--surface:#f7fafb;--accent:#086a7d;--success:#176848;--warning:#976019;--error:#ad3434;--notation-color:#b25c29;--notation-highlight:#fae6bd;--notation-highlight-ink:#302414;color-scheme:light}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:28px}body{margin:0;background:#eaf1f5;color:var(--fg);font-family:'PingFang SC','Microsoft YaHei',system-ui,sans-serif;font-size:17px;line-height:1.8}a{color:var(--accent);text-underline-offset:4px}a:hover{text-decoration-thickness:2px}a:focus-visible,button:focus-visible,summary:focus-visible,[tabindex]:focus-visible{outline:3px solid var(--accent);outline-offset:5px}::selection{background:#c7e8eb;color:#163244}.skip{position:absolute;top:-90px;left:20px;background:var(--surface);padding:8px 16px;z-index:5}.skip:focus{top:12px}
+.shell{max-width:1280px;margin:auto;display:grid;grid-template-columns:240px minmax(0,1fr);gap:60px;padding:38px 40px 80px}.rail{position:sticky;top:30px;align-self:start;max-height:calc(100vh - 60px);overflow:auto}.brand{font-family:ui-monospace,monospace;font-size:13px;letter-spacing:.09em;color:var(--accent);border-top:3px solid var(--accent);padding-top:15px;margin-bottom:28px}.rail-label{font-size:12px;letter-spacing:.12em;color:var(--muted);margin:15px 0}.toc{list-style:none;padding:0;border-left:1px solid var(--border);margin:0}.toc a{display:block;padding:7px 12px;text-decoration:none;font-size:14px;color:var(--muted);line-height:1.6;border-left:3px solid transparent;margin-left:-2px}.toc a[aria-current="location"]{border-color:var(--accent);color:var(--accent);background:#dce9ef;font-weight:600}.rail-foot{font-size:12px;color:var(--muted);margin-top:30px}.mobile-nav{display:none}main{min-width:0;max-width:850px}.plate{display:flex;justify-content:space-between;gap:15px;border-top:3px solid var(--accent);padding:12px 0;color:var(--muted);font-size:12px;letter-spacing:.08em}.status{color:#855019}h1,h2,h3{font-family:'Songti SC','Noto Serif CJK SC','SimSun',serif;color:#18374d;line-height:1.35}h1{font-size:38px;font-weight:700;margin:19px 0 18px;letter-spacing:.015em}h2{font-size:26px;margin:58px 0 22px;padding-top:18px;border-top:1px solid var(--border);scroll-margin-top:25px}h3{font-size:21px;margin:32px 0 15px}p{margin:17px 0}h1+p{font-size:13px;color:var(--muted)}ul,ol{padding-left:1.65em}li{padding-left:3px;margin:8px 0}strong{font-weight:650}blockquote{margin:22px 0;padding:10px 23px;background:#dcebee;border-left:4px solid var(--accent);font-weight:600;font-size:19px}blockquote p{margin:9px 0}code{font-family:ui-monospace,'SFMono-Regular',Consolas,monospace;font-size:.86em;background:#dfe9ef;padding:2px 5px;border-radius:3px;overflow-wrap:anywhere}pre{overflow:auto;padding:20px;background:#173448;color:#ecf4f6;border-radius:4px;line-height:1.7;font-size:14px}pre code{background:none;padding:0;color:inherit;white-space:pre;overflow-wrap:normal}.table-scroll{overflow-x:auto;margin:23px 0;border-top:2px solid var(--accent)}table{border-collapse:collapse;width:100%;font-size:15px;line-height:1.65}th{text-align:left;background:#dfeaf0;font-weight:650;white-space:nowrap}th,td{padding:14px 16px;border-bottom:1px solid var(--border);vertical-align:top}td:first-child{min-width:115px;font-weight:550}td{min-width:180px}.architecture{margin:25px 0}.figure-scroll{overflow-x:auto;background:#f1f6f8;border:1px solid var(--border);padding:12px;border-radius:5px}.figure-scroll svg{display:block;width:100%;height:auto;min-width:680px}figcaption{font-size:12px;color:var(--muted);margin-top:9px}details{margin:19px 0}summary{cursor:pointer;color:var(--accent);font-size:14px;padding:9px 0}.source-meta{font-size:12px;color:var(--muted);border-top:1px solid var(--border);margin-top:50px;padding-top:20px}.source-meta pre{font-size:12px}.page-end{font-size:12px;color:var(--muted);padding:25px 0;border-top:1px solid var(--border);margin-top:32px}.page-end a{margin-right:15px}
+@media(max-width:1000px){.shell{grid-template-columns:190px minmax(0,1fr);gap:30px;padding:25px}h1{font-size:32px}}
+@media(max-width:720px){.shell{display:block;padding:20px 19px 45px}.rail{display:none}.mobile-nav{display:block;margin:8px 0 25px}.mobile-nav .toc{columns:1}.mobile-nav summary{font-size:14px}h1{font-size:29px}h2{font-size:24px;margin-top:43px}h3{font-size:20px}body{font-size:16px;line-height:1.8}.plate{font-size:11px;letter-spacing:0}blockquote{padding:9px 16px;font-size:17px}th,td{padding:12px}pre{padding:15px;font-size:13px}.figure-scroll{padding:8px}.plate span{min-width:0}main{max-width:none}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{animation:none!important;transition:none!important}}
+@media print{body{background:white;color:#162b3b;font-size:11pt}.shell{display:block;max-width:none;padding:0}.rail,.mobile-nav,.skip,.plate,.page-end{display:none}main{max-width:none}h1{font-size:24pt}h2{font-size:18pt;margin-top:25px;break-after:avoid}h3{break-after:avoid}pre{white-space:pre-wrap;background:#edf2f5;color:#162b3b}pre code{white-space:pre-wrap}table{font-size:10pt}.table-scroll{overflow:visible}td{min-width:0}tr{break-inside:avoid}.figure-scroll{overflow:visible;padding:0}.figure-scroll svg{min-width:0;width:100%}a{color:inherit}details> :not(summary){display:block!important}summary{list-style:none;color:inherit}.source-meta{break-before:page}blockquote{background:#edf2f5}}
+</style></head><body><a class="skip" href="#document">跳到正文</a><div class="shell"><aside class="rail" aria-label="章节导航"><div class="brand">CLAWSYNAPSE<br>ACCESS / DESIGN</div><p class="rail-label">阅读路线</p><nav><ol class="toc"><li><a href="#section-1">文档状态与范围</a></li><li><a href="#section-2">设计结论</a></li><li><a href="#section-3">部署结构与职责</a></li><li><a href="#section-4">移动端连接流程</a></li><li><a href="#section-5">消息 Interface</a></li><li><a href="#section-9">断线恢复与移动后台</a></li><li><a href="#section-12">安全要求</a></li><li><a href="#section-16">SDK 与运维前提</a></li><li><a href="#section-17">与现有 ClawSynapse 的关系</a></li><li><a href="#section-18">实施与验收范围</a></li><li><a href="#section-19">参考资料</a></li></ol></nav><p class="rail-foot">完整正文 · 单文件离线阅读<br>章节定位不改变原文顺序</p></aside><main><div class="plate" data-enhancement="masthead"><span>接入设计 / NATS OVER WSS</span><span class="status">待实现 · 非稳定协议</span></div><details class="mobile-nav" data-enhancement="navigation"><summary>章节导航 · 11 节</summary><nav aria-label="移动端章节导航"><ol class="toc"><li><a href="#section-1">文档状态与范围</a></li><li><a href="#section-2">设计结论</a></li><li><a href="#section-3">部署结构与职责</a></li><li><a href="#section-4">移动端连接流程</a></li><li><a href="#section-5">消息 Interface</a></li><li><a href="#section-9">断线恢复与移动后台</a></li><li><a href="#section-12">安全要求</a></li><li><a href="#section-16">SDK 与运维前提</a></li><li><a href="#section-17">与现有 ClawSynapse 的关系</a></li><li><a href="#section-18">实施与验收范围</a></li><li><a href="#section-19">参考资料</a></li></ol></nav></details><article id="document"><h1>Harness 移动端 NATS 接入设计</h1>
+<p>最后更新：2026-10-20</p>
+<h2 id="section-1">文档状态与范围</h2>
+<p>本文记录移动端接入方案的讨论结论，属于<strong>待实现的设计建议</strong>，不代表当前 ClawSynapse 已提供移动接入、凭据签发或历史同步能力。文中的 subject 和消息字段均为建议，尚未成为稳定协议。</p>
+<p>本文只讨论：</p>
+<ul>
+<li>移动 App 与 Harness 后端如何通信。</li>
+<li>如何复用 NATS，避免手机安装独立节点服务。</li>
+<li>Harness 与 ClawSynapse 的职责，以及移动端认证、权限和恢复语义。</li>
+</ul>
+<p><strong>Harness 内部多个 Agent 如何调度、执行或互相通信，不属于本文范围。</strong></p>
+<p>现有接入方式见 <a href="./integration.md">集成与适配</a>，节点间协议见 <a href="./protocol.md">协议文档</a>。本文不会修改既有节点间协议。</p>
+<h2 id="section-2">设计结论</h2>
+<p>采用以下组合：</p>
+<blockquote>
+<p>HTTPS 登录与文件传输 + NATS over WSS 双向业务消息 + Harness 后端持久记录与重连同步。</p>
+</blockquote>
+<p>移动 App 内置 NATS 客户端库，直接连接 NATS Server 的 WSS 入口。手机不运行 NATS Server，不安装 <code>clawsynapsed</code>，也不承担 ClawSynapse 节点的发现、认证和信任管理职责。</p>
+<p>这不是完全取消 WebSocket，而是<strong><span data-notation="underline">用 NATS 协议替代自定义业务 WebSocket 协议，底层仍使用 WSS</span></strong>。在已有 NATS 基础设施的前提下，可以避免再增加一个只转发消息的 WebSocket 网关。</p>
+<p>不要求全部通信都使用 NATS。登录、OAuth 回调和文件传输继续使用 HTTPS；Slack、Telegram 等渠道继续通过平台官方接口接入 Harness 后端。</p>
+<h2 id="section-3">部署结构与职责</h2>
+<figure class="architecture" data-enhancement="architecture"><div aria-label="架构图，可横向滚动" class="figure-scroll" role="region" tabindex="0"><svg aria-labelledby="arch-title arch-desc" role="img" viewbox="0 0 780 440" width="780" xmlns="http://www.w3.org/2000/svg">
+<title id="arch-title">移动 NATS 接入与跨节点网络的隔离关系</title><desc id="arch-desc">移动 App 通过 WSS 连接移动接入 NATS Account，再到 Harness 后端。登录文件入口连接 App 与后端，Slack Telegram 通过平台接口连接后端。后端经现有接入方式连接 ClawSynapse Node，再通过跨节点 NATS Account 与其他 Node 通信。两个 Account 可以共用服务器部署。</desc>
+<style>text{font-family:'PingFang SC','Microsoft YaHei','Noto Sans CJK SC',system-ui,sans-serif;fill:var(--fg)}.box{fill:var(--surface);stroke:var(--border);stroke-width:1.2}.active{stroke:var(--accent)}.minor{font-size:12px;fill:var(--muted)}.name{font-size:15px;font-weight:600}.wire{fill:none;stroke:var(--accent);stroke-width:1.5;marker-start:url(#back);marker-end:url(#forward)}.outer{stroke:var(--muted)}</style>
+<defs><marker id="forward" markerheight="8" markerunits="userSpaceOnUse" markerwidth="8" orient="auto" refx="2" refy="4"><path d="M0,0 L8,4 L0,8 L2,4 z" fill="var(--accent)"></path></marker><marker id="back" markerheight="8" markerunits="userSpaceOnUse" markerwidth="8" orient="auto-start-reverse" refx="2" refy="4"><path d="M0,0 L8,4 L0,8 L2,4 z" fill="var(--accent)"></path></marker></defs>
+<path class="wire" d="M140,103 L140,164"></path><path class="wire" d="M261,211 L269,211"></path><path class="wire" d="M511,211 L519,211"></path>
+<path class="wire" d="M640,103 L640,164"></path><path class="wire" d="M640,258 L640,319"></path>
+<path class="wire" d="M519,366 L511,366"></path><path class="wire" d="M269,366 L261,366"></path>
+<path class="wire" d="M261,61 C360,61 390,120 519,187"></path>
+<g text-anchor="middle">
+<rect class="box" height="72" rx="7" width="220" x="30" y="25"></rect><text class="name" x="140" y="54">HTTPS 登录与文件入口</text><text class="minor" x="140" y="77">保留现有登录和传输方式</text>
+<rect class="box" height="72" rx="7" width="220" x="530" y="25"></rect><text class="name" x="640" y="54">Slack / Telegram</text><text class="minor" x="640" y="77">通过平台接口接入</text>
+<rect class="box active" height="72" rx="7" width="220" x="30" y="175"></rect><text class="name" x="140" y="204">移动 App</text><text class="minor" x="140" y="227">内置 NATS 客户端 · WSS</text>
+<rect class="box active" height="72" rx="7" width="220" x="280" y="175"></rect><text class="name" x="390" y="204">NATS · 移动接入 Account</text><text class="minor" x="390" y="227">独立命名空间与最小权限</text>
+<rect class="box active" height="72" rx="7" width="220" x="530" y="175"></rect><text class="name" x="640" y="204">Harness 后端</text><text class="minor" x="640" y="227">授权 · 去重 · 持久记录 · 同步</text>
+<rect class="box" height="72" rx="7" width="220" x="530" y="330"></rect><text class="name" x="640" y="359">ClawSynapse Node</text><text class="minor" x="640" y="382">跨节点身份与信任</text>
+<rect class="box" height="72" rx="7" width="220" x="280" y="330"></rect><text class="name" x="390" y="359">NATS · 跨节点 Account</text><text class="minor" x="390" y="382">与移动接入隔离</text>
+<rect class="box" height="72" rx="7" width="220" x="30" y="330"></rect><text class="name" x="140" y="359">其他 ClawSynapse Node</text><text class="minor" x="140" y="382">现有节点间协议</text>
+</g><text class="minor" x="158" y="139">HTTPS</text><text class="minor" x="658" y="139">平台接口</text><text class="minor" x="402" y="289">现有 Adapter 与本地 API</text></svg></div><figcaption>部署关系示意 · 依据本节原始图定义绘制；两个 NATS Account 可共用服务器部署，权限域保持隔离。</figcaption></figure><details><summary>查看原始 Mermaid 图定义</summary><pre><code class="language-mermaid">flowchart LR
+    M[移动 App：NATS 客户端] &lt;--&gt;|NATS over WSS| N[NATS：移动接入 Account]
+    N &lt;--&gt;|NATS| H[Harness 后端]
+    L[HTTPS 登录与文件入口] &lt;--&gt; M
+    L &lt;--&gt; H
+    S[Slack / Telegram] &lt;--&gt;|平台接口| H
+    H &lt;--&gt;|现有 Adapter 与本地 API| C[ClawSynapse Node]
+    C &lt;--&gt;|节点间协议| E[NATS：跨节点网络 Account]
+    E &lt;--&gt; P[其他 ClawSynapse Node]
+</code></pre></details>
+<p>移动接入与跨节点网络可以共用一套 NATS Server 部署，但<span data-notation="underline">应使用独立 Account 隔离 subject 命名空间和权限</span>。不要直接向手机开放现有节点网络。</p>
+<div aria-label="可横向滚动的表格" class="table-scroll" role="region" tabindex="0"><table>
+<thead>
+<tr>
+<th>角色</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>移动 App</td>
+<td>用户交互、提交命令、接收事件、审批交互、重连同步</td>
+</tr>
+<tr>
+<td>NATS</td>
+<td>连接管理、发布订阅、Request-Reply、subject 级权限执行</td>
+</tr>
+<tr>
+<td>Harness 后端</td>
+<td>用户与设备绑定、业务授权、会话管理、命令去重、持久记录、事件路由</td>
+</tr>
+<tr>
+<td>ClawSynapse Node</td>
+<td>跨节点身份、发现、认证、信任与消息交换</td>
+</tr>
+<tr>
+<td>Slack / Telegram 接入</td>
+<td>平台消息收发、渠道账号绑定、平台会话与 Harness 会话映射</td>
+</tr>
+</tbody>
+</table></div>
+<p>同一个独立信任主体的 Node 可以为 Harness 中多个逻辑 Bot 提供网络入口；多个移动设备和聊天渠道可以访问这些 Bot。它们不需要分别部署 Node。</p>
+<p>但当前 ClawSynapse 的信任主要是节点级的。<code>AgentID</code> 用于路由，不等于 Agent 级或租户级授权。不能仅因多个客户共享后端，就让他们无条件共享节点身份和信任状态。</p>
+<h2 id="section-4">移动端连接流程</h2>
+<ol>
+<li>App 通过现有 HTTPS 登录，后端确认用户及设备身份。</li>
+<li>后端通过支持动态授权的 NATS 认证方案签发或换取受限连接凭据，并绑定用户、设备和权限；不得把服务器管理凭据或 Account 签名私钥发给 App。</li>
+<li>App 使用凭据连接 <code>wss://</code> 入口。</li>
+<li>App 先订阅自己的事件与回复 inbox，再提交命令或发起同步。</li>
+<li>凭据过期、设备撤销或权限变化时，按所选认证方案续期、撤销或断开连接。</li>
+</ol>
+<p>NATS 凭据不能作为“客户端已经获准执行所有业务操作”的证明。Harness 后端仍需校验会话访问权和操作权限，并将请求关联到服务器授权的身份，不能相信消息正文中自报的用户 ID。</p>
+<h2 id="section-5">消息 Interface</h2>
+<h3 id="section-6">Subject 建议</h3>
+<pre><code class="language-text">app.v1.&lt;userId&gt;.&lt;deviceId&gt;.commands
+app.v1.&lt;userId&gt;.&lt;deviceId&gt;.events
+客户端专属 reply inbox
+</code></pre>
+<p><code>userId</code> 和 <code>deviceId</code> 应使用服务器分配的 subject-safe 标识，不能直接拼接用户输入、邮箱地址或渠道名称。</p>
+<p>上述命名用于移动接入，不复用 <code>clawsynapse.*</code> 节点间 subject。用户与设备隔离必须由服务器权限强制执行，不能只靠命名约定。</p>
+<h3 id="section-7">命令与事件</h3>
+<div aria-label="可横向滚动的表格" class="table-scroll" role="region" tabindex="0"><table>
+<thead>
+<tr>
+<th>交互</th>
+<th>建议机制</th>
+<th>语义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>提交用户消息</td>
+<td>Core NATS Request-Reply</td>
+<td>快速返回接受结果与消息 ID，不等待 Agent 执行完成</td>
+</tr>
+<tr>
+<td>审批、取消等操作</td>
+<td>Core NATS Request-Reply</td>
+<td>后端校验权限和当前状态后返回确定结果</td>
+</tr>
+<tr>
+<td>在线回复与进度</td>
+<td>Core NATS Pub/Sub</td>
+<td>实时展示，不作为唯一持久记录</td>
+</tr>
+<tr>
+<td>重连后的历史与状态同步</td>
+<td>Core NATS Request-Reply，按游标分页</td>
+<td>从后端持久记录补齐遗漏数据</td>
+</tr>
+</tbody>
+</table></div>
+<p>命令至少需要 <code>requestId</code>、操作类型及必要的会话或业务参数。事件应具备稳定的事件标识、关联对象和同步所需的位置标记。具体字段在实现时与 Harness 现有契约统一，不在本文另立完整业务协议。</p>
+<h3 id="section-8">接受确认与去重</h3>
+<ul>
+<li>提交命令的成功回复表示后端已可靠接受请求，<span data-notation="underline">不表示 Agent 已执行完成</span>。</li>
+<li>需要可靠接受的命令，应在可恢复的持久记录建立后再回复成功。</li>
+<li>客户端使用同一个 <code>requestId</code> 重试同一次提交；后端在对应身份范围内去重，并返回一致的接受结果。</li>
+<li>Request 超时不能推断命令未执行：命令可能已经接受，只是回复未送达。</li>
+<li>客户端收到重复事件时按事件标识去重。</li>
+</ul>
+<p><span data-notation="underline">不声称网络提供“恰好执行一次”。</span>审批、取消等操作还需使用后端状态检查防止重复或过期操作产生错误效果。</p>
+<h2 id="section-9">断线恢复与移动后台</h2>
+<p><span data-notation="underline">NATS 自动重连不等于消息自动补发。</span>Core NATS 不保存 App 离线期间未收到的普通订阅消息。</p>
+<p>首选恢复方式是复用 Harness 后端的持久会话和事件记录：</p>
+<ol>
+<li>App 保存最后成功应用的同步游标。</li>
+<li>重连后先建立实时订阅，再开始历史同步，避免同步完成与订阅建立之间出现空窗。</li>
+<li>后端返回明确的同步位置；App 合并同步结果与期间收到的实时事件，按稳定事件 ID 去重，并按契约应用顺序。</li>
+<li>游标过期或记录已清理时，后端返回显式的重新同步结果，由 App 拉取快照后继续。</li>
+</ol>
+<p>同步范围应覆盖所有影响界面恢复的关键状态，包括消息、审批状态和最终结果。高频临时进度可以不逐条持久化，但恢复后必须能取得当前状态。</p>
+<h3 id="section-10">是否需要手机直接使用 JetStream</h3>
+<p><strong><span data-notation="highlight">初期不要求。</span></strong> 如果 Harness 已经保存会话和任务状态，Core NATS 在线事件加后端游标同步即可满足恢复需求，避免每设备管理持久消费者、ack 和消费权限。</p>
+<p>只有明确需要客户端直接消费持久消息流时，才引入 JetStream，并单独设计消费者生命周期、设备隔离、保留期限、配额及 API 权限。启用 JetStream 本身不会让现有 Core NATS 订阅自动变为可靠离线收件箱。</p>
+<h3 id="section-11">后台行为</h3>
+<ul>
+<li>App 前台：通过 NATS 实时收发。</li>
+<li>App 挂起或被终止：不依赖 NATS 保活；按产品需要使用 APNs / FCM 通知。</li>
+<li>App 恢复：重新认证或重连，然后同步持久记录。</li>
+</ul>
+<p>Push 只是提醒或唤醒提示，不是业务投递凭证。无论是否收到 Push，打开 App 后都应能恢复状态。NATS 不会消除 iOS、Android 的后台执行限制。</p>
+<h2 id="section-12">安全要求</h2>
+<h3 id="section-13">最小权限</h3>
+<p>移动凭据只允许：</p>
+<ul>
+<li>发布自身命令 subject。</li>
+<li>订阅自身事件 subject。</li>
+<li>订阅自身 Request-Reply 所需的专属 inbox 范围。</li>
+</ul>
+<p>禁止访问其他设备或用户的数据、Harness 内部 subject、ClawSynapse 认证与信任 subject、NATS 管理权限，以及不需要的 JetStream API。</p>
+<p>Reply inbox 也必须隔离，不能让所有客户端共同获得整个 <code>_INBOX.&gt;</code> 的订阅权。后端回复权限应限制到实际需要的范围。</p>
+<h3 id="section-14">凭据与连接管理</h3>
+<ul>
+<li>公网接入使用 WSS 并验证服务器证书。</li>
+<li>不在 App 内置共享长期密码、节点私钥、服务器管理凭据或签名密钥。</li>
+<li>凭据有有效期，并设计设备撤销与现有连接失效机制；<span data-notation="underline">只停止签发新凭据不足以撤销已建立的连接</span>。</li>
+<li>限制连接数、订阅数、负载大小和请求频率；处理慢消费者与客户端异常流量。</li>
+<li>对登录、凭据签发、授权失败和敏感操作保留必要审计记录，不记录凭据正文。</li>
+<li>Web 客户端需要额外配置 Origin 校验，但 Origin 校验不能代替身份认证。</li>
+</ul>
+<h3 id="section-15">业务授权</h3>
+<p>NATS subject 权限只决定可以向哪里发消息、从哪里收消息，<span data-notation="underline">不代替 Harness 的会话和操作授权</span>。后端不得将正文中的用户、设备或会话标识直接当作可信身份。</p>
+<p>已有 ClawSynapse 本地 HTTP 管理接口也不应因此直接暴露到公网。移动凭据签发和业务命令入口应属于受保护的 Harness 接入面。</p>
+<h2 id="section-16">SDK 与运维前提</h2>
+<p>选型时按实际移动技术栈验证，而不是只确认 NATS Server 支持 WSS：</p>
+<ul>
+<li>Swift、Kotlin、Flutter 或 React Native 所用客户端的 WSS 与认证支持。</li>
+<li>应用前后台切换、网络切换、自动重连和凭据更新行为。</li>
+<li>代理与负载均衡的 WebSocket Upgrade、空闲超时和连接关闭行为。</li>
+<li>服务端向客户端通告的重连地址必须是设备实际可访问的地址。</li>
+</ul>
+<p>客户端 SDK 和凭据方案未选定之前，本文不承诺移动端接入已经可用。</p>
+<h2 id="section-17">与现有 ClawSynapse 的关系</h2>
+<p>目前可复用的接入能力：</p>
+<ul>
+<li><code>internal/adapter/adapter.go</code> 的 <code>AgentAdapter</code> 投递接口。</li>
+<li>Webhook Adapter：节点向 Harness 后端投递消息。</li>
+<li>本地发布接口：Harness 需要向其他节点发送消息时调用。</li>
+</ul>
+<p>新增移动 NATS 接入不要求先把 ClawSynapse 改成嵌入式 Core，也不要求给手机签发节点身份。先保留 Node 与 Harness 的现有接入方式，避免同时修改两条链路。</p>
+<p>必须区分两个恢复范围：</p>
+<ul>
+<li><strong>手机与 Harness 之间</strong>：由本文的持久记录和同步方案处理。</li>
+<li><strong>ClawSynapse Node 之间</strong>：当前 Messaging 使用普通 NATS 订阅，内存 recent messages 也不是持久收件箱。本文不解决消息进入 Harness 之前的跨节点离线丢失。</li>
+</ul>
+<p>若产品要求端到端可靠投递，需要另外补齐跨节点消息的持久化、确认与恢复语义，不能仅因移动接入使用 NATS 就声称整条链路可靠。</p>
+<h2 id="section-18">实施与验收范围</h2>
+<p>实现时先完成一条可验证链路：登录获取受限凭据、WSS 连接、提交命令、后端接受确认、在线事件、断线后恢复。</p>
+<p>至少验证以下行为：</p>
+<ul>
+<li>手机无需安装 Node 或维护本地监听端口即可完成消息收发。</li>
+<li>用户不能发布或订阅其他用户及设备的 subject，不能访问节点管理和信任操作。</li>
+<li>接受回复丢失后，用同一个 <code>requestId</code> 重试不会重复提交。</li>
+<li>App 离线期间产生的关键状态，恢复后可同步且不重复展示。</li>
+<li>历史同步与实时事件交叠时，不遗漏、不回退已应用状态。</li>
+<li>设备撤销、凭据到期、网络切换和同步游标过期都有明确行为。</li>
+</ul>
+<p>不在本方案中扩展 Harness 内部 Agent 调度、设备独立节点身份、根密钥委派或 P2P 网络。</p>
+<h2 id="section-19">参考资料</h2>
+<ul>
+<li><a href="https://docs.nats.io/learn/websocket/">NATS：WebSocket 接入</a></li>
+<li><a href="https://docs.nats.io/learn/security/authorization">NATS：发布与订阅授权</a></li>
+<li><a href="./integration.md">ClawSynapse 集成与适配</a></li>
+<li><a href="./protocol.md">ClawSynapse 节点间协议</a></li>
+</ul></article><details class="source-meta" data-enhancement="source-metadata"><summary>源文件信息 · Markdown 元数据</summary><p>源文件：mobile-nats-access.md</p><pre>summary: &quot;移动 App 通过 NATS over WSS 接入 Harness：部署职责、消息契约、权限隔离与断线恢复设计&quot;
+title: &quot;Harness 移动端 NATS 接入设计&quot;</pre><p>SHA-256：<code>1079c1ea655764d21aae0ddc7c5481307514ffd45d6c737210a9543702bdf747</code></p></details><footer class="page-end" data-enhancement="footer"><a href="#document">返回正文顶部</a><a href="mobile-nats-access.md">查看 Markdown 源文件</a><span>正文引用链接保留；本地引用文件需与仓库一起访问。</span></footer></main></div><!-- Rough Notation 0.5.1
+MIT License
+
+Copyright (c) 2020 Preet Shihn
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+--><script data-enhancement="notation">var RoughNotation=function(t){"use strict";const e="http://www.w3.org/2000/svg";class s{constructor(t){this.seed=t}next(){return this.seed?(2**31-1&(this.seed=Math.imul(48271,this.seed)))/2**31:Math.random()}}function i(t,e,s,i,n){return{type:"path",ops:u(t,e,s,i,n)}}function n(t,e,s){const n=(t||[]).length;if(n>2){const i=[];for(let e=0;e<n-1;e++)i.push(...u(t[e][0],t[e][1],t[e+1][0],t[e+1][1],s));return e&&i.push(...u(t[n-1][0],t[n-1][1],t[0][0],t[0][1],s)),{type:"path",ops:i}}return 2===n?i(t[0][0],t[0][1],t[1][0],t[1][1],s):{type:"path",ops:[]}}function o(t,e,s,i,o){return function(t,e){return n(t,!0,e)}([[t,e],[t+s,e],[t+s,e+i],[t,e+i]],o)}function r(t,e,s,i,n){return function(t,e,s,i){const[n,o]=g(i.increment,t,e,i.rx,i.ry,1,i.increment*a(.1,a(.4,1,s),s),s);let r=l(n,null,s);if(!s.disableMultiStroke){const[n]=g(i.increment,t,e,i.rx,i.ry,1.5,0,s),o=l(n,null,s);r=r.concat(o)}return{estimatedPoints:o,opset:{type:"path",ops:r}}}(t,e,n,function(t,e,s){const i=Math.sqrt(2*Math.PI*Math.sqrt((Math.pow(t/2,2)+Math.pow(e/2,2))/2)),n=Math.max(s.curveStepCount,s.curveStepCount/Math.sqrt(200)*i),o=2*Math.PI/n;let r=Math.abs(t/2),h=Math.abs(e/2);const a=1-s.curveFitting;return r+=c(r*a,s),h+=c(h*a,s),{increment:o,rx:r,ry:h}}(s,i,n)).opset}function h(t){return t.randomizer||(t.randomizer=new s(t.seed||0)),t.randomizer.next()}function a(t,e,s,i=1){return s.roughness*i*(h(s)*(e-t)+t)}function c(t,e,s=1){return a(-t,t,e,s)}function u(t,e,s,i,n,o=!1){const r=o?n.disableMultiStrokeFill:n.disableMultiStroke,h=f(t,e,s,i,n,!0,!1);if(r)return h;const a=f(t,e,s,i,n,!0,!0);return h.concat(a)}function f(t,e,s,i,n,o,r){const a=Math.pow(t-s,2)+Math.pow(e-i,2),u=Math.sqrt(a);let f=1;f=u<200?1:u>500?.4:-.0016668*u+1.233334;let l=n.maxRandomnessOffset||0;l*l*100>a&&(l=u/10);const g=l/2,d=.2+.2*h(n);let p=n.bowing*n.maxRandomnessOffset*(i-e)/200,_=n.bowing*n.maxRandomnessOffset*(t-s)/200;p=c(p,n,f),_=c(_,n,f);const m=[],w=()=>c(g,n,f),v=()=>c(l,n,f);return o&&(r?m.push({op:"move",data:[t+w(),e+w()]}):m.push({op:"move",data:[t+c(l,n,f),e+c(l,n,f)]})),r?m.push({op:"bcurveTo",data:[p+t+(s-t)*d+w(),_+e+(i-e)*d+w(),p+t+2*(s-t)*d+w(),_+e+2*(i-e)*d+w(),s+w(),i+w()]}):m.push({op:"bcurveTo",data:[p+t+(s-t)*d+v(),_+e+(i-e)*d+v(),p+t+2*(s-t)*d+v(),_+e+2*(i-e)*d+v(),s+v(),i+v()]}),m}function l(t,e,s){const i=t.length,n=[];if(i>3){const o=[],r=1-s.curveTightness;n.push({op:"move",data:[t[1][0],t[1][1]]});for(let e=1;e+2<i;e++){const s=t[e];o[0]=[s[0],s[1]],o[1]=[s[0]+(r*t[e+1][0]-r*t[e-1][0])/6,s[1]+(r*t[e+1][1]-r*t[e-1][1])/6],o[2]=[t[e+1][0]+(r*t[e][0]-r*t[e+2][0])/6,t[e+1][1]+(r*t[e][1]-r*t[e+2][1])/6],o[3]=[t[e+1][0],t[e+1][1]],n.push({op:"bcurveTo",data:[o[1][0],o[1][1],o[2][0],o[2][1],o[3][0],o[3][1]]})}if(e&&2===e.length){const t=s.maxRandomnessOffset;n.push({op:"lineTo",data:[e[0]+c(t,s),e[1]+c(t,s)]})}}else 3===i?(n.push({op:"move",data:[t[1][0],t[1][1]]}),n.push({op:"bcurveTo",data:[t[1][0],t[1][1],t[2][0],t[2][1],t[2][0],t[2][1]]})):2===i&&n.push(...u(t[0][0],t[0][1],t[1][0],t[1][1],s));return n}function g(t,e,s,i,n,o,r,h){const a=[],u=[],f=c(.5,h)-Math.PI/2;u.push([c(o,h)+e+.9*i*Math.cos(f-t),c(o,h)+s+.9*n*Math.sin(f-t)]);for(let r=f;r<2*Math.PI+f-.01;r+=t){const t=[c(o,h)+e+i*Math.cos(r),c(o,h)+s+n*Math.sin(r)];a.push(t),u.push(t)}return u.push([c(o,h)+e+i*Math.cos(f+2*Math.PI+.5*r),c(o,h)+s+n*Math.sin(f+2*Math.PI+.5*r)]),u.push([c(o,h)+e+.98*i*Math.cos(f+r),c(o,h)+s+.98*n*Math.sin(f+r)]),u.push([c(o,h)+e+.9*i*Math.cos(f+.5*r),c(o,h)+s+.9*n*Math.sin(f+.5*r)]),[u,a]}function d(t,e){return{maxRandomnessOffset:2,roughness:"highlight"===t?3:1.5,bowing:1,stroke:"#000",strokeWidth:1.5,curveTightness:0,curveFitting:.95,curveStepCount:9,fillStyle:"hachure",fillWeight:-1,hachureAngle:-41,hachureGap:-1,dashOffset:-1,dashGap:-1,zigzagOffset:-1,combineNestedSvgPaths:!1,disableMultiStroke:"double"!==t,disableMultiStrokeFill:!1,seed:e}}function p(t,s,h,a,c,u){const f=[];let l=h.strokeWidth||2;const g=function(t){const e=t.padding;if(e||0===e){if("number"==typeof e)return[e,e,e,e];if(Array.isArray(e)){const t=e;if(t.length)switch(t.length){case 4:return[...t];case 1:return[t[0],t[0],t[0],t[0]];case 2:return[...t,...t];case 3:return[...t,t[1]];default:return[t[0],t[1],t[2],t[3]]}}}return[5,5,5,5]}(h),p=void 0===h.animate||!!h.animate,_=h.iterations||2,m=h.rtl?1:0,w=d("single",u);switch(h.type){case"underline":{const t=s.y+s.h+g[2];for(let e=m;e<_+m;e++)e%2?f.push(i(s.x+s.w,t,s.x,t,w)):f.push(i(s.x,t,s.x+s.w,t,w));break}case"strike-through":{const t=s.y+s.h/2;for(let e=m;e<_+m;e++)e%2?f.push(i(s.x+s.w,t,s.x,t,w)):f.push(i(s.x,t,s.x+s.w,t,w));break}case"box":{const t=s.x-g[3],e=s.y-g[0],i=s.w+(g[1]+g[3]),n=s.h+(g[0]+g[2]);for(let s=0;s<_;s++)f.push(o(t,e,i,n,w));break}case"bracket":{const t=Array.isArray(h.brackets)?h.brackets:h.brackets?[h.brackets]:["right"],e=s.x-2*g[3],i=s.x+s.w+2*g[1],o=s.y-2*g[0],r=s.y+s.h+2*g[2];for(const h of t){let t;switch(h){case"bottom":t=[[e,s.y+s.h],[e,r],[i,r],[i,s.y+s.h]];break;case"top":t=[[e,s.y],[e,o],[i,o],[i,s.y]];break;case"left":t=[[s.x,o],[e,o],[e,r],[s.x,r]];break;case"right":t=[[s.x+s.w,o],[i,o],[i,r],[s.x+s.w,r]]}t&&f.push(n(t,!1,w))}break}case"crossed-off":{const t=s.x,e=s.y,n=t+s.w,o=e+s.h;for(let s=m;s<_+m;s++)s%2?f.push(i(n,o,t,e,w)):f.push(i(t,e,n,o,w));for(let s=m;s<_+m;s++)s%2?f.push(i(t,o,n,e,w)):f.push(i(n,e,t,o,w));break}case"circle":{const t=d("double",u),e=s.w+(g[1]+g[3]),i=s.h+(g[0]+g[2]),n=s.x-g[3]+e/2,o=s.y-g[0]+i/2,h=Math.floor(_/2),a=_-2*h;for(let s=0;s<h;s++)f.push(r(n,o,e,i,t));for(let t=0;t<a;t++)f.push(r(n,o,e,i,w));break}case"highlight":{const t=d("highlight",u);l=.95*s.h;const e=s.y+s.h/2;for(let n=m;n<_+m;n++)n%2?f.push(i(s.x+s.w,e,s.x,e,t)):f.push(i(s.x,e,s.x+s.w,e,t));break}}if(f.length){const s=function(t){const e=[];for(const s of t){let t="";for(const i of s.ops){const s=i.data;switch(i.op){case"move":t.trim()&&e.push(t.trim()),t=`M${s[0]} ${s[1]} `;break;case"bcurveTo":t+=`C${s[0]} ${s[1]}, ${s[2]} ${s[3]}, ${s[4]} ${s[5]} `;break;case"lineTo":t+=`L${s[0]} ${s[1]} `}}t.trim()&&e.push(t.trim())}return e}(f),i=[],n=[];let o=0;const r=(t,e,s)=>t.setAttribute(e,s);for(const a of s){const s=document.createElementNS(e,"path");if(r(s,"d",a),r(s,"fill","none"),r(s,"stroke",h.color||"currentColor"),r(s,"stroke-width",""+l),p){const t=s.getTotalLength();i.push(t),o+=t}t.appendChild(s),n.push(s)}if(p){let t=0;for(let e=0;e<n.length;e++){const s=n[e],r=i[e],h=o?c*(r/o):0,u=a+t,f=s.style;f.strokeDashoffset=""+r,f.strokeDasharray=""+r,f.animation=`rough-notation-dash ${h}ms ease-out ${u}ms forwards`,t+=h}}}}class _{constructor(t,e){this._state="unattached",this._resizing=!1,this._seed=Math.floor(Math.random()*2**31),this._lastSizes=[],this._animationDelay=0,this._resizeListener=()=>{this._resizing||(this._resizing=!0,setTimeout(()=>{this._resizing=!1,"showing"===this._state&&this.haveRectsChanged()&&this.show()},400))},this._e=t,this._config=JSON.parse(JSON.stringify(e)),this.attach()}get animate(){return this._config.animate}set animate(t){this._config.animate=t}get animationDuration(){return this._config.animationDuration}set animationDuration(t){this._config.animationDuration=t}get iterations(){return this._config.iterations}set iterations(t){this._config.iterations=t}get color(){return this._config.color}set color(t){this._config.color!==t&&(this._config.color=t,this.refresh())}get strokeWidth(){return this._config.strokeWidth}set strokeWidth(t){this._config.strokeWidth!==t&&(this._config.strokeWidth=t,this.refresh())}get padding(){return this._config.padding}set padding(t){this._config.padding!==t&&(this._config.padding=t,this.refresh())}attach(){if("unattached"===this._state&&this._e.parentElement){!function(){if(!window.__rno_kf_s){const t=window.__rno_kf_s=document.createElement("style");t.textContent="@keyframes rough-notation-dash { to { stroke-dashoffset: 0; } }",document.head.appendChild(t)}}();const t=this._svg=document.createElementNS(e,"svg");t.setAttribute("class","rough-annotation");const s=t.style;s.position="absolute",s.top="0",s.left="0",s.overflow="visible",s.pointerEvents="none",s.width="100px",s.height="100px";const i="highlight"===this._config.type;if(this._e.insertAdjacentElement(i?"beforebegin":"afterend",t),this._state="not-showing",i){const t=window.getComputedStyle(this._e).position;(!t||"static"===t)&&(this._e.style.position="relative")}this.attachListeners()}}detachListeners(){window.removeEventListener("resize",this._resizeListener),this._ro&&this._ro.unobserve(this._e)}attachListeners(){this.detachListeners(),window.addEventListener("resize",this._resizeListener,{passive:!0}),!this._ro&&"ResizeObserver"in window&&(this._ro=new window.ResizeObserver(t=>{for(const e of t)e.contentRect&&this._resizeListener()})),this._ro&&this._ro.observe(this._e)}haveRectsChanged(){if(this._lastSizes.length){const t=this.rects();if(t.length!==this._lastSizes.length)return!0;for(let e=0;e<t.length;e++)if(!this.isSameRect(t[e],this._lastSizes[e]))return!0}return!1}isSameRect(t,e){const s=(t,e)=>Math.round(t)===Math.round(e);return s(t.x,e.x)&&s(t.y,e.y)&&s(t.w,e.w)&&s(t.h,e.h)}isShowing(){return"not-showing"!==this._state}refresh(){this.isShowing()&&!this.pendingRefresh&&(this.pendingRefresh=Promise.resolve().then(()=>{this.isShowing()&&this.show(),delete this.pendingRefresh}))}show(){switch(this._state){case"unattached":break;case"showing":this.hide(),this._svg&&this.render(this._svg,!0);break;case"not-showing":this.attach(),this._svg&&this.render(this._svg,!1)}}hide(){if(this._svg)for(;this._svg.lastChild;)this._svg.removeChild(this._svg.lastChild);this._state="not-showing"}remove(){this._svg&&this._svg.parentElement&&this._svg.parentElement.removeChild(this._svg),this._svg=void 0,this._state="unattached",this.detachListeners()}render(t,e){let s=this._config;e&&(s=JSON.parse(JSON.stringify(this._config)),s.animate=!1);const i=this.rects();let n=0;i.forEach(t=>n+=t.w);const o=s.animationDuration||800;let r=0;for(let e=0;e<i.length;e++){const h=o*(i[e].w/n);p(t,i[e],s,r+this._animationDelay,h,this._seed),r+=h}this._lastSizes=i,this._state="showing"}rects(){const t=[];if(this._svg)if(this._config.multiline){const e=this._e.getClientRects();for(let s=0;s<e.length;s++)t.push(this.svgRect(this._svg,e[s]))}else t.push(this.svgRect(this._svg,this._e.getBoundingClientRect()));return t}svgRect(t,e){const s=t.getBoundingClientRect(),i=e;return{x:(i.x||i.left)-(s.x||s.left),y:(i.y||i.top)-(s.y||s.top),w:i.width,h:i.height}}}return t.annotate=function(t,e){return new _(t,e)},t.annotationGroup=function(t){let e=0;for(const s of t){const t=s;t._animationDelay=e;e+=0===t.animationDuration?0:t.animationDuration||800}const s=[...t];return{show(){for(const t of s)t.show()},hide(){for(const t of s)t.hide()}}},Object.defineProperty(t,"__esModule",{value:!0}),t}({});
+</script><script data-enhancement="notation">(() => {
+  const entries = [];
+  let frame;
+  function draw() {
+    for (const entry of entries) {
+      const { element } = entry;
+      if (!element.getClientRects().length || !element.getBoundingClientRect().width) continue;
+      try {
+        const requested = element.dataset.notation;
+        const type = requested === 'circle' && element.getClientRects().length > 1
+          ? 'underline' : requested;
+        const computed = getComputedStyle(element);
+        const color = type === 'highlight'
+          ? computed.getPropertyValue('--notation-highlight').trim() || 'rgba(127,127,127,.2)'
+          : computed.getPropertyValue('--notation-color').trim();
+        const stroke = !color || color === 'currentColor' ? computed.color : color;
+        if (entry.type !== type) {
+          entry.annotation?.remove();
+          entry.annotation = RoughNotation.annotate(element, {
+            type, animate: false, multiline: true, iterations: 1,
+            color: stroke,
+            padding: type === 'circle' ? 3 : 1, strokeWidth: 1.5
+          });
+          entry.svg = type === 'highlight' ? element.previousElementSibling : element.nextElementSibling;
+          entry.svg.dataset.enhancement = 'notation';
+          entry.svg.setAttribute('aria-hidden', 'true');
+          entry.type = type;
+        }
+        entry.annotation.color = stroke;
+        entry.annotation.show();
+        element.classList.add('notation-ready');
+      } catch (error) {
+        entry.annotation?.remove();
+        entry.type = undefined;
+        element.classList.remove('notation-ready');
+        console.error('Notation failed:', error);
+      }
+    }
+  }
+  function refresh() {
+    cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(draw);
+  }
+  async function start() {
+    await document.fonts.ready;
+    document.querySelectorAll('[data-notation]').forEach(element => {
+      if (['underline', 'highlight', 'circle'].includes(element.dataset.notation)) entries.push({ element });
+    });
+    refresh();
+    // The library observes size changes; these events also cover position-only changes.
+    document.addEventListener('load', refresh, true);
+    document.addEventListener('toggle', refresh, true);
+    document.addEventListener('papyra:refresh-annotations', refresh);
+    window.addEventListener('resize', refresh, { passive: true });
+  }
+  start().catch(error => console.error('Notation initialization failed:', error));
+})();
+</script><script data-enhancement="navigation">const sections=[...document.querySelectorAll('article h2')];const nav=[...document.querySelectorAll('.toc a')];function update(){let active=sections[0];for(const s of sections){if(s.getBoundingClientRect().top<140)active=s;}for(const a of nav){if(active&&a.hash==='#'+active.id)a.setAttribute('aria-current','location');else a.removeAttribute('aria-current');}}window.addEventListener('scroll',update,{passive:true});update();document.querySelectorAll('.mobile-nav a').forEach(a=>a.addEventListener('click',()=>{a.closest('details').open=false;document.dispatchEvent(new Event('papyra:refresh-annotations'));}));window.addEventListener('beforeprint',()=>{document.querySelectorAll('article details').forEach(d=>{d.dataset.printOpen=d.open?'1':'0';d.open=true;});});window.addEventListener('afterprint',()=>{document.querySelectorAll('article details').forEach(d=>{d.open=d.dataset.printOpen==='1';});document.dispatchEvent(new Event('papyra:refresh-annotations'));});</script></body></html>
