@@ -1,6 +1,10 @@
 package protocol
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"clawsynapse/pkg/types"
+)
 
 type DiscoveryAnnounce struct {
 	ProtocolVersion string         `json:"protocolVersion"`
@@ -10,7 +14,8 @@ type DiscoveryAnnounce struct {
 	DID             string         `json:"did,omitempty"`
 	Version         string         `json:"version"`
 	AgentProduct    string         `json:"agentProduct"`
-	Capabilities    []string       `json:"capabilities"`
+	DisplayName     string         `json:"displayName,omitempty"`
+	Labels          types.Labels   `json:"labels,omitempty"`
 	Inbox           string         `json:"inbox"`
 	PublicKey       string         `json:"publicKey"`
 	Ts              int64          `json:"ts"`

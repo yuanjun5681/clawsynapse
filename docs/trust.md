@@ -108,7 +108,7 @@ ClawSynapse 应对发现信息进行分级暴露，而不是默认全部公开�
 | `publicKey` 指纹 | 可选公开 | 用于 TOFU / 预检，不应泄露私钥材料 |
 | `hostname` / 标签 | 建议受限 | 可按租户、命名空间或 allowlist 控制 |
 | 真实业务 endpoint | 仅 trusted 可见 | 避免未授权探测与骚扰 |
-| capabilities / service list | 仅 trusted 或同租户可见 | 防止服务枚举 |
+| `labels`（含 `caps` 自报能力）/ service list | 仅 trusted 或同租户可见 | 防止服务枚举；`caps` 是节点自报属性，不是就绪状态或授权 |
 
 推荐做法：
 

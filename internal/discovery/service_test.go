@@ -241,7 +241,10 @@ func TestNewAnnounceUsesConfiguredAgentIdentity(t *testing.T) {
 			Identity:     id,
 			AgentProduct: "deepseek-harness",
 			AgentVersion: "0.1.2-alpha.3",
-			Capabilities: []string{"chat", "task", "transfer"},
+			DisplayName:  "边缘节点-01",
+			Labels: types.Labels{
+				"env": types.LabelString("production"),
+			}.WithCaps([]string{"chat", "task", "transfer"}),
 		},
 	)
 
@@ -260,11 +263,18 @@ func TestNewAnnounceUsesConfiguredAgentIdentity(t *testing.T) {
 	if msg.Version != "0.1.2-alpha.3" {
 		t.Fatalf("version = %q, want 0.1.2-alpha.3", msg.Version)
 	}
-	if got := len(msg.Capabilities); got != 3 {
-		t.Fatalf("capabilities length = %d, want 3", got)
+	if msg.DisplayName != "边缘节点-01" {
+		t.Fatalf("displayName = %q, want 边缘节点-01", msg.DisplayName)
 	}
-	if msg.Capabilities[2] != "transfer" {
-		t.Fatalf("capabilities = %#v, want transfer capability", msg.Capabilities)
+	caps := msg.Labels.Caps()
+	if got := len(caps); got != 3 {
+		t.Fatalf("caps length = %d, want 3", got)
+	}
+	if caps[0] != "chat" || caps[1] != "task" || caps[2] != "transfer" {
+		t.Fatalf("caps = %#v, want sorted chat/task/transfer", caps)
+	}
+	if scalar, ok := msg.Labels["env"].Scalar(); !ok || scalar != "production" {
+		t.Fatalf("env label = %#v, want production", msg.Labels["env"])
 	}
 }
 
@@ -283,7 +293,7 @@ func testAnnounce(t *testing.T, marker byte) protocol.DiscoveryAnnounce {
 		DID:             did,
 		Version:         "v0.1.1",
 		AgentProduct:    "clawsynapse",
-		Capabilities:    []string{"chat"},
+		Labels:          types.Labels{}.WithCaps([]string{"chat"}),
 		Inbox:           "clawsynapse.msg." + nodeID + ".inbox",
 		PublicKey:       base64.RawURLEncoding.EncodeToString(id.PublicKey),
 		Ts:              time.Now().UnixMilli(),
@@ -336,16 +346,16 @@ func TestStartRequiresSigningIdentity(t *testing.T) {
 
 func TestAnnounceRejectsTamperingInEveryTrustMode(t *testing.T) {
 	mutations := map[string]func(*protocol.DiscoveryAnnounce){
-		"version":    func(m *protocol.DiscoveryAnnounce) { m.Version = "altered" },
-		"product":    func(m *protocol.DiscoveryAnnounce) { m.AgentProduct = "altered" },
-		"capability": func(m *protocol.DiscoveryAnnounce) { m.Capabilities[0] = "altered" },
-		"inbox":      func(m *protocol.DiscoveryAnnounce) { m.Inbox = "attacker.inbox" },
-		"timestamp":  func(m *protocol.DiscoveryAnnounce) { m.Ts-- },
-		"ttl":        func(m *protocol.DiscoveryAnnounce) { m.TTLms++ },
-		"metadata":   func(m *protocol.DiscoveryAnnounce) { m.Metadata = map[string]any{"role": "admin"} },
-		"messageId":  func(m *protocol.DiscoveryAnnounce) { m.MessageID = "altered" },
-		"signature":  func(m *protocol.DiscoveryAnnounce) { m.Signature = "invalid" },
-		"unsigned":   func(m *protocol.DiscoveryAnnounce) { m.Signature = "" },
+		"version":   func(m *protocol.DiscoveryAnnounce) { m.Version = "altered" },
+		"product":   func(m *protocol.DiscoveryAnnounce) { m.AgentProduct = "altered" },
+		"labels":    func(m *protocol.DiscoveryAnnounce) { m.Labels = m.Labels.WithCaps([]string{"altered"}) },
+		"inbox":     func(m *protocol.DiscoveryAnnounce) { m.Inbox = "attacker.inbox" },
+		"timestamp": func(m *protocol.DiscoveryAnnounce) { m.Ts-- },
+		"ttl":       func(m *protocol.DiscoveryAnnounce) { m.TTLms++ },
+		"metadata":  func(m *protocol.DiscoveryAnnounce) { m.Metadata = map[string]any{"role": "admin"} },
+		"messageId": func(m *protocol.DiscoveryAnnounce) { m.MessageID = "altered" },
+		"signature": func(m *protocol.DiscoveryAnnounce) { m.Signature = "invalid" },
+		"unsigned":  func(m *protocol.DiscoveryAnnounce) { m.Signature = "" },
 	}
 	for _, mode := range []string{"tofu", "explicit", "open"} {
 		for name, mutate := range mutations {
@@ -536,12 +546,18 @@ func TestForgedDepartCannotEvictKnownPeer(t *testing.T) {
 	}
 }
 
-func TestAnnounceUsesLocalLivenessAndIgnoresRemoteSecurityMetadata(t *testing.T) {
+func TestAnnounceImportsSignedRemoteLabelsButPreservesLocalAttrs(t *testing.T) {
+	id := testIdentity(26)
 	msg := testAnnounce(t, 26)
 	msg.Ts = time.Now().Add(-5 * time.Second).UnixMilli()
-	msg.Metadata = map[string]any{"authStatus": types.AuthAuthenticated, "trustStatus": types.TrustTrusted, "ttlMs": 999999999, "publicKey": "forged", "labels": []string{"admin"}}
-	signAnnounce(t, &msg, testIdentity(26))
+	msg.DisplayName = "远程节点"
+	msg.Labels = types.Labels{
+		"env": types.LabelString("staging"),
+	}.WithCaps([]string{"chat", "task"})
+	msg.Metadata = map[string]any{"authStatus": types.AuthAuthenticated, "trustStatus": types.TrustTrusted, "ttlMs": 999999999, "publicKey": "forged"}
+	signAnnounce(t, &msg, id)
 	r := NewRegistry()
+	r.SetLocalAttrs(msg.NodeID, types.PeerLocalAttrs{Alias: "本地备注"})
 	svc := NewService(slog.Default(), nil, r, nil, "local", "", "", time.Second, time.Minute, "open")
 	before := time.Now().UnixMilli()
 	svc.handleAnnounce(announceSubject, marshalDiscovery(t, msg))
@@ -558,9 +574,39 @@ func TestAnnounceUsesLocalLivenessAndIgnoresRemoteSecurityMetadata(t *testing.T)
 	if peer.Metadata["publicKey"] != msg.PublicKey || metadataInt64(peer.Metadata, "ttlMs") != msg.TTLms {
 		t.Fatal("remote metadata overrode verified discovery attributes")
 	}
-	if _, ok := peer.Metadata["labels"]; ok {
-		t.Fatal("remote labels were imported")
+	if peer.DisplayName != "远程节点" {
+		t.Fatalf("displayName = %q, want 远程节点", peer.DisplayName)
 	}
+	if caps := peer.Labels.Caps(); len(caps) != 2 || caps[0] != "chat" || caps[1] != "task" {
+		t.Fatalf("caps = %#v, want chat/task", caps)
+	}
+	if scalar, ok := peer.Labels["env"].Scalar(); !ok || scalar != "staging" {
+		t.Fatalf("env label = %#v, want staging", peer.Labels["env"])
+	}
+	if peer.LocalAlias != "本地备注" {
+		t.Fatalf("localAlias = %q, want 本地备注", peer.LocalAlias)
+	}
+
+	// A later heartbeat with different remote labels updates the remote
+	// fields but never overwrites local remarks.
+	heartbeat := msg
+	heartbeat.MessageID = "heartbeat-2"
+	heartbeat.Ts = time.Now().UnixMilli()
+	heartbeat.DisplayName = "新名字"
+	heartbeat.Labels = types.Labels{}.WithCaps([]string{"chat"})
+	signAnnounce(t, &heartbeat, id)
+	svc.handleAnnounce(announceSubject, marshalDiscovery(t, heartbeat))
+	peer, ok = r.Get(msg.NodeID)
+	if !ok {
+		t.Fatal("peer disappeared after heartbeat")
+	}
+	if peer.DisplayName != "新名字" {
+		t.Fatalf("displayName = %q, want 新名字", peer.DisplayName)
+	}
+	if peer.LocalAlias != "本地备注" {
+		t.Fatalf("heartbeat overwrote localAlias: %q", peer.LocalAlias)
+	}
+
 	svc.gc()
 	if _, ok := r.Get(msg.NodeID); !ok {
 		t.Fatal("fresh local reception expired prematurely")

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -52,7 +53,8 @@ type Service struct {
 	trustMode       string
 	agentProduct    string
 	agentVersion    string
-	capabilities    []string
+	displayName     string
+	labels          types.Labels
 	autoAuth        func(context.Context, string) error
 	authMu          sync.Mutex
 	authing         map[string]struct{}
@@ -79,14 +81,15 @@ type AnnounceConfig struct {
 	Identity     *identity.Identity
 	AgentProduct string
 	AgentVersion string
-	Capabilities []string
+	DisplayName  string
+	Labels       types.Labels
 }
 
 func NewService(log *slog.Logger, bus *natsbus.Client, peers *Registry, fs *store.FSStore, nodeID string, did string, publicKey string, heartbeat, ttl time.Duration, trustMode string, announceConfigs ...AnnounceConfig) *Service {
 	announce := AnnounceConfig{
 		AgentProduct: "clawsynapse",
 		AgentVersion: "v0.1.0",
-		Capabilities: []string{"chat", "tools"},
+		Labels:       types.Labels{}.WithCaps([]string{"chat", "tools"}),
 	}
 	if len(announceConfigs) > 0 {
 		configured := announceConfigs[0]
@@ -97,8 +100,11 @@ func NewService(log *slog.Logger, bus *natsbus.Client, peers *Registry, fs *stor
 		if configured.AgentVersion != "" {
 			announce.AgentVersion = configured.AgentVersion
 		}
-		if len(configured.Capabilities) > 0 {
-			announce.Capabilities = configured.Capabilities
+		if configured.DisplayName != "" {
+			announce.DisplayName = configured.DisplayName
+		}
+		if len(configured.Labels) > 0 {
+			announce.Labels = configured.Labels
 		}
 	}
 	return &Service{
@@ -114,7 +120,8 @@ func NewService(log *slog.Logger, bus *natsbus.Client, peers *Registry, fs *stor
 		trustMode:    trustMode,
 		agentProduct: announce.AgentProduct,
 		agentVersion: announce.AgentVersion,
-		capabilities: append([]string(nil), announce.Capabilities...),
+		displayName:  announce.DisplayName,
+		labels:       announce.Labels,
 		authing:      map[string]struct{}{},
 		id:           announce.Identity,
 		latest:       map[string]discoveryClaim{},
@@ -185,6 +192,12 @@ func (s *Service) newAnnounce() (protocol.DiscoveryAnnounce, error) {
 	if ttl > maxDiscoveryAge {
 		ttl = maxDiscoveryAge
 	}
+	// Normalize labels before signing so the signed wire value is
+	// canonical (set members deduplicated and sorted).
+	labels, err := types.NormalizeLabels(s.labels)
+	if err != nil {
+		return protocol.DiscoveryAnnounce{}, fmt.Errorf("normalize announce labels: %w", err)
+	}
 	msg := protocol.DiscoveryAnnounce{
 		ProtocolVersion: "v2",
 		MessageID:       randID(),
@@ -193,7 +206,8 @@ func (s *Service) newAnnounce() (protocol.DiscoveryAnnounce, error) {
 		DID:             s.did,
 		Version:         s.agentVersion,
 		AgentProduct:    s.agentProduct,
-		Capabilities:    append([]string(nil), s.capabilities...),
+		DisplayName:     strings.TrimSpace(s.displayName),
+		Labels:          labels,
 		Inbox:           "clawsynapse.msg." + s.nodeID + ".inbox",
 		PublicKey:       s.publicKey,
 		Ts:              s.nextTimestamp(),
@@ -274,7 +288,8 @@ func (s *Service) handleAnnounce(subject string, data []byte) {
 		DID:          msg.DID,
 		Version:      msg.Version,
 		AgentProduct: msg.AgentProduct,
-		Capabilities: msg.Capabilities,
+		DisplayName:  msg.DisplayName,
+		Labels:       msg.Labels,
 		Inbox:        msg.Inbox,
 		TrustStatus:  trustStatus,
 		LastSeenMs:   now,
@@ -560,13 +575,14 @@ func validDiscoveryTime(ts, now, maxAge int64) bool {
 
 func validAnnounceAttributes(msg protocol.DiscoveryAnnounce) bool {
 	if msg.Inbox != "clawsynapse.msg."+msg.NodeID+".inbox" || len(msg.Version) > 256 ||
-		len(msg.AgentProduct) > 256 || len(msg.Capabilities) > 64 || len(msg.Metadata) > 64 {
+		len(msg.AgentProduct) > 256 || len(msg.Metadata) > 64 {
 		return false
 	}
-	for _, capability := range msg.Capabilities {
-		if len(capability) > 128 {
-			return false
-		}
+	if err := types.ValidateDisplayName(msg.DisplayName); err != nil {
+		return false
+	}
+	if _, err := types.NormalizeLabels(msg.Labels); err != nil {
+		return false
 	}
 	metadata, err := json.Marshal(msg.Metadata)
 	return err == nil && len(metadata) <= maxMetadataBytes

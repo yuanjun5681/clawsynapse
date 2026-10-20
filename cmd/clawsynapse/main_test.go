@@ -222,6 +222,171 @@ func TestRunTransferListUsesTransfersEndpoint(t *testing.T) {
 	}
 }
 
+func TestRenderPeersTable(t *testing.T) {
+	peers := []types.Peer{
+		{
+			NodeID:      "n1-peerwithalias0000000000000000",
+			DID:         "did:claw:aliaspeer",
+			DisplayName: "Builder Node",
+			LocalAlias:  "build-box",
+			AuthStatus:  "authenticated",
+			TrustStatus: "trusted",
+			Labels:      types.Labels{"role": types.LabelString("builder")},
+		},
+		{
+			NodeID:     "n1-peernodisplayname000000000000",
+			AuthStatus: "discovered",
+			Labels:     types.Labels{"caps": types.LabelSet([]string{"shell", "fs.read"})},
+		},
+		{
+			NodeID:     "n1-peernolabels00000000000000000",
+			AuthStatus: "discovered",
+		},
+	}
+
+	out := renderPeersTable(peers)
+
+	if !strings.Contains(out, "NAME") || !strings.Contains(out, "NODE") ||
+		!strings.Contains(out, "AUTH") || !strings.Contains(out, "TRUST") ||
+		!strings.Contains(out, "LABELS") {
+		t.Fatalf("expected header line with all columns, got %q", out)
+	}
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != len(peers)+1 {
+		t.Fatalf("expected header + %d rows, got %d lines: %q", len(peers), len(lines), out)
+	}
+
+	// Local alias takes precedence over displayName.
+	if !strings.Contains(lines[1], "build-box") || strings.Contains(lines[1], "Builder Node") {
+		t.Fatalf("expected alias to take precedence over displayName, got %q", lines[1])
+	}
+	if !strings.Contains(lines[1], "role=builder") {
+		t.Fatalf("expected scalar label rendered as k=v, got %q", lines[1])
+	}
+
+	// DisplayName used when no alias; set label rendered as k=[a,b].
+	if !strings.Contains(lines[2], "caps=[fs.read,shell]") {
+		t.Fatalf("expected set label rendered as k=[a,b], got %q", lines[2])
+	}
+
+	// No name, no labels: dashes.
+	fields := strings.Fields(lines[3])
+	if fields[0] != "-" {
+		t.Fatalf("expected '-' name for peer without name, got %q", lines[3])
+	}
+	if !strings.Contains(lines[3], " -") || strings.Contains(lines[3], "=") {
+		t.Fatalf("expected '-' labels for peer without labels, got %q", lines[3])
+	}
+}
+
+func TestRunPeersBuildsFilterQuery(t *testing.T) {
+	client := &stubAPIClient{result: types.APIResult{OK: true, Code: "peers.ok"}}
+	_, err := runPeers(context.Background(), client, []string{
+		"--label", "role=builder",
+		"--label", "env = prod",
+		"--label-has", "caps=shell",
+		"--name", "build box",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.method != "GET" {
+		t.Fatalf("expected GET, got %s", client.method)
+	}
+	want := "/v1/peers?label=role%3Dbuilder&label=env+%3D+prod&labelHas=caps%3Dshell&name=build+box"
+	if client.endpoint != want {
+		t.Fatalf("unexpected endpoint %q, want %q", client.endpoint, want)
+	}
+}
+
+func TestRunPeersPlainListsAll(t *testing.T) {
+	client := &stubAPIClient{result: types.APIResult{OK: true, Code: "peers.ok"}}
+	if _, err := runPeers(context.Background(), client, nil); err != nil {
+		t.Fatal(err)
+	}
+	if client.endpoint != "/v1/peers" {
+		t.Fatalf("unexpected endpoint %q", client.endpoint)
+	}
+}
+
+func TestRunPeerAliasPutsAlias(t *testing.T) {
+	client := &stubAPIClient{result: types.APIResult{OK: true, Code: "peer_attrs.ok"}}
+	_, err := runPeer(context.Background(), client, []string{"alias", "node-1", "build-box"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.method != "PUT" {
+		t.Fatalf("expected PUT, got %s", client.method)
+	}
+	if client.endpoint != "/v1/peers/node-1/attrs" {
+		t.Fatalf("unexpected endpoint %q", client.endpoint)
+	}
+	body, _ := client.payload.(map[string]any)
+	if body["alias"] != "build-box" {
+		t.Fatalf("unexpected payload %#v", client.payload)
+	}
+}
+
+func TestRunPeerAliasWithoutValueClearsAlias(t *testing.T) {
+	client := &stubAPIClient{result: types.APIResult{OK: true, Code: "peer_attrs.ok"}}
+	if _, err := runPeer(context.Background(), client, []string{"alias", "node-1"}); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := client.payload.(map[string]any)
+	if alias, ok := body["alias"]; !ok || alias != "" {
+		t.Fatalf("expected empty alias to clear, got %#v", client.payload)
+	}
+}
+
+func TestRunPeerLabelMergesAndPutsFullLabels(t *testing.T) {
+	client := &stubAPIClient{result: types.APIResult{OK: true, Code: "peer_attrs.ok", Data: map[string]any{
+		"nodeId": "node-1",
+		"attrs": map[string]any{
+			"labels": map[string]any{"role": "builder"},
+		},
+	}}}
+	_, err := runPeer(context.Background(), client, []string{"label", "node-1", "caps", "shell", "fs.read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.method != "PUT" {
+		t.Fatalf("expected PUT after GET, got %s", client.method)
+	}
+	body, _ := client.payload.(map[string]any)
+	labels, _ := body["labels"].(types.Labels)
+	if len(labels) != 2 {
+		t.Fatalf("expected merged labels to keep existing keys, got %#v", body)
+	}
+	if scalar, ok := labels["role"].Scalar(); !ok || scalar != "builder" {
+		t.Fatalf("expected existing scalar label preserved, got %#v", labels)
+	}
+	members := labels["caps"].Members()
+	if !labels["caps"].IsSet() || len(members) != 2 {
+		t.Fatalf("expected multi-value label stored as set, got %#v", labels["caps"])
+	}
+}
+
+func TestRunPeerUnlabelRemovesKey(t *testing.T) {
+	client := &stubAPIClient{result: types.APIResult{OK: true, Code: "peer_attrs.ok", Data: map[string]any{
+		"nodeId": "node-1",
+		"attrs": map[string]any{
+			"labels": map[string]any{"role": "builder", "env": "prod"},
+		},
+	}}}
+	_, err := runPeer(context.Background(), client, []string{"unlabel", "node-1", "env"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := client.payload.(map[string]any)
+	labels, _ := body["labels"].(types.Labels)
+	if _, exists := labels["env"]; exists {
+		t.Fatalf("expected env label removed, got %#v", labels)
+	}
+	if _, exists := labels["role"]; !exists {
+		t.Fatalf("expected role label kept, got %#v", labels)
+	}
+}
+
 type stubAPIClient struct {
 	method   string
 	endpoint string
@@ -248,6 +413,13 @@ func (s *stubAPIClient) Delete(_ context.Context, endpoint string) (types.APIRes
 	s.method = "DELETE"
 	s.endpoint = endpoint
 	s.payload = nil
+	return s.result, s.err
+}
+
+func (s *stubAPIClient) Put(_ context.Context, endpoint string, payload any) (types.APIResult, error) {
+	s.method = "PUT"
+	s.endpoint = endpoint
+	s.payload = payload
 	return s.result, s.err
 }
 

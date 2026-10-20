@@ -196,6 +196,14 @@ type parsedLogEntry struct {
 	IsJSON  bool
 }
 
+// peerFilterState holds the peers-tab filter: the applied expression (raw)
+// and the in-progress edit buffer while the user types.
+type peerFilterState struct {
+	raw     string
+	buf     string
+	editing bool
+}
+
 type model struct {
 	client         Client
 	logs           LogProvider
@@ -216,6 +224,7 @@ type model struct {
 	offsets        [dashboardTabCount]int
 	logsFollowTail bool
 	cfgState       configEditState
+	peerFilter     peerFilterState
 }
 
 func (m *model) recalcLayout() {

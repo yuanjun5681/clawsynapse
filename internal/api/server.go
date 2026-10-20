@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"clawsynapse/internal/adapter"
@@ -15,8 +16,10 @@ import (
 	"clawsynapse/internal/discovery"
 	"clawsynapse/internal/messaging"
 	"clawsynapse/internal/natsbus"
+	"clawsynapse/internal/store"
 	"clawsynapse/internal/transfer"
 	"clawsynapse/internal/trust"
+	"clawsynapse/pkg/types"
 )
 
 type Server struct {
@@ -30,6 +33,8 @@ type Server struct {
 	adapter     adapter.AgentAdapter
 	adapterName string
 	self        SelfInfo
+	attrs       *store.FSStore
+	attrsMu     sync.Mutex
 	version     string
 	cfg         config.Config
 	configPath  string
@@ -40,9 +45,11 @@ type SelfInfo struct {
 	DID                 string
 	IdentityFingerprint string
 	TrustMode           string
+	DisplayName         string
+	Labels              types.Labels
 }
 
-func NewServer(addr string, peers *discovery.Registry, authSvc *auth.Service, trustSvc *trust.Service, messagingSvc *messaging.Service, transferSvc *transfer.Service, natsClient *natsbus.Client, agentAdapter adapter.AgentAdapter, agentAdapterName string, self SelfInfo, version string, cfg config.Config) (*Server, error) {
+func NewServer(addr string, peers *discovery.Registry, authSvc *auth.Service, trustSvc *trust.Service, messagingSvc *messaging.Service, transferSvc *transfer.Service, natsClient *natsbus.Client, agentAdapter adapter.AgentAdapter, agentAdapterName string, self SelfInfo, version string, cfg config.Config, attrs *store.FSStore) (*Server, error) {
 	if err := config.ValidateAPIListener(addr, cfg.AllowRemoteAPI, cfg.APITLSCertFile, cfg.APITLSKeyFile); err != nil {
 		return nil, err
 	}
@@ -71,6 +78,7 @@ func NewServer(addr string, peers *discovery.Registry, authSvc *auth.Service, tr
 		adapter:     agentAdapter,
 		adapterName: agentAdapterName,
 		self:        self,
+		attrs:       attrs,
 		version:     version,
 		cfg:         cfg,
 		configPath:  cfg.ConfigPath,
@@ -78,6 +86,9 @@ func NewServer(addr string, peers *discovery.Registry, authSvc *auth.Service, tr
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/peers", s.handlePeers)
+	mux.HandleFunc("GET /v1/peers/{nodeID}/attrs", s.handlePeerAttrsGet)
+	mux.HandleFunc("PUT /v1/peers/{nodeID}/attrs", s.handlePeerAttrsPut)
+	mux.HandleFunc("DELETE /v1/peers/{nodeID}/attrs", s.handlePeerAttrsDelete)
 	mux.HandleFunc("POST /v1/auth/challenge", s.handleAuthChallenge)
 	mux.HandleFunc("POST /v1/trust/request", s.handleTrustRequest)
 	mux.HandleFunc("POST /v1/trust/approve", s.handleTrustApprove)

@@ -16,7 +16,7 @@ import (
 
 func newProtectedServer(t *testing.T) *Server {
 	t.Helper()
-	s, err := NewServer("127.0.0.1:0", nil, nil, nil, nil, nil, nil, nil, "default", SelfInfo{}, "test", config.Config{DataDir: t.TempDir()})
+	s, err := NewServer("127.0.0.1:0", nil, nil, nil, nil, nil, nil, nil, "default", SelfInfo{}, "test", config.Config{DataDir: t.TempDir()}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +26,8 @@ func newProtectedServer(t *testing.T) *Server {
 func TestAllAPIRoutesRequireBearer(t *testing.T) {
 	s := newProtectedServer(t)
 	for _, route := range []struct{ method, path string }{
-		{"GET", "/v1/peers"}, {"POST", "/v1/auth/challenge"}, {"POST", "/v1/trust/request"},
+		{"GET", "/v1/peers"}, {"GET", "/v1/peers/node/attrs"}, {"PUT", "/v1/peers/node/attrs"},
+		{"DELETE", "/v1/peers/node/attrs"}, {"POST", "/v1/auth/challenge"}, {"POST", "/v1/trust/request"},
 		{"POST", "/v1/trust/approve"}, {"POST", "/v1/trust/reject"}, {"POST", "/v1/trust/revoke"},
 		{"GET", "/v1/trust/pending"}, {"POST", "/v1/publish"}, {"GET", "/v1/messages"},
 		{"POST", "/v1/transfer/send"}, {"GET", "/v1/transfers"}, {"GET", "/v1/transfer/id"},
@@ -122,7 +123,7 @@ func TestServerRejectsUnsafeRemoteListener(t *testing.T) {
 		{DataDir: t.TempDir(), AllowRemoteAPI: true},
 		{DataDir: t.TempDir(), AllowRemoteAPI: true, APITLSCertFile: "missing", APITLSKeyFile: "missing"},
 	} {
-		if _, err := NewServer("0.0.0.0:8080", nil, nil, nil, nil, nil, nil, nil, "default", SelfInfo{}, "test", cfg); err == nil {
+		if _, err := NewServer("0.0.0.0:8080", nil, nil, nil, nil, nil, nil, nil, "default", SelfInfo{}, "test", cfg, nil); err == nil {
 			t.Fatal("unsafe remote listener accepted")
 		}
 	}

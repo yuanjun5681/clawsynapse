@@ -1,12 +1,16 @@
 package api
 
 import (
+	"fmt"
+	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"clawsynapse/internal/config"
 	"clawsynapse/internal/messaging"
 	"clawsynapse/internal/protocol"
+	"clawsynapse/internal/store"
 	"clawsynapse/internal/transfer"
 	"clawsynapse/pkg/types"
 )
@@ -42,13 +46,87 @@ type publishReq struct {
 	Metadata   map[string]any           `json:"metadata,omitempty"`
 }
 
-func (s *Server) handlePeers(w http.ResponseWriter, _ *http.Request) {
+type peerFilter struct {
+	exact  [][2]string
+	member [][2]string
+	name   string
+}
+
+// parsePeerFilter parses the optional `label` (exact scalar), `labelHas`
+// (set member) and `name` (substring) query filters for /v1/peers.
+func parsePeerFilter(r *http.Request) (peerFilter, error) {
+	var f peerFilter
+	q := r.URL.Query()
+	parse := func(raw string) ([2]string, error) {
+		key, value, ok := strings.Cut(raw, "=")
+		if !ok || strings.TrimSpace(key) == "" {
+			return [2]string{}, fmt.Errorf("malformed label filter %q", raw)
+		}
+		return [2]string{strings.TrimSpace(key), value}, nil
+	}
+	for _, raw := range q["label"] {
+		kv, err := parse(raw)
+		if err != nil {
+			return peerFilter{}, err
+		}
+		f.exact = append(f.exact, kv)
+	}
+	for _, raw := range q["labelHas"] {
+		kv, err := parse(raw)
+		if err != nil {
+			return peerFilter{}, err
+		}
+		f.member = append(f.member, kv)
+	}
+	f.name = strings.ToLower(strings.TrimSpace(q.Get("name")))
+	return f, nil
+}
+
+func (f peerFilter) matches(peer types.Peer) bool {
+	for _, kv := range f.exact {
+		if !peer.Labels.MatchExact(kv[0], kv[1]) {
+			return false
+		}
+	}
+	for _, kv := range f.member {
+		if !peer.Labels.MatchMember(kv[0], kv[1]) {
+			return false
+		}
+	}
+	if f.name != "" {
+		display := strings.ToLower(peer.DisplayName)
+		alias := strings.ToLower(peer.LocalAlias)
+		if !strings.Contains(display, f.name) && !strings.Contains(alias, f.name) {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Server) handlePeers(w http.ResponseWriter, r *http.Request) {
+	filter, err := parsePeerFilter(r)
+	if err != nil {
+		respondJSON(w, http.StatusBadRequest, types.APIResult{
+			OK:      false,
+			Code:    "peers.invalid_filter",
+			Message: err.Error(),
+			TS:      time.Now().UnixMilli(),
+		})
+		return
+	}
+	peers := s.listRemotePeers()
+	items := make([]types.Peer, 0, len(peers))
+	for _, peer := range peers {
+		if filter.matches(peer) {
+			items = append(items, peer)
+		}
+	}
 	respondJSON(w, http.StatusOK, types.APIResult{
 		OK:      true,
 		Code:    "peers.ok",
 		Message: "peers fetched",
 		Data: map[string]any{
-			"items": s.listRemotePeers(),
+			"items": items,
 		},
 		TS: time.Now().UnixMilli(),
 	})
@@ -64,6 +142,146 @@ func (s *Server) listRemotePeers() []types.Peer {
 		out = append(out, peer)
 	}
 	return out
+}
+
+// peerAttrsPatch is the PUT /v1/peers/{nodeID}/attrs body. Pointer fields
+// distinguish "key omitted" (leave untouched) from "explicit empty" (clear).
+type peerAttrsPatch struct {
+	Alias       *string       `json:"alias"`
+	Description *string       `json:"description"`
+	Labels      *types.Labels `json:"labels"`
+}
+
+// peerAttrsNodeID validates the {nodeID} path value. It is a local lookup
+// key only and is never joined into a filesystem path.
+func peerAttrsNodeID(w http.ResponseWriter, r *http.Request) (string, bool) {
+	nodeID := strings.TrimSpace(r.PathValue("nodeID"))
+	if nodeID == "" || len(nodeID) > 256 {
+		respondJSON(w, http.StatusBadRequest, types.APIResult{
+			OK:      false,
+			Code:    "peer_attrs.invalid",
+			Message: "invalid node id",
+			TS:      time.Now().UnixMilli(),
+		})
+		return "", false
+	}
+	return nodeID, true
+}
+
+func (s *Server) respondPeerAttrs(w http.ResponseWriter, nodeID string) {
+	attrs := s.peers.LocalAttrsSnapshot()[nodeID]
+	respondJSON(w, http.StatusOK, types.APIResult{
+		OK:      true,
+		Code:    "peer_attrs.ok",
+		Message: "peer attrs fetched",
+		Data: map[string]any{
+			"nodeId": nodeID,
+			"attrs":  attrs,
+		},
+		TS: time.Now().UnixMilli(),
+	})
+}
+
+func (s *Server) handlePeerAttrsGet(w http.ResponseWriter, r *http.Request) {
+	nodeID, ok := peerAttrsNodeID(w, r)
+	if !ok {
+		return
+	}
+	s.respondPeerAttrs(w, nodeID)
+}
+
+func (s *Server) persistPeerAttrs(w http.ResponseWriter, nodeID string) bool {
+	if s.attrs == nil {
+		return true
+	}
+	st := store.PeerAttrsState{SchemaVersion: 1, Peers: s.peers.LocalAttrsSnapshot()}
+	if err := s.attrs.SavePeerAttrsState(st); err != nil {
+		slog.Error("persist peer attrs failed; in-memory change kept",
+			slog.String("nodeId", nodeID),
+			slog.String("error", err.Error()),
+		)
+		respondJSON(w, http.StatusInternalServerError, types.APIResult{
+			OK:      false,
+			Code:    "peer_attrs.persist_failed",
+			Message: "failed to persist peer attrs",
+			TS:      time.Now().UnixMilli(),
+		})
+		return false
+	}
+	return true
+}
+
+func (s *Server) handlePeerAttrsPut(w http.ResponseWriter, r *http.Request) {
+	nodeID, ok := peerAttrsNodeID(w, r)
+	if !ok {
+		return
+	}
+	var patch peerAttrsPatch
+	if err := decodeRequest(r, &patch); err != nil {
+		respondJSON(w, http.StatusBadRequest, types.APIResult{
+			OK:      false,
+			Code:    "peer_attrs.invalid",
+			Message: "invalid json payload",
+			TS:      time.Now().UnixMilli(),
+		})
+		return
+	}
+
+	s.attrsMu.Lock()
+	attrs := s.peers.LocalAttrsSnapshot()[nodeID]
+	if patch.Alias != nil {
+		attrs.Alias = *patch.Alias
+	}
+	if patch.Description != nil {
+		attrs.Description = *patch.Description
+	}
+	if patch.Labels != nil {
+		attrs.Labels = *patch.Labels
+	}
+	normalized, err := types.NormalizePeerLocalAttrs(attrs)
+	if err != nil {
+		s.attrsMu.Unlock()
+		respondJSON(w, http.StatusBadRequest, types.APIResult{
+			OK:      false,
+			Code:    "peer_attrs.invalid",
+			Message: err.Error(),
+			TS:      time.Now().UnixMilli(),
+		})
+		return
+	}
+	if err := types.ValidateDisplayName(normalized.Alias); err != nil {
+		s.attrsMu.Unlock()
+		respondJSON(w, http.StatusBadRequest, types.APIResult{
+			OK:      false,
+			Code:    "peer_attrs.invalid",
+			Message: err.Error(),
+			TS:      time.Now().UnixMilli(),
+		})
+		return
+	}
+
+	s.peers.SetLocalAttrs(nodeID, normalized)
+	persisted := s.persistPeerAttrs(w, nodeID)
+	s.attrsMu.Unlock()
+	if !persisted {
+		return
+	}
+	s.respondPeerAttrs(w, nodeID)
+}
+
+func (s *Server) handlePeerAttrsDelete(w http.ResponseWriter, r *http.Request) {
+	nodeID, ok := peerAttrsNodeID(w, r)
+	if !ok {
+		return
+	}
+	s.attrsMu.Lock()
+	s.peers.SetLocalAttrs(nodeID, types.PeerLocalAttrs{})
+	persisted := s.persistPeerAttrs(w, nodeID)
+	s.attrsMu.Unlock()
+	if !persisted {
+		return
+	}
+	s.respondPeerAttrs(w, nodeID)
 }
 
 func (s *Server) handleAuthChallenge(w http.ResponseWriter, r *http.Request) {
@@ -160,6 +378,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 				"version":             s.version,
 				"identityFingerprint": s.self.IdentityFingerprint,
 				"trustMode":           s.self.TrustMode,
+				"displayName":         s.self.DisplayName,
+				"labels":              s.self.Labels,
 			},
 			"peersCount": len(s.listRemotePeers()),
 			"nats":       natsStatus,

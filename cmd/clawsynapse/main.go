@@ -6,11 +6,15 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
+	"sort"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"clawsynapse/internal/api"
+	"clawsynapse/internal/identity"
 	"clawsynapse/pkg/types"
 )
 
@@ -21,6 +25,7 @@ type stringList []string
 type localAPIClient interface {
 	Get(ctx context.Context, endpoint string) (types.APIResult, error)
 	Post(ctx context.Context, endpoint string, payload any) (types.APIResult, error)
+	Put(ctx context.Context, endpoint string, payload any) (types.APIResult, error)
 	Delete(ctx context.Context, endpoint string) (types.APIResult, error)
 }
 
@@ -143,7 +148,9 @@ func dispatch(ctx context.Context, client localAPIClient, args []string) (types.
 	case "health":
 		return client.Get(ctx, "/v1/health")
 	case "peers":
-		return client.Get(ctx, "/v1/peers")
+		return runPeers(ctx, client, args[1:])
+	case "peer":
+		return runPeer(ctx, client, args[1:])
 	case "messages":
 		return client.Get(ctx, "/v1/messages")
 	case "publish":
@@ -159,6 +166,151 @@ func dispatch(ctx context.Context, client localAPIClient, args []string) (types.
 	default:
 		return types.APIResult{}, fmt.Errorf("unknown command: %s", args[0])
 	}
+}
+
+func runPeers(ctx context.Context, client localAPIClient, args []string) (types.APIResult, error) {
+	fs := flag.NewFlagSet("peers", flag.ContinueOnError)
+	name := fs.String("name", "", "match displayName/localAlias substring")
+	var labels stringList
+	fs.Var(&labels, "label", "label key=value exact match; repeatable")
+	var labelHas stringList
+	fs.Var(&labelHas, "label-has", "label set member key=value match; repeatable")
+	if err := fs.Parse(args); err != nil {
+		return types.APIResult{}, err
+	}
+
+	var query strings.Builder
+	for _, kv := range labels {
+		if _, _, ok := strings.Cut(kv, "="); !ok {
+			return types.APIResult{}, fmt.Errorf("invalid --label value: %s", kv)
+		}
+		query.WriteString("&label=")
+		query.WriteString(url.QueryEscape(kv))
+	}
+	for _, kv := range labelHas {
+		if _, _, ok := strings.Cut(kv, "="); !ok {
+			return types.APIResult{}, fmt.Errorf("invalid --label-has value: %s", kv)
+		}
+		query.WriteString("&labelHas=")
+		query.WriteString(url.QueryEscape(kv))
+	}
+	if trimmed := strings.TrimSpace(*name); trimmed != "" {
+		query.WriteString("&name=")
+		query.WriteString(url.QueryEscape(trimmed))
+	}
+
+	endpoint := "/v1/peers"
+	if query.Len() > 0 {
+		endpoint += "?" + strings.TrimPrefix(query.String(), "&")
+	}
+	return client.Get(ctx, endpoint)
+}
+
+func runPeer(ctx context.Context, client localAPIClient, args []string) (types.APIResult, error) {
+	if len(args) == 0 {
+		return types.APIResult{}, fmt.Errorf("missing peer subcommand")
+	}
+	if args[0] == "-h" || args[0] == "--help" {
+		printPeerHelp(os.Stderr)
+		return types.APIResult{}, flag.ErrHelp
+	}
+	if len(args) < 2 {
+		return types.APIResult{}, fmt.Errorf("peer %s requires a node id", args[0])
+	}
+	nodeID := args[1]
+	rest := args[2:]
+	attrsPath := "/v1/peers/" + url.PathEscape(nodeID) + "/attrs"
+
+	switch args[0] {
+	case "alias":
+		if len(rest) > 1 {
+			return types.APIResult{}, fmt.Errorf("peer alias accepts at most one alias argument")
+		}
+		return client.Put(ctx, attrsPath, map[string]any{"alias": firstOrEmpty(rest)})
+	case "describe":
+		if len(rest) > 1 {
+			return types.APIResult{}, fmt.Errorf("peer describe accepts at most one text argument")
+		}
+		return client.Put(ctx, attrsPath, map[string]any{"description": firstOrEmpty(rest)})
+	case "label":
+		if len(rest) < 2 {
+			return types.APIResult{}, fmt.Errorf("peer label requires <key> <value> [value...]")
+		}
+		key := rest[0]
+		values := rest[1:]
+		var label types.LabelValue
+		if len(values) == 1 {
+			label = types.LabelString(values[0])
+		} else {
+			label = types.LabelSet(values)
+		}
+		return updatePeerLabels(ctx, client, attrsPath, func(labels types.Labels) {
+			labels[key] = label
+		})
+	case "unlabel":
+		if len(rest) != 1 {
+			return types.APIResult{}, fmt.Errorf("peer unlabel requires exactly one <key>")
+		}
+		key := rest[0]
+		return updatePeerLabels(ctx, client, attrsPath, func(labels types.Labels) {
+			delete(labels, key)
+		})
+	default:
+		return types.APIResult{}, fmt.Errorf("unknown peer subcommand: %s", args[0])
+	}
+}
+
+func firstOrEmpty(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	return args[0]
+}
+
+// updatePeerLabels reads current local attrs, mutates the labels via mutate,
+// and writes back the full label map.
+func updatePeerLabels(ctx context.Context, client localAPIClient, attrsPath string, mutate func(types.Labels)) (types.APIResult, error) {
+	current, err := client.Get(ctx, attrsPath)
+	if err != nil {
+		return current, err
+	}
+	attrs, err := decodePeerAttrs(current.Data)
+	if err != nil {
+		return types.APIResult{}, err
+	}
+	labels := types.Labels{}
+	for k, v := range attrs.Labels {
+		labels[k] = v
+	}
+	mutate(labels)
+	return client.Put(ctx, attrsPath, map[string]any{"labels": labels})
+}
+
+func decodePeerAttrs(data map[string]any) (types.PeerLocalAttrs, error) {
+	raw, err := json.Marshal(data["attrs"])
+	if err != nil {
+		return types.PeerLocalAttrs{}, fmt.Errorf("decode peer attrs: %w", err)
+	}
+	var attrs types.PeerLocalAttrs
+	if err := json.Unmarshal(raw, &attrs); err != nil {
+		return types.PeerLocalAttrs{}, fmt.Errorf("decode peer attrs: %w", err)
+	}
+	return attrs, nil
+}
+
+func printPeerHelp(stderr *os.File) {
+	fmt.Fprintln(stderr, "usage: clawsynapse peer <subcommand> <node-id> [args]")
+	fmt.Fprintln(stderr, "")
+	fmt.Fprintln(stderr, "Subcommands:")
+	fmt.Fprintln(stderr, "  alias <node-id> [alias]           set (or clear) a local alias")
+	fmt.Fprintln(stderr, "  describe <node-id> [text]         set (or clear) a local description")
+	fmt.Fprintln(stderr, "  label <node-id> <key> <value>...  set a local label (one value = scalar, many = set)")
+	fmt.Fprintln(stderr, "  unlabel <node-id> <key>           remove a local label")
+	fmt.Fprintln(stderr, "")
+	fmt.Fprintln(stderr, "Examples:")
+	fmt.Fprintln(stderr, "  clawsynapse peer alias <node-id> build-box")
+	fmt.Fprintln(stderr, "  clawsynapse peer label <node-id> caps shell fs.read")
+	fmt.Fprintln(stderr, "  clawsynapse peer unlabel <node-id> env")
 }
 
 func runPublish(ctx context.Context, client localAPIClient, args []string) (types.APIResult, error) {
@@ -452,6 +604,12 @@ func printResult(stdout, stderr *os.File, result types.APIResult, asJSON bool) {
 	case "health.ok":
 		printHealthResult(stream, result.Data)
 		return
+	case "peers.ok":
+		printPeersResult(stream, result.Data)
+		return
+	case "peer_attrs.ok":
+		printPeerAttrsResult(stream, result.Data)
+		return
 	case "msg.published":
 		printPublishResult(stream, result.Data)
 		return
@@ -496,6 +654,12 @@ func printHealthResult(stream *os.File, data map[string]any) {
 	if nodeID, _ := self["nodeId"].(string); nodeID != "" {
 		fmt.Fprintf(stream, "nodeId: %s\n", nodeID)
 	}
+	if name, _ := self["displayName"].(string); name != "" {
+		fmt.Fprintf(stream, "displayName: %s\n", name)
+	}
+	if labels := renderRawLabels(self["labels"]); labels != "" {
+		fmt.Fprintf(stream, "labels: %s\n", labels)
+	}
 	if version, _ := self["version"].(string); version != "" {
 		fmt.Fprintf(stream, "version: %s\n", version)
 	}
@@ -517,6 +681,123 @@ func printHealthResult(stream *os.File, data map[string]any) {
 	if healthy, ok := adapter["healthy"].(bool); ok {
 		fmt.Fprintf(stream, "adapterHealthy: %t\n", healthy)
 	}
+}
+
+func printPeersResult(stream *os.File, data map[string]any) {
+	raw, err := json.Marshal(data["items"])
+	if err != nil {
+		return
+	}
+	var peers []types.Peer
+	if err := json.Unmarshal(raw, &peers); err != nil {
+		return
+	}
+	fmt.Fprint(stream, renderPeersTable(peers))
+}
+
+// renderPeersTable renders peers as an aligned table. Pure function for
+// testability.
+func renderPeersTable(peers []types.Peer) string {
+	var buf strings.Builder
+	w := tabwriter.NewWriter(&buf, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tNODE\tAUTH\tTRUST\tLABELS")
+	for _, peer := range peers {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+			peerDisplayName(peer),
+			peerNodeRef(peer),
+			emptyDash(peer.AuthStatus),
+			emptyDash(peer.TrustStatus),
+			renderLabels(peer.Labels),
+		)
+	}
+	_ = w.Flush()
+	return buf.String()
+}
+
+func peerDisplayName(peer types.Peer) string {
+	if name := strings.TrimSpace(peer.LocalAlias); name != "" {
+		return name
+	}
+	if name := strings.TrimSpace(peer.DisplayName); name != "" {
+		return name
+	}
+	return "-"
+}
+
+func peerNodeRef(peer types.Peer) string {
+	if did := strings.TrimSpace(peer.DID); did != "" {
+		return identity.FingerprintFromDID(did)
+	}
+	const shortLen = 12
+	if len(peer.NodeID) > shortLen {
+		return peer.NodeID[:shortLen]
+	}
+	return peer.NodeID
+}
+
+// renderLabels renders labels compactly: k=v for scalars, k=[a,b] for sets.
+func renderLabels(labels types.Labels) string {
+	if len(labels) == 0 {
+		return "-"
+	}
+	keys := make([]string, 0, len(labels))
+	for key := range labels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		value := labels[key]
+		if value.IsSet() {
+			members := value.Members()
+			sort.Strings(members)
+			parts = append(parts, key+"=["+strings.Join(members, ",")+"]")
+		} else if scalar, ok := value.Scalar(); ok {
+			parts = append(parts, key+"="+scalar)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+// renderRawLabels decodes a JSON-decoded labels map (string or []string
+// values) and renders it like renderLabels. Returns "" when empty/invalid.
+func renderRawLabels(raw any) string {
+	if raw == nil {
+		return ""
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return ""
+	}
+	var labels types.Labels
+	if err := json.Unmarshal(b, &labels); err != nil {
+		return ""
+	}
+	rendered := renderLabels(labels)
+	if rendered == "-" {
+		return ""
+	}
+	return rendered
+}
+
+func emptyDash(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "-"
+	}
+	return s
+}
+
+func printPeerAttrsResult(stream *os.File, data map[string]any) {
+	attrs, err := decodePeerAttrs(data)
+	if err != nil {
+		return
+	}
+	if nodeID, _ := data["nodeId"].(string); nodeID != "" {
+		fmt.Fprintf(stream, "nodeId: %s\n", nodeID)
+	}
+	fmt.Fprintf(stream, "alias: %s\n", attrs.Alias)
+	fmt.Fprintf(stream, "description: %s\n", attrs.Description)
+	fmt.Fprintf(stream, "labels: %s\n", renderLabels(attrs.Labels))
 }
 
 func printPublishResult(stream *os.File, data map[string]any) {
@@ -654,6 +935,8 @@ func printUsage(stderr *os.File) {
 	fmt.Fprintln(stderr, "  version              print version")
 	fmt.Fprintln(stderr, "  health               check daemon health")
 	fmt.Fprintln(stderr, "  peers                list connected peers")
+	fmt.Fprintln(stderr, "                       flags: --name <substr>  --label k=v (exact, repeatable)  --label-has k=v (set member, repeatable)")
+	fmt.Fprintln(stderr, "  peer                 manage local peer remarks (alias|describe|label|unlabel)")
 	fmt.Fprintln(stderr, "  messages             list recent messages")
 	fmt.Fprintln(stderr, "  publish              publish a message to a peer")
 	fmt.Fprintln(stderr, "  auth                 authentication commands")
@@ -672,6 +955,8 @@ func printUsage(stderr *os.File) {
 	fmt.Fprintln(stderr, "  clawsynapse logs --lines 50")
 	fmt.Fprintln(stderr, "  clawsynapse upgrade check")
 	fmt.Fprintln(stderr, "  clawsynapse publish --target <node-id> --message \"hello\"")
+	fmt.Fprintln(stderr, "  clawsynapse peers --label role=builder --label-has caps=shell")
+	fmt.Fprintln(stderr, "  clawsynapse peer alias <node-id> build-box")
 	fmt.Fprintln(stderr, "  clawsynapse trust request --target <node-id>")
 	fmt.Fprintln(stderr, "  clawsynapse transfer send --target <node-id> --file <path>")
 	fmt.Fprintln(stderr, "")

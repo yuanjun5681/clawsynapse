@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -27,6 +28,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		if m.activeTab == 4 && m.cfgState.editing {
 			return m.handleConfigEditKey(msg)
+		}
+		if m.activeTab == 1 && m.peerFilter.editing {
+			return m.handlePeerFilterKey(msg)
 		}
 		switch msg.String() {
 		case "ctrl+c", "q":
@@ -64,6 +68,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.activeTab == 3 {
 				m.offsets[3] = 0
 				m.logsFollowTail = false
+			}
+		case "/":
+			if m.activeTab == 1 {
+				m.peerFilter.editing = true
+				m.peerFilter.buf = m.peerFilter.raw
+			}
+		case "escape":
+			if m.activeTab == 1 && strings.TrimSpace(m.peerFilter.raw) != "" {
+				m.peerFilter.raw = ""
+				m.cursors[1] = 0
+				m.offsets[1] = 0
 			}
 		case "enter", "e":
 			if m.activeTab == 4 {
@@ -370,18 +385,27 @@ func (m model) peersView(width, height int) string {
 }
 
 func (m model) peerListLines(contentHeight, contentWidth int) []string {
-	cols := peerColumnsForWidth(contentWidth, m.snapshot.Peers)
-	lines := []string{
-		taggedLine(dashboardTagDim, formatPeerListHeader(cols)),
+	peers := m.filteredPeers()
+	cols := peerColumnsForWidth(contentWidth, peers)
+	var lines []string
+	if m.peerFilter.editing {
+		lines = append(lines, taggedLine(dashboardTagAccent, "  filter: "+m.peerFilter.buf+"_"))
+	} else if strings.TrimSpace(m.peerFilter.raw) != "" {
+		lines = append(lines, taggedLine(dashboardTagAccent,
+			fmt.Sprintf("  filter: %s %s %d/%d peers", m.peerFilter.raw, boxV, len(peers), len(m.snapshot.Peers))))
 	}
-	if len(m.snapshot.Peers) == 0 {
-		return append(lines, taggedLine(dashboardTagMuted, "  no peers discovered"))
+	lines = append(lines, taggedLine(dashboardTagDim, formatPeerListHeader(cols)))
+	if len(peers) == 0 {
+		if len(m.snapshot.Peers) == 0 {
+			return append(lines, taggedLine(dashboardTagMuted, "  no peers discovered"))
+		}
+		return append(lines, taggedLine(dashboardTagMuted, "  no peers match filter"))
 	}
 
-	visibleRows := maxInt(1, contentHeight-1)
-	offset := ensureVisible(m.offsets[1], m.cursors[1], len(m.snapshot.Peers), visibleRows)
-	for row := offset; row < len(m.snapshot.Peers) && len(lines) < contentHeight; row++ {
-		peer := m.snapshot.Peers[row]
+	visibleRows := maxInt(1, contentHeight-len(lines))
+	offset := ensureVisible(m.offsets[1], m.cursors[1], len(peers), visibleRows)
+	for row := offset; row < len(peers) && len(lines) < contentHeight; row++ {
+		peer := peers[row]
 		prefix := " "
 		tag := ""
 		if row == m.cursors[1] {
@@ -390,32 +414,59 @@ func (m model) peerListLines(contentHeight, contentWidth int) []string {
 		}
 		lines = append(lines, taggedLine(tag, formatPeerRow(prefix, peer, cols)))
 	}
-	if offset+visibleRows < len(m.snapshot.Peers) {
-		lines = append(lines, taggedLine(dashboardTagMuted, fmt.Sprintf("  ... %d more peers", len(m.snapshot.Peers)-(offset+visibleRows))))
+	if offset+visibleRows < len(peers) {
+		lines = append(lines, taggedLine(dashboardTagMuted, fmt.Sprintf("  ... %d more peers", len(peers)-(offset+visibleRows))))
 	}
 	return lines
 }
 
 func (m model) selectedPeerLines() []string {
-	if len(m.snapshot.Peers) == 0 {
+	peers := m.filteredPeers()
+	if len(peers) == 0 {
 		return []string{taggedLine(dashboardTagMuted, "No peer selected."), "", "Use tab to move between views."}
 	}
-	peer := m.snapshot.Peers[m.cursors[1]]
+	peer := peers[m.cursors[1]]
 	authDot := peerAuthDot(peer.AuthStatus)
 	trustDot := peerTrustDot(peer.TrustStatus)
-	return []string{
-		taggedLine(dashboardTagAccent, fmt.Sprintf("  nodeId  %s", peer.NodeID)),
-		taggedLine(dashboardPeerAuthTag(peer.AuthStatus), fmt.Sprintf("  auth    %s %s", authDot, fallbackString(peer.AuthStatus, "unknown"))),
-		taggedLine(dashboardPeerTrustTag(peer.TrustStatus), fmt.Sprintf("  trust   %s %s", trustDot, fallbackString(peer.TrustStatus, "none"))),
-		fmt.Sprintf("  product %s", fallbackString(peer.AgentProduct, "-")),
-		fmt.Sprintf("  version %s", fallbackString(peer.Version, "-")),
-		fmt.Sprintf("  inbox   %s", fallbackString(peer.Inbox, "-")),
+	lines := []string{
+		taggedLine(dashboardTagAccent, fmt.Sprintf("  nodeId      %s", peer.NodeID)),
+		taggedLine(dashboardTagMuted, fmt.Sprintf("  fingerprint %s", peerFingerprint(peer))),
+		taggedLine(dashboardPeerAuthTag(peer.AuthStatus), fmt.Sprintf("  auth        %s %s", authDot, fallbackString(peer.AuthStatus, "unknown"))),
+		taggedLine(dashboardPeerTrustTag(peer.TrustStatus), fmt.Sprintf("  trust       %s %s", trustDot, fallbackString(peer.TrustStatus, "none"))),
+		fmt.Sprintf("  product     %s", fallbackString(peer.AgentProduct, "-")),
+		fmt.Sprintf("  version     %s", fallbackString(peer.Version, "-")),
+		fmt.Sprintf("  inbox       %s", fallbackString(peer.Inbox, "-")),
+		"",
+		taggedLine(dashboardTagSection, arrowR+" Naming"),
+		fmt.Sprintf("  displayName %s", fallbackString(normalizeSingleLine(peer.DisplayName), "-")),
+		fmt.Sprintf("  localAlias  %s", fallbackString(normalizeSingleLine(peer.LocalAlias), "-")),
+	}
+	if desc := normalizeSingleLine(peer.LocalDescription); desc != "" {
+		lines = append(lines, fmt.Sprintf("  description %s", desc))
+	}
+
+	lines = append(lines, "", taggedLine(dashboardTagSection, arrowR+" Remote Labels"))
+	if labelLines := formatLabelsLines(peer.Labels, "  "); len(labelLines) > 0 {
+		lines = append(lines, labelLines...)
+	} else {
+		lines = append(lines, taggedLine(dashboardTagMuted, "  (none)"))
+	}
+
+	lines = append(lines, "", taggedLine(dashboardTagSection, arrowR+" Local Labels"))
+	if labelLines := formatLabelsLines(peer.LocalLabels, "  "); len(labelLines) > 0 {
+		lines = append(lines, labelLines...)
+	} else {
+		lines = append(lines, taggedLine(dashboardTagMuted, "  (none)"))
+	}
+
+	lines = append(lines,
 		"",
 		taggedLine(dashboardTagSection, arrowR+" Fleet Summary"),
 		taggedLine(dashboardTagGood, fmt.Sprintf("  %s trusted peers   %d", dotFull, countPeersByTrust(m.snapshot.Peers, types.TrustTrusted))),
 		taggedLine(dashboardTagWarn, fmt.Sprintf("  %s auth pending    %d", dotHalf, countPeersByAuth(m.snapshot.Peers, types.AuthPending))),
 		taggedLine(dashboardTagMuted, fmt.Sprintf("  %s seen only      %d", dotEmpty, countPeersByAuth(m.snapshot.Peers, types.AuthSeen))),
-	}
+	)
+	return lines
 }
 
 func (m model) messagesView(width, height int) string {
@@ -628,7 +679,14 @@ func (m model) footerView(width int) string {
 	}
 
 	var left string
-	if m.activeTab == 4 && m.cfgState.editing {
+	if m.activeTab == 1 && m.peerFilter.editing {
+		left = fmt.Sprintf(" Filter: k=v exact %s k~=v set member %s text substring %s Enter apply %s Esc clear", boxV, boxV, boxV, boxV)
+	} else if m.activeTab == 1 {
+		left = fmt.Sprintf(" / filter %s j/k navigate %s tab switch", boxV, boxV)
+		if strings.TrimSpace(m.peerFilter.raw) != "" {
+			left = fmt.Sprintf(" filter %q %s Esc clear %s / edit %s j/k navigate", m.peerFilter.raw, boxV, boxV, boxV)
+		}
+	} else if m.activeTab == 4 && m.cfgState.editing {
 		left = fmt.Sprintf(" Enter confirm %s Esc cancel %s j/k cycle (enum)", boxV, boxV)
 	} else if m.activeTab == 4 {
 		left = fmt.Sprintf(" Enter/e edit %s S save %s j/k navigate %s tab switch", boxV, boxV, boxV)
@@ -661,7 +719,7 @@ func (m model) refreshCmd() tea.Cmd {
 func (m *model) moveSelection(delta int) {
 	switch m.activeTab {
 	case 1:
-		m.cursors[1] = clampInt(m.cursors[1]+delta, 0, maxInt(0, len(m.snapshot.Peers)-1))
+		m.cursors[1] = clampInt(m.cursors[1]+delta, 0, maxInt(0, len(m.filteredPeers())-1))
 	case 2:
 		m.cursors[2] = clampInt(m.cursors[2]+delta, 0, maxInt(0, len(m.snapshot.Messages)-1))
 	case 3:
@@ -677,7 +735,7 @@ func (m *model) moveSelection(delta int) {
 }
 
 func (m *model) clampSelections() {
-	m.cursors[1] = clampInt(m.cursors[1], 0, maxInt(0, len(m.snapshot.Peers)-1))
+	m.cursors[1] = clampInt(m.cursors[1], 0, maxInt(0, len(m.filteredPeers())-1))
 	m.cursors[2] = clampInt(m.cursors[2], 0, maxInt(0, len(m.snapshot.Messages)-1))
 	logLines := splitLogLines(m.snapshot.Logs)
 	if m.logsFollowTail {
@@ -822,11 +880,52 @@ func (m model) configDetailLines() []string {
 		lines = append(lines, taggedLine(dashboardTagMuted, "  Comma-separated values"))
 	case cfkText:
 		lines = append(lines, taggedLine(dashboardTagSection, arrowR+" Text"))
-		lines = append(lines, taggedLine(dashboardTagMuted, "  Type to edit value"))
+		if f.Key == "labels" {
+			lines = append(lines, taggedLine(dashboardTagMuted, `  JSON object, e.g. {"env":"prod","caps":["chat"]}`))
+			lines = append(lines, taggedLine(dashboardTagMuted, "  Empty value clears all labels"))
+		} else {
+			lines = append(lines, taggedLine(dashboardTagMuted, "  Type to edit value"))
+		}
 	}
 
 	lines = append(lines, "", taggedLine(dashboardTagMuted, "  Changes require daemon restart."))
 	return lines
+}
+
+// handlePeerFilterKey captures keys while the peers-tab filter input is
+// active. Enter applies the buffer (empty clears), Esc clears the filter.
+func (m model) handlePeerFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "escape":
+		m.peerFilter.editing = false
+		m.peerFilter.raw = ""
+		m.cursors[1] = 0
+		m.offsets[1] = 0
+		return m, nil
+	case "enter":
+		m.peerFilter.raw = strings.TrimSpace(m.peerFilter.buf)
+		m.peerFilter.editing = false
+		m.cursors[1] = 0
+		m.offsets[1] = 0
+		return m, nil
+	case "backspace":
+		m.peerFilter.buf = trimLastRune(m.peerFilter.buf)
+		return m, nil
+	default:
+		if key := msg.String(); utf8.RuneCountInString(key) == 1 {
+			m.peerFilter.buf += key
+		}
+		return m, nil
+	}
+}
+
+// trimLastRune removes the last UTF-8 rune so backspace works for CJK input.
+func trimLastRune(s string) string {
+	if s == "" {
+		return s
+	}
+	_, size := utf8.DecodeLastRuneInString(s)
+	return s[:len(s)-size]
 }
 
 func (m model) startConfigEdit() (tea.Model, tea.Cmd) {
@@ -864,9 +963,7 @@ func (m model) handleConfigEditKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "backspace":
 		if f.Kind == cfkText || f.Kind == cfkStringSlice {
-			if len(f.EditBuf) > 0 {
-				f.EditBuf = f.EditBuf[:len(f.EditBuf)-1]
-			}
+			f.EditBuf = trimLastRune(f.EditBuf)
 		}
 		return m, nil
 	case "up", "k":
@@ -913,7 +1010,7 @@ func (m model) handleConfigEditKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	default:
 		key := msg.String()
-		if len(key) == 1 && (f.Kind == cfkText || f.Kind == cfkStringSlice) {
+		if utf8.RuneCountInString(key) == 1 && (f.Kind == cfkText || f.Kind == cfkStringSlice) {
 			f.EditBuf += key
 		}
 		return m, nil
@@ -925,19 +1022,22 @@ func (m model) saveConfigCmd() tea.Cmd {
 	copy(fields, m.cfgState.fields)
 	configPath := m.cfgState.configPath
 	return func() tea.Msg {
-		cfg := buildConfigFromFields(fields)
+		cfg, err := buildConfigFromFields(fields)
+		if err != nil {
+			return configSaveMsg{err: err}
+		}
 		if err := appconfig.Validate(cfg); err != nil {
 			return configSaveMsg{err: err}
 		}
 		if configPath == "" {
 			return configSaveMsg{err: fmt.Errorf("config file path not available")}
 		}
-		err := appconfig.SaveToFile(configPath, cfg)
+		err = appconfig.SaveToFile(configPath, cfg)
 		return configSaveMsg{err: err}
 	}
 }
 
-func buildConfigFromFields(fields []configField) appconfig.Config {
+func buildConfigFromFields(fields []configField) (appconfig.Config, error) {
 	valMap := make(map[string]configField, len(fields))
 	for _, f := range fields {
 		valMap[f.Key] = f
@@ -960,6 +1060,10 @@ func buildConfigFromFields(fields []configField) appconfig.Config {
 	if n, err := strconv.ParseInt(v("transferMaxFileSize"), 10, 64); err == nil {
 		maxFileSize = n
 	}
+	labels, err := parseLabelsField(v("labels"))
+	if err != nil {
+		return appconfig.Config{}, err
+	}
 	return appconfig.Config{
 		NATSServers:         csv("natsServers"),
 		LocalAPIAddr:        v("localApiAddr"),
@@ -980,7 +1084,8 @@ func buildConfigFromFields(fields []configField) appconfig.Config {
 		AnnounceTTL:         v("announceTtl"),
 		AgentProduct:        v("agentProduct"),
 		AgentVersion:        v("agentVersion"),
-		Capabilities:        csv("capabilities"),
+		DisplayName:         v("displayName"),
+		Labels:              labels,
 		TrustMode:           v("trustMode"),
 		TrustAutoApprove:    v("trustAutoApprove") == "true",
 		AgentAdapter:        v("agentAdapter"),
@@ -994,7 +1099,7 @@ func buildConfigFromFields(fields []configField) appconfig.Config {
 		LogLevel:            v("logLevel"),
 		LogFormat:           v("logFormat"),
 		LogAddSource:        v("logAddSource") == "true",
-	}
+	}, nil
 }
 
 func dashboardTickCmd() tea.Cmd {

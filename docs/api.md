@@ -63,6 +63,11 @@ title: "ClawSynapse API Reference"
 |------|------|------|
 | `GET` | `/v1/health` | 健康检查 |
 | `GET` | `/v1/peers` | 获取已发现的 peer 列表 |
+| `GET` | `/v1/peers/{nodeID}/attrs` | 读取指定节点的本地备注 |
+| `PUT` | `/v1/peers/{nodeID}/attrs` | 更新指定节点的本地备注（patch） |
+| `DELETE` | `/v1/peers/{nodeID}/attrs` | 删除指定节点的全部本地备注 |
+| `GET` | `/v1/config` | 获取当前启动配置快照 |
+| `PUT` | `/v1/config` | 校验并保存配置文件（需重启生效） |
 | `POST` | `/v1/publish` | 向目标节点发布消息 |
 | `GET` | `/v1/messages` | 获取最近收到的消息 |
 | `POST` | `/v1/auth/challenge` | 向目标节点发起认证握手 |
@@ -94,7 +99,12 @@ title: "ClawSynapse API Reference"
       "nodeId": "n1-2f4c6e8a0b1d3f557799aabbccddeeff",
       "did": "did:key:z6MkexampleLocalDid",
       "identityFingerprint": "sha256:1234abcd5678ef90",
-      "trustMode": "tofu"
+      "trustMode": "tofu",
+      "displayName": "边缘节点-01",
+      "labels": {
+        "env": "production",
+        "caps": ["chat", "tools"]
+      }
     },
     "peersCount": 3,
     "adapter": {
@@ -130,6 +140,8 @@ title: "ClawSynapse API Reference"
 | `did` | string | 当前节点 DID，当前格式为 `did:key` |
 | `identityFingerprint` | string | 当前身份公钥指纹 |
 | `trustMode` | string | 当前信任模式（`open`, `tofu`, `explicit`） |
+| `displayName` | string | 当前节点对外广播的可读名称（未配置时省略） |
+| `labels` | object | 当前节点对外广播的 labels（含保留键 `caps`；未配置时省略） |
 
 `data.nats` 字段说明：
 
@@ -164,6 +176,16 @@ title: "ClawSynapse API Reference"
 
 获取已发现的 peer 节点列表。
 
+**查询参数（均可选）**
+
+| 参数 | 说明 |
+|------|------|
+| `label` | 形如 `key=value`，精确匹配值为字符串的 label；可重复 |
+| `labelHas` | 形如 `key=value`，匹配字符串数组 label 的成员；可重复 |
+| `name` | 对 `displayName`/`localAlias` 做大小写不敏感的子串匹配 |
+
+`label`（字符串精确匹配）与 `labelHas`（数组成员匹配）是两种不同的语义，不做逗号拆分。参数格式非法时返回 400，`code` 为 `peers.invalid_filter`。
+
 **响应**
 
 ```json
@@ -178,12 +200,21 @@ title: "ClawSynapse API Reference"
         "did": "did:key:z6MkexamplePeerDid",
         "agentProduct": "openclaw",
         "version": "2026.3.9",
-        "capabilities": ["chat", "tools"],
+        "displayName": "上海现场网关",
+        "labels": {
+          "env": "production",
+          "caps": ["chat", "tools"]
+        },
+        "localAlias": "现场网关",
+        "localDescription": "上海机房",
+        "localLabels": {
+          "floor": "3"
+        },
         "inbox": "clawsynapse.msg.n1-11223344556677889900aabbccddeeff.inbox",
         "authStatus": "authenticated",
         "trustStatus": "trusted",
         "lastSeenMs": 1710000000000,
-        "metadata": { "hostname": "server-2" }
+        "metadata": { "publicKey": "base64-raw-url-public-key", "ttlMs": 30000 }
       }
     ]
   },
@@ -199,12 +230,114 @@ title: "ClawSynapse API Reference"
 | `did` | string | 节点规范身份，当前为 `did:key` |
 | `agentProduct` | string | Agent 产品标识（如 `openclaw`） |
 | `version` | string | Agent 版本号 |
-| `capabilities` | string[] | 能力列表（如 `chat`, `tools`） |
+| `displayName` | string | 远端节点自报的可读名称，来自带签名的 discovery announce |
+| `labels` | object | 远端节点自报的属性（值为字符串或字符串数组）；保留键 `caps` 为字符串数组，表示自报能力集合，不是就绪状态或授权 |
+| `localAlias` | string | 本地备注别名（仅本节点维护，远端不可控制） |
+| `localDescription` | string | 本地备注描述（仅本节点维护） |
+| `localLabels` | object | 本地备注 labels（仅本节点维护，不受远端心跳覆盖） |
 | `inbox` | string | 节点 inbox subject |
 | `authStatus` | string | 认证状态：`unknown`, `seen`, `auth_pending`, `authenticated`, `rejected`, `expired` |
 | `trustStatus` | string | 信任状态：`none`, `pending`, `trusted`, `rejected`, `revoked` |
 | `lastSeenMs` | int64 | 最后一次心跳时间，Unix 毫秒 |
 | `metadata` | object | 附加元数据 |
+
+`local*` 字段是本地备注，来自本节点的 `peer-attrs.json`，不随 announce 传播，也不被远端心跳覆盖。
+
+---
+
+## GET /v1/peers/{nodeID}/attrs
+
+读取指定节点的本地备注（alias、description、labels）。
+
+**响应**
+
+```json
+{
+  "ok": true,
+  "code": "peer_attrs.ok",
+  "message": "peer attrs fetched",
+  "data": {
+    "nodeId": "n1-11223344556677889900aabbccddeeff",
+    "attrs": {
+      "alias": "现场网关",
+      "description": "上海机房",
+      "labels": {
+        "floor": "3"
+      }
+    }
+  },
+  "ts": 1710000000000
+}
+```
+
+`attrs` 中未设置的字段省略；对尚未记录备注（含离线或未知）的 nodeID 同样返回 200 与空 `attrs` 对象。
+
+---
+
+## PUT /v1/peers/{nodeID}/attrs
+
+更新本地备注。请求体是 patch：省略的键保持原值，显式给出空值（`""`、`{}`）则清除该键。`labels` 是整体替换（不做逐键合并）；需要保留现有键时先读取再合并提交（CLI `peer label`/`unlabel` 即如此实现）。
+
+**请求**
+
+```json
+{
+  "alias": "现场网关",
+  "labels": {
+    "floor": "3",
+    "zone": ["a", "b"]
+  }
+}
+```
+
+**响应**
+
+成功返回 200，`code` 为 `peer_attrs.ok`，`data.attrs` 为更新后的完整备注。校验失败（非法 nodeID、非法 JSON、非法 label 或别名）返回 400，`code` 为 `peer_attrs.invalid`；持久化失败返回 500，`code` 为 `peer_attrs.persist_failed`（内存中的修改保留）。
+
+---
+
+## DELETE /v1/peers/{nodeID}/attrs
+
+删除指定节点的全部本地备注。成功返回 200，`code` 为 `peer_attrs.ok`；持久化失败返回 500，`code` 为 `peer_attrs.persist_failed`。
+
+备注按 NodeID 持久化在 `DataDir/peer-attrs.json`（0600，原子写入），跨重启和节点重新发现保留，仅本节点可见，不影响身份与信任判断。
+
+---
+
+## GET /v1/config
+
+返回 daemon 启动时加载的配置快照，修改文件后需重启 daemon 才会反映新值。`WebhookAuthToken`（`json:"-"`）不会包含在响应中。
+
+**响应**
+
+```json
+{
+  "ok": true,
+  "code": "config.ok",
+  "message": "config fetched",
+  "data": {
+    "config": {
+      "natsServers": ["nats://127.0.0.1:4222"],
+      "localApiAddr": "127.0.0.1:18080",
+      "displayName": "边缘节点-01",
+      "labels": {
+        "env": "production",
+        "caps": ["chat", "tools"]
+      },
+      "trustMode": "tofu"
+    }
+  },
+  "ts": 1710000000000
+}
+```
+
+## PUT /v1/config
+
+请求体为完整的配置文件结构（与 YAML 配置同名的 JSON 字段），服务端执行校验后以原子方式覆盖配置文件。成功只表示文件已保存，运行中的 discovery 等状态不变；需重启 daemon 生效。
+
+**响应**
+
+成功返回 200，`code` 为 `config.saved`，`message` 提示需要重启。JSON 非法返回 400 `invalid_argument`；配置校验失败返回 400 `config.invalid`；配置文件路径不可用返回 500 `config.no_path`；写入失败返回 500 `config.save_failed`。
 
 ---
 
@@ -810,8 +943,14 @@ result, err := c.Post(ctx, "/v1/publish", map[string]any{
     "message":    "hello",
 })
 
+// PUT 请求（例如更新本地备注）
+result, err = c.Put(ctx, "/v1/peers/n1-11223344556677889900aabbccddeeff/attrs", map[string]any{
+    "alias":  "现场网关",
+    "labels": map[string]any{"floor": "3"},
+})
+
 // DELETE 请求
-result, err := c.Delete(ctx, "/v1/transfer/tf_abc123")
+result, err = c.Delete(ctx, "/v1/transfer/tf_abc123")
 ```
 
 `Client` 自动处理 JSON 序列化/反序列化，返回值统一为 `types.APIResult`。当 HTTP 状态码 >= 400 时，返回 error 且 `result.OK` 为 `false`。

@@ -24,9 +24,21 @@ announceTtl: 30s
 agentProduct: clawsynapse
 # Empty uses the clawsynapsed build version.
 agentVersion: ""
-capabilities:
-  - chat
-  - tools
+# Human readable node name shown to peers (empty = unset).
+displayName: ""
+# Node attributes advertised in discovery. Values are a string or a list of
+# strings. "caps" is the reserved self-reported capability set.
+labels:
+  env: production
+  role: worker
+  caps:
+    - chat
+    - tools
+# Legacy key: still loads and folds into labels.caps, but is rewritten to
+# labels.caps on save.
+# capabilities:
+#   - chat
+#   - tools
 dataDir: ~/.clawsynapse
 identityKeyPath: ~/.clawsynapse/identity.key
 identityPubPath: ~/.clawsynapse/identity.pub

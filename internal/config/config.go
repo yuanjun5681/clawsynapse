@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"clawsynapse/pkg/types"
 )
 
 const (
@@ -19,7 +21,6 @@ const (
 	defaultHeartbeatInterval   = 15 * time.Second
 	defaultAnnounceTTL         = 30 * time.Second
 	defaultAgentProduct        = "clawsynapse"
-	defaultCapabilities        = "chat,tools"
 	defaultTrustMode           = "tofu"
 	defaultAgentAdapter        = "default"
 	defaultAgentAdapterTimeout = 10 * time.Minute
@@ -34,47 +35,48 @@ const (
 )
 
 type Config struct {
-	APITokenPath        string   `json:"apiTokenPath"`
-	AllowRemoteAPI      bool     `json:"allowRemoteAPI"`
-	APITLSCertFile      string   `json:"apiTLSCertFile"`
-	APITLSKeyFile       string   `json:"apiTLSKeyFile"`
-	Production          bool     `json:"production"`
-	NATSCredentialsFile string   `json:"natsCredentialsFile"`
-	NATSTLSCAFile       string   `json:"natsTLSCAFile"`
-	NATSTLSCertFile     string   `json:"natsTLSCertFile"`
-	NATSTLSKeyFile      string   `json:"natsTLSKeyFile"`
-	NATSTLSServerName   string   `json:"natsTLSServerName"`
-	NATSServers         []string `json:"natsServers"`
-	LocalAPIAddr        string   `json:"localApiAddr"`
-	DataDir             string   `json:"dataDir"`
-	IdentityKeyPath     string   `json:"identityKeyPath"`
-	IdentityPubPath     string   `json:"identityPubPath"`
-	HeartbeatInterval   string   `json:"heartbeatInterval"`
-	AnnounceTTL         string   `json:"announceTtl"`
-	AgentProduct        string   `json:"agentProduct"`
-	AgentVersion        string   `json:"agentVersion"`
-	Capabilities        []string `json:"capabilities"`
-	TrustMode           string   `json:"trustMode"`
-	TrustAutoApprove    bool     `json:"trustAutoApprove"`
-	AgentAdapter        string   `json:"agentAdapter"`
-	AgentAllowedIDs     []string `json:"agentAllowedIds"`
-	AgentAdapterTimeout string   `json:"agentAdapterTimeout"`
-	WebhookURL          string   `json:"webhookUrl"`
-	WebhookAuthToken    string   `json:"-"`
-	LogLevel            string   `json:"logLevel"`
-	LogFormat           string   `json:"logFormat"`
-	LogFilePath         string   `json:"logFilePath"`
-	LogRotateMaxSizeMB  int      `json:"logRotateMaxSizeMb"`
-	LogRotateMaxBackups int      `json:"logRotateMaxBackups"`
-	LogRotateMaxAgeDays int      `json:"logRotateMaxAgeDays"`
-	LogRotateCompress   bool     `json:"logRotateCompress"`
-	DeliverablePrefixes []string `json:"deliverablePrefixes"`
-	TransferDir         string   `json:"transferDir"`
-	TransferMaxFileSize int64    `json:"transferMaxFileSize"`
-	TransferTTL         string   `json:"transferTtl"`
-	LogAddSource        bool     `json:"logAddSource"`
-	CheckConfig         bool     `json:"checkConfig"`
-	ConfigPath          string   `json:"-"`
+	APITokenPath        string       `json:"apiTokenPath"`
+	AllowRemoteAPI      bool         `json:"allowRemoteAPI"`
+	APITLSCertFile      string       `json:"apiTLSCertFile"`
+	APITLSKeyFile       string       `json:"apiTLSKeyFile"`
+	Production          bool         `json:"production"`
+	NATSCredentialsFile string       `json:"natsCredentialsFile"`
+	NATSTLSCAFile       string       `json:"natsTLSCAFile"`
+	NATSTLSCertFile     string       `json:"natsTLSCertFile"`
+	NATSTLSKeyFile      string       `json:"natsTLSKeyFile"`
+	NATSTLSServerName   string       `json:"natsTLSServerName"`
+	NATSServers         []string     `json:"natsServers"`
+	LocalAPIAddr        string       `json:"localApiAddr"`
+	DataDir             string       `json:"dataDir"`
+	IdentityKeyPath     string       `json:"identityKeyPath"`
+	IdentityPubPath     string       `json:"identityPubPath"`
+	HeartbeatInterval   string       `json:"heartbeatInterval"`
+	AnnounceTTL         string       `json:"announceTtl"`
+	AgentProduct        string       `json:"agentProduct"`
+	AgentVersion        string       `json:"agentVersion"`
+	DisplayName         string       `json:"displayName"`
+	Labels              types.Labels `json:"labels,omitempty"`
+	TrustMode           string       `json:"trustMode"`
+	TrustAutoApprove    bool         `json:"trustAutoApprove"`
+	AgentAdapter        string       `json:"agentAdapter"`
+	AgentAllowedIDs     []string     `json:"agentAllowedIds"`
+	AgentAdapterTimeout string       `json:"agentAdapterTimeout"`
+	WebhookURL          string       `json:"webhookUrl"`
+	WebhookAuthToken    string       `json:"-"`
+	LogLevel            string       `json:"logLevel"`
+	LogFormat           string       `json:"logFormat"`
+	LogFilePath         string       `json:"logFilePath"`
+	LogRotateMaxSizeMB  int          `json:"logRotateMaxSizeMb"`
+	LogRotateMaxBackups int          `json:"logRotateMaxBackups"`
+	LogRotateMaxAgeDays int          `json:"logRotateMaxAgeDays"`
+	LogRotateCompress   bool         `json:"logRotateCompress"`
+	DeliverablePrefixes []string     `json:"deliverablePrefixes"`
+	TransferDir         string       `json:"transferDir"`
+	TransferMaxFileSize int64        `json:"transferMaxFileSize"`
+	TransferTTL         string       `json:"transferTtl"`
+	LogAddSource        bool         `json:"logAddSource"`
+	CheckConfig         bool         `json:"checkConfig"`
+	ConfigPath          string       `json:"-"`
 }
 
 func Validate(cfg Config) error {
@@ -87,6 +89,12 @@ func Validate(cfg Config) error {
 	mode := strings.ToLower(strings.TrimSpace(cfg.TrustMode))
 	if mode != "open" && mode != "tofu" && mode != "explicit" {
 		return errors.New("trust mode must be one of: open|tofu|explicit")
+	}
+	if err := types.ValidateDisplayName(cfg.DisplayName); err != nil {
+		return fmt.Errorf("display name: %w", err)
+	}
+	if _, err := types.NormalizeLabels(cfg.Labels); err != nil {
+		return fmt.Errorf("labels: %w", err)
 	}
 	adapterName := strings.ToLower(strings.TrimSpace(cfg.AgentAdapter))
 	if adapterName == "" {
@@ -154,7 +162,8 @@ type runtimeConfig struct {
 	AnnounceTTL         time.Duration
 	AgentProduct        string
 	AgentVersion        string
-	Capabilities        []string
+	DisplayName         string
+	Labels              types.Labels
 	TrustMode           string
 	TrustAutoApprove    bool
 	AgentAdapter        string
@@ -187,7 +196,8 @@ type configValues struct {
 	AnnounceTTL         time.Duration
 	AgentProduct        string
 	AgentVersion        string
-	Capabilities        []string
+	DisplayName         string
+	Labels              types.Labels
 	TrustMode           string
 	TrustAutoApprove    bool
 	TrustAutoApproveSet bool
@@ -226,7 +236,8 @@ func (c Config) Runtime() runtimeConfig {
 		AnnounceTTL:         t,
 		AgentProduct:        c.AgentProduct,
 		AgentVersion:        c.AgentVersion,
-		Capabilities:        cloneStrings(c.Capabilities),
+		DisplayName:         c.DisplayName,
+		Labels:              cloneLabels(c.Labels),
 		TrustMode:           c.TrustMode,
 		TrustAutoApprove:    c.TrustAutoApprove,
 		AgentAdapter:        c.AgentAdapter,
@@ -267,8 +278,16 @@ func LoadFromOS(args []string) (Config, error) {
 		return Config{}, err
 	}
 	merged := mergeConfigValues(defaults, loaded)
-	merged = mergeConfigValues(merged, loadDotEnvValues())
-	merged = mergeConfigValues(merged, loadOSEnvValues())
+	dotenv, err := loadDotEnvValues()
+	if err != nil {
+		return Config{}, err
+	}
+	merged = mergeConfigValues(merged, dotenv)
+	envValues, err := loadOSEnvValues()
+	if err != nil {
+		return Config{}, err
+	}
+	merged = mergeConfigValues(merged, envValues)
 
 	fs := flag.NewFlagSet("clawsynapsed", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -292,7 +311,9 @@ func LoadFromOS(args []string) (Config, error) {
 		announceTTL         = fs.Duration("announce-ttl", merged.AnnounceTTL, "announce ttl")
 		agentProduct        = fs.String("agent-product", merged.AgentProduct, "agent product advertised in discovery")
 		agentVersion        = fs.String("agent-version", merged.AgentVersion, "agent version advertised in discovery; defaults to daemon version")
-		capabilities        = fs.String("capabilities", strings.Join(merged.Capabilities, ","), "comma separated capabilities advertised in discovery")
+		displayName         = fs.String("display-name", merged.DisplayName, "human readable node name advertised in discovery")
+		labelFlags          = newLabelFlags()
+		capabilities        = fs.String("capabilities", strings.Join(merged.Labels.Caps(), ","), "deprecated: comma separated capabilities folded into labels.caps (use --label caps=<value>)")
 		trustMode           = fs.String("trust-mode", merged.TrustMode, "trust mode: open|tofu|explicit")
 		trustAutoApprove    = fs.Bool("trust-auto-approve", merged.TrustAutoApprove, "automatically approve valid inbound trust requests")
 		agentAdapter        = fs.String("agent-adapter", merged.AgentAdapter, "agent adapter: default|openclaw|opencode|codex|webhook")
@@ -315,8 +336,23 @@ func LoadFromOS(args []string) (Config, error) {
 		checkConfig         = fs.Bool("check-config", false, "print config and exit")
 	)
 
+	fs.Var(labelFlags, "label", "node label key=value; repeat a key to make it a set (reserved key: caps)")
+
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
+	}
+
+	flagsSet := make(map[string]bool)
+	fs.Visit(func(f *flag.Flag) { flagsSet[f.Name] = true })
+
+	labels := cloneLabels(merged.Labels)
+	if flagsSet["label"] {
+		labels = labelFlags.Labels()
+	}
+	if flagsSet["capabilities"] {
+		if _, capsSetByLabel := labels[types.LabelKeyCaps]; !(flagsSet["label"] && capsSetByLabel) {
+			labels = labels.WithCaps(splitCSV(*capabilities))
+		}
 	}
 
 	rawServers := splitCSV(*natsServers)
@@ -401,7 +437,8 @@ func LoadFromOS(args []string) (Config, error) {
 		AnnounceTTL:         announceTTL.String(),
 		AgentProduct:        strings.TrimSpace(*agentProduct),
 		AgentVersion:        strings.TrimSpace(*agentVersion),
-		Capabilities:        splitCSV(*capabilities),
+		DisplayName:         strings.TrimSpace(*displayName),
+		Labels:              labels,
 		TrustMode:           mode,
 		TrustAutoApprove:    *trustAutoApprove,
 		AgentAdapter:        adapterName,
@@ -444,7 +481,7 @@ func defaultConfigValues(defaultDataDir string) configValues {
 		Heartbeat:           defaultHeartbeatInterval,
 		AnnounceTTL:         defaultAnnounceTTL,
 		AgentProduct:        defaultAgentProduct,
-		Capabilities:        splitCSV(defaultCapabilities),
+		Labels:              types.Labels{}.WithCaps([]string{"chat", "tools"}),
 		TrustMode:           defaultTrustMode,
 		TrustAutoApprove:    false,
 		TrustAutoApproveSet: true,
@@ -494,8 +531,11 @@ func mergeConfigValues(base, override configValues) configValues {
 	if strings.TrimSpace(override.AgentVersion) != "" {
 		base.AgentVersion = strings.TrimSpace(override.AgentVersion)
 	}
-	if len(override.Capabilities) > 0 {
-		base.Capabilities = cloneStrings(override.Capabilities)
+	if strings.TrimSpace(override.DisplayName) != "" {
+		base.DisplayName = strings.TrimSpace(override.DisplayName)
+	}
+	if len(override.Labels) > 0 {
+		base.Labels = cloneLabels(override.Labels)
 	}
 	if strings.TrimSpace(override.TrustMode) != "" {
 		base.TrustMode = strings.TrimSpace(override.TrustMode)
@@ -579,6 +619,62 @@ func resolveConfigPath(args []string) (string, bool, error) {
 	}
 
 	return defaultPath, false, nil
+}
+
+// labelFlags collects repeated --label key=value occurrences. A key given
+// once stays scalar; a repeated key becomes a set of all given values.
+type labelFlags struct {
+	order  []string
+	values map[string][]string
+}
+
+func newLabelFlags() *labelFlags {
+	return &labelFlags{values: make(map[string][]string)}
+}
+
+func (f *labelFlags) String() string { return "" }
+
+func (f *labelFlags) Set(raw string) error {
+	key, value, ok := strings.Cut(raw, "=")
+	if !ok {
+		return fmt.Errorf("label %q must be key=value", raw)
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return fmt.Errorf("label %q has empty key", raw)
+	}
+	if _, seen := f.values[key]; !seen {
+		f.order = append(f.order, key)
+	}
+	f.values[key] = append(f.values[key], strings.TrimSpace(value))
+	return nil
+}
+
+func (f *labelFlags) Labels() types.Labels {
+	if len(f.values) == 0 {
+		return nil
+	}
+	out := make(types.Labels, len(f.values))
+	for _, key := range f.order {
+		vals := f.values[key]
+		if len(vals) == 1 && key != types.LabelKeyCaps {
+			out[key] = types.LabelString(vals[0])
+			continue
+		}
+		out[key] = types.LabelSet(vals)
+	}
+	return out
+}
+
+func cloneLabels(in types.Labels) types.Labels {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(types.Labels, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func splitCSV(v string) []string {

@@ -16,6 +16,7 @@ import (
 
 	"clawsynapse/internal/api"
 	appconfig "clawsynapse/internal/config"
+	"clawsynapse/pkg/types"
 )
 
 func Run(args []string, stdout, stderr io.Writer, opts Options) error {
@@ -266,6 +267,12 @@ func populateFieldsFromConfig(fields []configField, cfg appconfig.Config) {
 				parts = append(parts, fmt.Sprintf("%v", item))
 			}
 			f.Value = strings.Join(parts, ",")
+		case map[string]any:
+			raw, err := json.Marshal(val)
+			if err != nil {
+				continue
+			}
+			f.Value = string(raw)
 		default:
 			f.Value = fmt.Sprintf("%v", val)
 		}
@@ -280,7 +287,8 @@ func initConfigFields() []configField {
 		{Label: "Announce TTL", Key: "announceTtl", Group: "Network", Kind: cfkText},
 		{Label: "Agent Product", Key: "agentProduct", Group: "Discovery", Kind: cfkText},
 		{Label: "Agent Version", Key: "agentVersion", Group: "Discovery", Kind: cfkText},
-		{Label: "Capabilities", Key: "capabilities", Group: "Discovery", Kind: cfkStringSlice},
+		{Label: "Display Name", Key: "displayName", Group: "Discovery", Kind: cfkText},
+		{Label: "Labels", Key: "labels", Group: "Discovery", Kind: cfkText},
 		{Label: "Trust Mode", Key: "trustMode", Group: "Security", Kind: cfkEnum, Enums: []string{"open", "tofu", "explicit"}},
 		{Label: "Trust Auto Approve", Key: "trustAutoApprove", Group: "Security", Kind: cfkBool},
 		{Label: "API Token Path", Key: "apiTokenPath", Group: "Security", Kind: cfkText},
@@ -340,6 +348,12 @@ func (m *model) syncConfigFields(data map[string]any) {
 				parts = append(parts, fmt.Sprintf("%v", item))
 			}
 			f.Value = strings.Join(parts, ",")
+		case map[string]any:
+			raw, err := json.Marshal(val)
+			if err != nil {
+				continue
+			}
+			f.Value = string(raw)
 		default:
 			f.Value = fmt.Sprintf("%v", val)
 		}
@@ -359,4 +373,100 @@ func logLevelTag(level string) string {
 	default:
 		return dashboardTagMuted
 	}
+}
+
+type peerFilterKind int
+
+const (
+	peerFilterNone peerFilterKind = iota
+	peerFilterText
+	peerFilterExact
+	peerFilterMember
+)
+
+// peerFilterExpr is a parsed peers-tab filter expression.
+type peerFilterExpr struct {
+	kind  peerFilterKind
+	key   string
+	value string
+}
+
+// parsePeerFilter parses a filter expression: "key=value" matches a remote
+// label scalar exactly, "key~=value" matches a remote label set member, and
+// anything else is a case-insensitive substring over display name, local
+// alias, and node ID. Plain text is never split on commas.
+func parsePeerFilter(raw string) peerFilterExpr {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return peerFilterExpr{kind: peerFilterNone}
+	}
+	if i := strings.Index(raw, "~="); i >= 0 {
+		key, value := strings.TrimSpace(raw[:i]), strings.TrimSpace(raw[i+2:])
+		if key != "" && value != "" {
+			return peerFilterExpr{kind: peerFilterMember, key: key, value: value}
+		}
+		return peerFilterExpr{kind: peerFilterText, value: raw}
+	}
+	if i := strings.Index(raw, "="); i >= 0 {
+		key, value := strings.TrimSpace(raw[:i]), strings.TrimSpace(raw[i+1:])
+		if key != "" && value != "" {
+			return peerFilterExpr{kind: peerFilterExact, key: key, value: value}
+		}
+		return peerFilterExpr{kind: peerFilterText, value: raw}
+	}
+	return peerFilterExpr{kind: peerFilterText, value: raw}
+}
+
+func (f peerFilterExpr) matches(peer types.Peer) bool {
+	switch f.kind {
+	case peerFilterNone:
+		return true
+	case peerFilterExact:
+		return peer.Labels.MatchExact(f.key, f.value)
+	case peerFilterMember:
+		return peer.Labels.MatchMember(f.key, f.value)
+	default:
+		needle := strings.ToLower(f.value)
+		return strings.Contains(strings.ToLower(peer.DisplayName), needle) ||
+			strings.Contains(strings.ToLower(peer.LocalAlias), needle) ||
+			strings.Contains(strings.ToLower(peer.NodeID), needle)
+	}
+}
+
+// filteredPeers applies the active peers-tab filter to the snapshot.
+func (m model) filteredPeers() []types.Peer {
+	expr := parsePeerFilter(m.peerFilter.raw)
+	if expr.kind == peerFilterNone {
+		return m.snapshot.Peers
+	}
+	out := make([]types.Peer, 0, len(m.snapshot.Peers))
+	for _, peer := range m.snapshot.Peers {
+		if expr.matches(peer) {
+			out = append(out, peer)
+		}
+	}
+	return out
+}
+
+// parseLabelsField parses the Labels config field (a JSON object such as
+// {"env":"prod","caps":["chat"]}) and normalizes it. An empty field means no
+// labels. Parse or validation errors abort the save instead of silently
+// dropping labels.
+func parseLabelsField(raw string) (types.Labels, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	var labels types.Labels
+	if err := json.Unmarshal([]byte(raw), &labels); err != nil {
+		return nil, fmt.Errorf("labels must be a JSON object, e.g. {\"env\":\"prod\"}: %w", err)
+	}
+	normalized, err := types.NormalizeLabels(labels)
+	if err != nil {
+		return nil, fmt.Errorf("labels: %w", err)
+	}
+	if len(normalized) == 0 {
+		return nil, nil
+	}
+	return normalized, nil
 }

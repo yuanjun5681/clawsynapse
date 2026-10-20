@@ -68,6 +68,9 @@ func (s *FSStore) EnsureLayout() error {
 	if err := s.ensureReplayState(); err != nil {
 		return err
 	}
+	if err := s.ensurePeerAttrsState(); err != nil {
+		return err
+	}
 
 	return nil
 }

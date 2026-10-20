@@ -407,7 +407,8 @@ Ed25519 签名的原文是下列 JSON 对象的 UTF-8 字节，而不是字段�
 | `did` | `string` | 是 | 与公钥及 NodeID 派生关系一致的 DID |
 | `version` | `string` | 是 | Agent 产品版本；未配置 `agentVersion` 时使用 daemon 构建版本 |
 | `agentProduct` | `string` | 是 | 产品标识 |
-| `capabilities` | `string[]` | 是 | 节点能力列表 |
+| `displayName` | `string` | 否 | 人类可读节点名，≤128 字节，不允许控制字符；允许重名，不替代 NodeID |
+| `labels` | `object` | 否 | 节点属性；值为字符串或字符串数组。保留键 `caps` 必须是字符串数组，表示自报能力集合。限制：≤32 个键、键 ≤64 字节、单个值 ≤256 字节、数组 ≤32 个元素、整体 ≤4096 字节；发送方在签名前规范化（数组去重、排序，空元素丢弃） |
 | `inbox` | `string` | 是 | 默认收件箱 subject |
 | `publicKey` | `string` | 是 | 节点公钥 |
 | `ts` | `number` | 是 | 发布时间 |
@@ -429,11 +430,13 @@ Ed25519 签名的原文是下列 JSON 对象的 UTF-8 字节，而不是字段�
 
 ### 处理约定
 
+- announce 的签名覆盖整个声明（含 `displayName` 与 `labels`），发送方在签名前对 labels 做规范化；因此远端名称与 labels 只能来自签名、未过期且未重放的声明。
+- `displayName`/`labels` 取代了旧的 `capabilities` 字段。接收端严格解码（未知字段拒绝）且签名绑定全部字段，新旧版本 announce 互不兼容：混部集群中的旧节点拒绝新 announce，新节点同样拒绝旧 announce，双方失败关闭、不会互相发现。升级时必须整批切换。
 - announce/depart 均检查真实 subject、消息类型、派生身份、签名、时间与消息 ID；`open` 模式不跳过签名。
 - 发现消息最多 32 KiB，metadata 最多 8 KiB，TTL 最大 2 分钟，未来时间偏差最大 30 秒；无效声明被拒绝。
 - `lastSeenMs` 使用本地接收时间，不信任远端时间戳延长存活。
 - 已知节点的有效 depart 才能驱逐；保留有界的新鲜度／重放记录，旧 announce 不能立即复活已下线节点。
-- 认证和信任状态由本地维护，不受声明覆盖；发现自报能力不授予权限。
+- 认证和信任状态由本地维护，不受声明覆盖；`labels.caps` 是自报能力，不授予权限。注意这与 trust request 的 `capabilities`（申请访问的能力范围）是两个不同概念。
 
 ## Messaging / Events
 

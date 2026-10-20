@@ -77,9 +77,13 @@ announceTtl: 30s
 agentProduct: clawsynapse
 # 留空时使用 clawsynapsed 的构建版本
 agentVersion: ""
-capabilities:
-  - chat
-  - tools
+displayName: "边缘节点-01"
+labels:
+  env: production
+  role: worker
+  caps:
+    - chat
+    - tools
 dataDir: ~/.clawsynapse
 identityKeyPath: ~/.clawsynapse/identity.key
 identityPubPath: ~/.clawsynapse/identity.pub
@@ -104,7 +108,9 @@ AGENT_ADAPTER=default
 AGENT_ADAPTER_TIMEOUT=10m
 AGENT_PRODUCT=clawsynapse
 AGENT_VERSION=
-AGENT_CAPABILITIES=chat,tools
+NODE_DISPLAY_NAME=边缘节点-01
+# JSON 对象字符串；值为字符串或字符串数组，caps 是保留的自报能力键
+NODE_LABELS={"env":"production","role":"worker","caps":["chat","tools"]}
 DATA_DIR=~/.clawsynapse
 IDENTITY_KEY_PATH=~/.clawsynapse/identity.key
 IDENTITY_PUB_PATH=~/.clawsynapse/identity.pub
@@ -112,7 +118,9 @@ DELIVERABLE_PREFIXES=chat,task
 LOCAL_API_ADDR=127.0.0.1:18080
 ```
 
-`agentProduct`、`agentVersion` 和 `capabilities` 会写入 discovery announce。接入 DeepSeek Harness 时可分别设为 `deepseek-harness`、实际 Harness 版本以及插件真实支持的能力（例如 `chat,task,transfer`）。`agentVersion` 为空时使用 `clawsynapsed` 的构建版本。
+`agentProduct`、`agentVersion`、`displayName` 和 `labels`（含保留键 `caps`）会写入带签名的 discovery announce。接入 DeepSeek Harness 时可分别设为 `deepseek-harness`、实际 Harness 版本、节点可读名称以及插件真实支持的能力（labels 示例 `{"caps":["chat","task","transfer"]}`）。`agentVersion` 为空时使用 `clawsynapsed` 的构建版本。labels 是节点自报属性，不代表就绪状态，更不构成授权。
+
+旧的 `AGENT_CAPABILITIES`（逗号分隔）、YAML `capabilities:` 键和 CLI `--capabilities` 仍可读取，属于已废弃的单向迁移：其值仅在未通过 `NODE_LABELS`/`labels:` 设置 `caps` 时折叠进 `labels.caps`，保存配置时不会写回旧键。新配置请使用 `NODE_DISPLAY_NAME`/`NODE_LABELS`、`displayName:`/`labels:` 或 `--display-name`/`--label`（`--label key=value` 可重复，同键重复形成数组）。
 
 `WEBHOOK_AUTH_TOKEN` 是敏感值：可从 daemon 的 OS 进程环境或项目根目录 `.env` 读取，不支持 YAML 或 CLI，且不会由配置 API 返回。
 

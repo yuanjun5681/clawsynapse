@@ -36,6 +36,7 @@ clawsynapse <command>
 - `logs`
 - `health`
 - `peers`
+- `peer alias|describe|label|unlabel`
 - `messages`
 - `publish`
 - `auth challenge`
@@ -119,25 +120,28 @@ go run ./cmd/clawsynapse service start
 
 ### Dashboard
 
-启动一个只读终端监控界面：
+启动一个终端监控界面（Config 视图支持编辑配置）：
 
 ```bash
 go run ./cmd/clawsynapse dashboard
 ```
 
-当前第一版提供四个视图：
+当前提供五个视图：
 
 - `Overview`：NATS 连接、消息计数、peer 数
-- `Peers`：已发现节点及 auth/trust 状态
+- `Peers`：已发现节点列表，每行展示可读名称（本地别名优先于远端 displayName）与身份短指纹（宽度不足时指纹、nodeId 列逐级省略）；选中节点可查看 displayName/alias/description、远端与本地 labels 及完整指纹
 - `Messages`：最近消息快照
 - `Logs`：最近服务日志
+- `Config`：查看并编辑配置，包括 `displayName` 与 `labels`（labels 以 JSON 对象输入，例如 `{"env":"prod","caps":["chat","tools"]}`；非法 JSON 时中止保存并报错）
 
 快捷键：
 
 - `q`：退出
-- `tab` / `left` / `right`：切换视图
-- `1` / `2` / `3` / `4`：直接跳到对应视图
+- `tab` / `shift+tab` / `left` / `right`：切换视图
+- `1` / `2` / `3` / `4` / `5`：直接跳到对应视图
 - `r`：立即刷新
+- Peers 视图内 `/`：输入筛选表达式；`key=value` 为 label 字符串精确匹配，`key~=value` 为 label 数组成员匹配，其他输入按名称/别名/nodeId 子串匹配；`Esc` 清除筛选
+- Config 视图内 `enter` 编辑字段，`S` 保存（保存后需重启 daemon 生效）
 
 ### Logs
 
@@ -169,18 +173,59 @@ go run ./cmd/clawsynapse --json health
 GET /v1/health
 ```
 
+普通输出包含 `nodeId`、`displayName`、`labels`（标量 `k=v`、集合 `k=[a,b]`）、版本、`trustMode`、peer 数，以及 NATS 与 adapter 状态；完整结构请用 `--json`。
+
 ### Peers
 
 查看当前已发现 peer：
 
 ```bash
 go run ./cmd/clawsynapse peers
+go run ./cmd/clawsynapse peers --name gateway
+go run ./cmd/clawsynapse peers --label env=production
+go run ./cmd/clawsynapse peers --label-has caps=chat
+```
+
+表格列：`NAME`（本地别名优先，其次远端 displayName，否则 `-`）、`NODE`（身份短指纹）、`AUTH`、`TRUST`、`LABELS`（标量渲染为 `k=v`，集合渲染为 `k=[a,b]`）。
+
+筛选参数：
+
+- `--label key=value`：label 字符串精确匹配，可重复
+- `--label-has key=value`：label 数组成员匹配，可重复；与 `--label` 语义不同，不做逗号拆分
+- `--name substr`：对 displayName/本地别名做大小写不敏感的子串匹配
+
+对应 API：
+
+```http
+GET /v1/peers?label=env=production&labelHas=caps=chat&name=gateway
+```
+
+### Peer 本地备注
+
+维护本节点上针对某个 peer 的备注（仅本地可见，不影响身份与信任，持久化于 `peer-attrs.json`）：
+
+```bash
+# 设置/清除别名（不带 alias 参数即清除）
+go run ./cmd/clawsynapse peer alias <nodeID> 现场网关
+go run ./cmd/clawsynapse peer alias <nodeID>
+
+# 设置/清除描述
+go run ./cmd/clawsynapse peer describe <nodeID> 上海机房
+
+# 设置本地 label：一个值为标量，多个值为集合
+go run ./cmd/clawsynapse peer label <nodeID> floor 3
+go run ./cmd/clawsynapse peer label <nodeID> zone a b
+
+# 删除某个本地 label 键
+go run ./cmd/clawsynapse peer unlabel <nodeID> floor
 ```
 
 对应 API：
 
 ```http
-GET /v1/peers
+GET /v1/peers/{nodeID}/attrs
+PUT /v1/peers/{nodeID}/attrs
+DELETE /v1/peers/{nodeID}/attrs
 ```
 
 ### Messages
@@ -384,6 +429,10 @@ GET    /v1/transfers
 |-----|-----|
 | `clawsynapse health` | `GET /v1/health` |
 | `clawsynapse peers` | `GET /v1/peers` |
+| `clawsynapse peer alias <nodeID> [alias]` | `PUT /v1/peers/{nodeID}/attrs` |
+| `clawsynapse peer describe <nodeID> [text]` | `PUT /v1/peers/{nodeID}/attrs` |
+| `clawsynapse peer label <nodeID> <key> <value> [value...]` | `PUT /v1/peers/{nodeID}/attrs` |
+| `clawsynapse peer unlabel <nodeID> <key>` | `PUT /v1/peers/{nodeID}/attrs` |
 | `clawsynapse messages` | `GET /v1/messages` |
 | `clawsynapse publish` | `POST /v1/publish` |
 | `clawsynapse auth challenge` | `POST /v1/auth/challenge` |
@@ -405,7 +454,8 @@ GET    /v1/transfers
 尚未纳入 CLI 的能力包括：
 
 - 直接指定任意 `subject` 的发布
-- 守护进程启动参数管理与配置编辑
+- 守护进程启动参数管理
+- 守护进程配置编辑的 CLI 命令（`dashboard` 的 Config 视图可直接编辑配置；CLI 命令本身没有独立入口）
 - 更细粒度的批量传输管理能力
 
 这些能力以实际后端实现为准，补齐后再扩展 CLI 命令集。

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -77,7 +79,17 @@ func New(cfg config.Config, version string) (*App, error) {
 	)
 
 	peers := discovery.NewRegistry()
-	peers.Upsert(types.Peer{NodeID: nodeID, DID: nodeDID, AuthStatus: types.AuthAuthenticated, TrustStatus: types.TrustTrusted, Inbox: "clawsynapse.msg." + nodeID + ".inbox"})
+	peers.Upsert(types.Peer{NodeID: nodeID, DID: nodeDID, AuthStatus: types.AuthAuthenticated, TrustStatus: types.TrustTrusted, Inbox: "clawsynapse.msg." + nodeID + ".inbox", DisplayName: cfg.DisplayName, Labels: cfg.Labels})
+
+	if st, err := fs.LoadPeerAttrsState(); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			log.Warn("load peer attrs state failed; starting with empty remarks",
+				slog.String("error", err.Error()),
+			)
+		}
+	} else {
+		peers.LoadLocalAttrs(st.Peers)
+	}
 
 	hb, err := time.ParseDuration(cfg.HeartbeatInterval)
 	if err != nil {
@@ -122,7 +134,8 @@ func New(cfg config.Config, version string) (*App, error) {
 		discovery.AnnounceConfig{
 			AgentProduct: cfg.AgentProduct,
 			AgentVersion: agentVersion,
-			Capabilities: cfg.Capabilities,
+			DisplayName:  cfg.DisplayName,
+			Labels:       cfg.Labels,
 			Identity:     id,
 		},
 	)
@@ -190,7 +203,9 @@ func New(cfg config.Config, version string) (*App, error) {
 		DID:                 nodeDID,
 		IdentityFingerprint: identity.Fingerprint(id.PublicKey),
 		TrustMode:           cfg.TrustMode,
-	}, version, cfg)
+		DisplayName:         cfg.DisplayName,
+		Labels:              cfg.Labels,
+	}, version, cfg, fs)
 	if err != nil {
 		executionCancel()
 		bus.Close()

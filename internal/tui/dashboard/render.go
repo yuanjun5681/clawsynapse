@@ -8,6 +8,7 @@ import (
 
 	"github.com/mattn/go-runewidth"
 
+	"clawsynapse/internal/identity"
 	"clawsynapse/internal/protocol"
 	"clawsynapse/pkg/types"
 )
@@ -151,17 +152,24 @@ func ensureVisible(offset, cursor, total, visible int) int {
 }
 
 type peerColumns struct {
-	nodeIDWidth  int
-	authWidth    int
-	trustWidth   int
-	adapterWidth int
+	nameWidth       int
+	nodeIDWidth     int
+	authWidth       int
+	trustWidth      int
+	adapterWidth    int
+	showNodeID      bool
+	showFingerprint bool
 }
+
+// peerFingerprintWidth is the fixed width of the short identity fingerprint
+// ("sha256:" + 16 hex chars) produced by identity.FingerprintFromDID.
+const peerFingerprintWidth = len("sha256:") + 16
 
 func peerColumnsForWidth(width int, peers []types.Peer) peerColumns {
 	const (
 		peerPrefixWidth     = 1
 		peerDotColumnsWidth = 2
-		peerGapCount        = 6
+		minNameWidth        = 8
 		minNodeIDWidth      = 12
 		minAdapterWidth     = 8
 	)
@@ -169,52 +177,124 @@ func peerColumnsForWidth(width int, peers []types.Peer) peerColumns {
 	width = maxInt(width, 40)
 	authWidth := maxDisplayWidth("auth", "authenticated", "pending", "rejected", "expired")
 	trustWidth := maxDisplayWidth("trust", "trusted", "pending", "rejected", "revoked", "none")
+	nameWidth := displayWidth("name")
 	nodeIDWidth := displayWidth("nodeId")
 	adapterWidth := displayWidth("adapter/version")
 	for _, peer := range peers {
+		nameWidth = maxInt(nameWidth, displayWidth(peerDisplayName(peer)))
 		nodeIDWidth = maxInt(nodeIDWidth, displayWidth(peer.NodeID))
 		adapterWidth = maxInt(adapterWidth, displayWidth(peerAdapterLabel(peer)))
 	}
 
-	fixedWidth := peerPrefixWidth + peerDotColumnsWidth + peerGapCount + authWidth + trustWidth
-	remaining := maxInt(minNodeIDWidth+minAdapterWidth, width-fixedWidth)
-	if nodeIDWidth > remaining-minAdapterWidth {
-		nodeIDWidth = maxInt(minNodeIDWidth, remaining-minAdapterWidth)
-	}
-	adapterWidth = maxInt(1, remaining-nodeIDWidth)
+	// Fixed cost: selection prefix, auth/trust dots, and the auth/trust text
+	// columns. Gaps between rendered columns scale with the visible set.
+	fixedWidth := peerPrefixWidth + peerDotColumnsWidth + authWidth + trustWidth
 
-	return peerColumns{
-		nodeIDWidth:  nodeIDWidth,
-		authWidth:    authWidth,
-		trustWidth:   trustWidth,
-		adapterWidth: adapterWidth,
+	cols := peerColumns{
+		authWidth:  authWidth,
+		trustWidth: trustWidth,
 	}
+
+	// Wide: name + fingerprint + full nodeId + auth + trust + adapter.
+	// Medium: drop nodeId. Narrow: also drop the fingerprint.
+	showNodeID := true
+	showFingerprint := true
+	gapCount := 8
+	if width < fixedWidth+gapCount+nameWidth+peerFingerprintWidth+nodeIDWidth+adapterWidth {
+		showNodeID = false
+		gapCount = 7
+	}
+	if !showNodeID && width < fixedWidth+gapCount+nameWidth+peerFingerprintWidth+adapterWidth {
+		showFingerprint = false
+		gapCount = 6
+	}
+	cols.showNodeID = showNodeID
+	cols.showFingerprint = showFingerprint
+
+	remaining := maxInt(minNameWidth+minAdapterWidth, width-fixedWidth-gapCount)
+	if showFingerprint {
+		remaining = maxInt(minNameWidth+minAdapterWidth, remaining-peerFingerprintWidth)
+	}
+	if showNodeID {
+		if nodeIDWidth > remaining-minNameWidth-minAdapterWidth {
+			nodeIDWidth = maxInt(minNodeIDWidth, remaining-minNameWidth-minAdapterWidth)
+		}
+		remaining -= nodeIDWidth
+	}
+	if nameWidth > remaining-minAdapterWidth {
+		nameWidth = maxInt(minNameWidth, remaining-minAdapterWidth)
+	}
+	adapterWidth = maxInt(1, remaining-nameWidth)
+
+	cols.nameWidth = nameWidth
+	cols.nodeIDWidth = nodeIDWidth
+	cols.adapterWidth = adapterWidth
+	return cols
 }
 
 func formatPeerListHeader(cols peerColumns) string {
-	return strings.Join([]string{
+	parts := []string{
 		padRight(" ", 1),
-		padRight(truncateRight("nodeId", cols.nodeIDWidth), cols.nodeIDWidth),
+		padRight(truncateRight("name", cols.nameWidth), cols.nameWidth),
+	}
+	if cols.showFingerprint {
+		parts = append(parts, padRight(truncateRight("fingerprint", peerFingerprintWidth), peerFingerprintWidth))
+	}
+	if cols.showNodeID {
+		parts = append(parts, padRight(truncateRight("nodeId", cols.nodeIDWidth), cols.nodeIDWidth))
+	}
+	parts = append(parts,
 		padRight("", 1),
 		padRight(truncateRight("auth", cols.authWidth), cols.authWidth),
 		padRight("", 1),
 		padRight(truncateRight("trust", cols.trustWidth), cols.trustWidth),
 		truncateRight("adapter/version", cols.adapterWidth),
-	}, " ")
+	)
+	return strings.Join(parts, " ")
 }
 
 func formatPeerRow(prefix string, peer types.Peer, cols peerColumns) string {
 	authDot := peerAuthDot(peer.AuthStatus)
 	trustDot := peerTrustDot(peer.TrustStatus)
-	return strings.Join([]string{
+	parts := []string{
 		padRight(truncateRight(prefix, 1), 1),
-		padRight(truncateRight(fallbackString(peer.NodeID, "-"), cols.nodeIDWidth), cols.nodeIDWidth),
+		padRight(truncateRight(peerDisplayName(peer), cols.nameWidth), cols.nameWidth),
+	}
+	if cols.showFingerprint {
+		parts = append(parts, padRight(truncateRight(peerFingerprint(peer), peerFingerprintWidth), peerFingerprintWidth))
+	}
+	if cols.showNodeID {
+		parts = append(parts, padRight(truncateRight(fallbackString(peer.NodeID, "-"), cols.nodeIDWidth), cols.nodeIDWidth))
+	}
+	parts = append(parts,
 		padRight(authDot, 1),
 		padRight(truncateRight(fallbackString(peer.AuthStatus, "unknown"), cols.authWidth), cols.authWidth),
 		padRight(trustDot, 1),
 		padRight(truncateRight(fallbackString(peer.TrustStatus, "none"), cols.trustWidth), cols.trustWidth),
 		truncateRight(peerAdapterLabel(peer), cols.adapterWidth),
-	}, " ")
+	)
+	return strings.Join(parts, " ")
+}
+
+// peerDisplayName picks the most human-friendly peer name: local alias first,
+// then the remote display name, then "-".
+func peerDisplayName(peer types.Peer) string {
+	if alias := normalizeSingleLine(peer.LocalAlias); alias != "" {
+		return alias
+	}
+	if name := normalizeSingleLine(peer.DisplayName); name != "" {
+		return name
+	}
+	return "-"
+}
+
+// peerFingerprint returns the short identity fingerprint derived from the
+// peer DID, or "-" when the DID is unknown.
+func peerFingerprint(peer types.Peer) string {
+	if strings.TrimSpace(peer.DID) == "" {
+		return "-"
+	}
+	return identity.FingerprintFromDID(peer.DID)
 }
 
 func peerAdapterLabel(peer types.Peer) string {
@@ -429,6 +509,33 @@ func formatMetadata(meta map[string]any) []string {
 	lines := make([]string, 0, len(keys))
 	for _, key := range keys {
 		lines = append(lines, taggedLine(dashboardTagMuted, fmt.Sprintf("  %s = %v", key, meta[key])))
+	}
+	return lines
+}
+
+// formatLabel renders one label entry: sets as k=[a,b], scalars as k=v.
+func formatLabel(key string, value types.LabelValue) string {
+	if value.IsSet() {
+		return fmt.Sprintf("%s=[%s]", key, strings.Join(value.Members(), ","))
+	}
+	scalar, _ := value.Scalar()
+	return fmt.Sprintf("%s=%s", key, scalar)
+}
+
+// formatLabelsLines renders labels one per line, sorted by key. Returns nil
+// when there are no labels.
+func formatLabelsLines(labels types.Labels, indent string) []string {
+	if len(labels) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(labels))
+	for key := range labels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	lines := make([]string, 0, len(keys))
+	for _, key := range keys {
+		lines = append(lines, indent+formatLabel(key, labels[key]))
 	}
 	return lines
 }

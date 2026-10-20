@@ -17,7 +17,8 @@ title: "ClawSynapse 能力改进路线图"
 | 流式与有界执行 | Codex/OpenCode 原生 JSONL 增量解析、答案白名单、输出限额、严格终态；固定 8 个串行分片与每分片 16 条等待上限 |
 | Adapter 可靠性 | 显式超时／取消／未决、进程树清理、会话作用域隔离与存储失败处理、Agent 本地 allowlist、Codex 配置入口 |
 | 访问与连接安全 | 发现声明签名和进程内防重放、本地 API token、远端 HTTPS 约束、NATS credentials/TLS 与 production 检查；服务端 ACL 仍需运维配置 |
-| 尚未实施 | labels、持久收件箱／执行查询／重启去重、事件回放、文件签名 manifest 与持久接收凭据、移动端接入 |
+| 节点名称与 labels | 已实现 displayName+labels 模型（保留键 `caps`）、签名 announce 广播与导入、本地备注（alias/description/labels）原子持久化于 peer-attrs.json、CLI/HTTP/TUI 展示与筛选；旧 `capabilities` 配置单向折叠进 `labels.caps`。已用隔离 NATS 2.11.9 双 daemon 验证：双向 announce 携带名称与 labels（集合规范化为排序去重）、`--label`/`--label-has` 精确与成员筛选、别名跨重启与重新发现保留、非法 label 拒绝；未在真实设备或生产发现通道验证 |
+| 尚未实施 | 持久收件箱／执行查询／重启去重、事件回放、文件签名 manifest 与持久接收凭据、移动端接入 |
 
 已通过隔离环境的真实双 daemon、NATS 2.11.9（JetStream + 客户端证书验证）链路：显式认证和互信、结构化请求、进程结束前的增量输出、终态关联、部分输出后失败、非结构化登录提示拒绝、超时未决、实际 CLI 的 token 访问与不安全配置拒绝。原生 CLI 输出使用受控子进程 fixture，不是实际模型调用；不能据此声称三个产品的真实认证／模型执行或设备动作已验收。
 
