@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "trusted": [
+    {
+      "nodeId": "n1-8b607d41282561999102cc6320f81832",
+      "atMs": 1792484282083
+    }
+  ],
+  "pending": [],
+  "rejected": [],
+  "revoked": []
+}

@@ -1,0 +1,62 @@
+services:
+  nats:
+    image: nats:2.11.9
+    command: ["-c", "/etc/nats/nats.conf"]
+    volumes:
+      - ./nats.conf:/etc/nats/nats.conf:ro
+      - ./certs:/etc/nats/certs:ro
+    ports:
+      - "127.0.0.1:24222:4222"
+
+  node-a:
+    image: clawsynapse-e2e-node
+    depends_on:
+      - nats
+    command:
+      - --production
+      - --nats-servers=tls://nats:4222
+      - --nats-tls-ca-file=/certs/ca.crt
+      - --nats-tls-cert-file=/certs/client.crt
+      - --nats-tls-key-file=/certs/client.key
+      - --nats-tls-server-name=nats
+      - --local-api-addr=127.0.0.1:18080
+      - --data-dir=/data
+      - --identity-key-path=/data/identity.key
+      - --identity-pub-path=/data/identity.pub
+      - --transfer-dir=/data/transfers
+      - --heartbeat=1s
+      - --announce-ttl=5s
+      - --trust-mode=tofu
+      - --trust-auto-approve
+      - --agent-adapter=default
+      - --log-format=text
+    volumes:
+      - ./runtime/node-a:/data
+      - ./certs:/certs:ro
+
+  node-b:
+    image: clawsynapse-e2e-node
+    depends_on:
+      - nats
+    command:
+      - --production
+      - --nats-servers=tls://nats:4222
+      - --nats-tls-ca-file=/certs/ca.crt
+      - --nats-tls-cert-file=/certs/client.crt
+      - --nats-tls-key-file=/certs/client.key
+      - --nats-tls-server-name=nats
+      - --local-api-addr=127.0.0.1:18080
+      - --data-dir=/data
+      - --identity-key-path=/data/identity.key
+      - --identity-pub-path=/data/identity.pub
+      - --transfer-dir=/data/transfers
+      - --heartbeat=1s
+      - --announce-ttl=5s
+      - --trust-mode=tofu
+      - --agent-adapter=codex
+      - --agent-adapter-timeout=4s
+      - --agent-allowed-ids=worker-a
+      - --log-format=text
+    volumes:
+      - ./runtime/node-b:/data
+      - ./certs:/certs:ro
