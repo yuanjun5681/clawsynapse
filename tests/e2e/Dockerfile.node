@@ -7,6 +7,7 @@ RUN CGO_ENABLED=0 go build -o /out/clawsynapsed ./cmd/clawsynapsed \
  && CGO_ENABLED=0 go build -o /out/clawsynapse ./cmd/clawsynapse
 
 FROM alpine:3.21
+RUN apk add --no-cache curl
 COPY --from=build /out/clawsynapsed /usr/local/bin/clawsynapsed
 COPY --from=build /out/clawsynapse /usr/local/bin/clawsynapse
 COPY tests/e2e/fake-codex.sh /usr/local/bin/codex

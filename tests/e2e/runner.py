@@ -38,11 +38,12 @@ def cli(node, *args):
 
 def api(node, method, path, body=None, auth=True):
     token = node_exec(node, 'cat', '/data/api.token').stdout.strip()
-    cmd = ['wget', '-q', '-O', '-', '--header=Content-Type: application/json']
+    # curl -f: nonzero exit on HTTP >= 400, body on stdout for success.
+    cmd = ['curl', '-fsS', '-X', method, '-H', 'Content-Type: application/json']
     if auth:
-        cmd.append(f'--header=Authorization: Bearer {token}')
+        cmd += ['-H', f'Authorization: Bearer {token}']
     if body is not None:
-        cmd.append(f'--post-data={body}')
+        cmd += ['-d', body]
     cmd.append(f'http://127.0.0.1:18080{path}')
     return node_exec(node, *cmd, check=False)
 
@@ -142,6 +143,55 @@ def run():
         eventually(lambda: any(p['trustStatus'] == 'trusted' for p in cli('node-a', 'peers')['data']['items']),
                    'trust established')
         print('PASS: discovery, auth and trust over container network')
+
+        # P1 node attributes: signed announce carries displayName+labels; filters distinguish
+        # scalar exact match from set membership; local remarks survive restart and rediscovery.
+        labeled = eventually(lambda: next((p for p in cli('node-a', 'peers')['data']['items']
+                                           if p.get('displayName') == 'e2e-gateway'), None), 'labeled discovery')
+        assert labeled['labels'].get('env') == 'e2e'
+        assert labeled['labels'].get('role') == 'gateway'
+        assert set(labeled['labels'].get('caps', [])) == {'chat'}
+        self_a = cli('node-a', 'health')['data']['self']
+        assert self_a['displayName'] == 'e2e-甲节点', self_a
+        assert set(self_a['labels']['caps']) == {'chat', 'task.stream'}
+        print('PASS: signed announce carries displayName and labels on both nodes')
+
+        assert len(cli('node-a', 'peers', '--label', 'env=e2e')['data']['items']) == 1
+        assert len(cli('node-a', 'peers', '--label', 'role=worker')['data']['items']) == 0
+        assert len(cli('node-a', 'peers', '--label-has', 'caps=chat')['data']['items']) == 1
+        assert len(cli('node-a', 'peers', '--label', 'caps=chat')['data']['items']) == 0
+        assert len(cli('node-a', 'peers', '--name', 'gateway')['data']['items']) == 1
+        assert len(cli('node-a', 'peers', '--name', 'no-such-node')['data']['items']) == 0
+        print('PASS: label exact vs set-member and name filters behave as documented')
+
+        put = api('node-a', 'PUT', f'/v1/peers/{PEER_B}/attrs',
+                  json.dumps({'alias': '乙-备注', 'description': 'e2e 机房', 'labels': {'floor': '3'}}))
+        assert put.returncode == 0, put.stdout
+        got = json.loads(api('node-a', 'GET', f'/v1/peers/{PEER_B}/attrs').stdout)['data']['attrs']
+        assert got['alias'] == '乙-备注' and got['description'] == 'e2e 机房'
+        assert got['labels'] == {'floor': '3'}
+        assert next(p for p in cli('node-a', 'peers')['data']['items'])['localAlias'] == '乙-备注'
+        assert api('node-a', 'PUT', f'/v1/peers/{PEER_B}/attrs',
+                   json.dumps({'labels': {'caps': 'scalar-not-allowed'}})).returncode != 0
+        print('PASS: local remarks stored and reserved caps type rejected')
+
+        cli('node-a', 'peer', 'label', PEER_B, 'zone', 'a', 'b')
+        merged = json.loads(api('node-a', 'GET', f'/v1/peers/{PEER_B}/attrs').stdout)['data']['attrs']
+        assert merged['labels'] == {'floor': '3', 'zone': ['a', 'b']}, merged
+        print('PASS: CLI peer label read-merge-write keeps existing keys')
+
+        compose('restart', 'node-a')
+        def remarks_survive_restart():
+            peer = next((p for p in cli('node-a', 'peers')['data']['items'] if p['nodeId'] == PEER_B), None)
+            return peer if peer and peer.get('localAlias') == '乙-备注' else None
+        restarted = eventually(remarks_survive_restart, 'local remarks survive restart and rediscovery', timeout=45)
+        assert restarted['labels'].get('env') == 'e2e' and restarted['displayName'] == 'e2e-gateway'
+        print('PASS: local remarks survive daemon restart while remote attrs refresh freely')
+
+        assert api('node-a', 'DELETE', f'/v1/peers/{PEER_B}/attrs').returncode == 0
+        cleared = json.loads(api('node-a', 'GET', f'/v1/peers/{PEER_B}/attrs').stdout)['data']['attrs']
+        assert 'alias' not in cleared and 'labels' not in cleared, cleared
+        print('PASS: DELETE clears local remarks')
 
         # Wire format consistency: large integers, unicode and metadata survive end to end.
         body = {

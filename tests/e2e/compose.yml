@@ -28,6 +28,10 @@ services:
       - --announce-ttl=5s
       - --trust-mode=tofu
       - --trust-auto-approve
+      - --display-name=e2e-甲节点
+      - --label=env=e2e
+      - --label=caps=chat
+      - --label=caps=task.stream
       - --agent-adapter=default
       - --log-format=text
     volumes:
@@ -53,6 +57,10 @@ services:
       - --heartbeat=1s
       - --announce-ttl=5s
       - --trust-mode=tofu
+      - --display-name=e2e-gateway
+      - --label=env=e2e
+      - --label=role=gateway
+      - --label=caps=chat
       - --agent-adapter=codex
       - --agent-adapter-timeout=4s
       - --agent-allowed-ids=worker-a

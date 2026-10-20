@@ -5,3 +5,4 @@ dist/
 .env
 /clawsynapse
 .gocache/
+tests/e2e/runtime/

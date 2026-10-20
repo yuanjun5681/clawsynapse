@@ -10,6 +10,7 @@ python3 tests/e2e/runner.py --keep  # 保留环境便于排查
 ## 验证范围
 
 - mTLS NATS 连接、签名发现、认证与互信。
+- 节点名称与 labels（P1）：签名 announce 双向携带 `displayName`/`labels`（`caps` 集合规范化）；`label`（标量精确）与 `labelHas`（数组成员）筛选语义分离；本地备注（alias/description/labels）经 API 与 CLI 写入、非法 `caps` 类型拒绝、跨 daemon 重启与重新发现保留、远端心跳不覆盖、DELETE 清除。
 - 本地 API Bearer 认证与严格请求解码（未知字段、重复键、尾随 JSON 均拒绝）。
 - v2 结构化 payload 端到端一致性：大整数、Unicode、metadata、有效期与签名。
 - 流式执行：`run.started → run.output.delta → run.completed` 的 requestId/runId/seq 关联，且 delta 先于终态到达。
