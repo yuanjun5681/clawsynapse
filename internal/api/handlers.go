@@ -1,9 +1,11 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,14 +38,15 @@ type trustRevokeReq struct {
 }
 
 type publishReq struct {
-	TargetNode string                   `json:"targetNode"`
-	Type       string                   `json:"type,omitempty"`
-	AgentID    string                   `json:"agentId,omitempty"`
-	Message    *string                  `json:"message,omitempty"`
-	Payload    *protocol.MessagePayload `json:"payload,omitempty"`
-	ExpiresAt  int64                    `json:"expiresAt,omitempty"`
-	SessionKey string                   `json:"sessionKey,omitempty"`
-	Metadata   map[string]any           `json:"metadata,omitempty"`
+	TargetNode     string                   `json:"targetNode"`
+	Type           string                   `json:"type,omitempty"`
+	AgentID        string                   `json:"agentId,omitempty"`
+	Message        *string                  `json:"message,omitempty"`
+	Payload        *protocol.MessagePayload `json:"payload,omitempty"`
+	ExpiresAt      int64                    `json:"expiresAt,omitempty"`
+	SessionKey     string                   `json:"sessionKey,omitempty"`
+	Metadata       map[string]any           `json:"metadata,omitempty"`
+	IdempotencyKey string                   `json:"idempotencyKey,omitempty"`
 }
 
 type peerFilter struct {
@@ -501,6 +504,10 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusBadRequest, types.APIResult{OK: false, Code: "invalid_argument", Message: "invalid json payload", TS: time.Now().UnixMilli()})
 		return
 	}
+	if strings.HasPrefix(req.Type, "run.") {
+		respondJSON(w, http.StatusForbidden, types.APIResult{OK: false, Code: "control.unauthorized", Message: "execution events may only be published by the execution authority", TS: time.Now().UnixMilli()})
+		return
+	}
 	if req.Message != nil && req.Payload != nil {
 		respondJSON(w, http.StatusBadRequest, types.APIResult{OK: false, Code: "invalid_argument", Message: "message and payload are mutually exclusive", TS: time.Now().UnixMilli()})
 		return
@@ -515,22 +522,29 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := s.messaging.Publish(messaging.PublishRequest{
-		TargetNode: req.TargetNode,
-		Type:       req.Type,
-		AgentID:    req.AgentID,
-		Message:    message,
-		Payload:    payload,
-		ExpiresAt:  req.ExpiresAt,
-		SessionKey: req.SessionKey,
-		Metadata:   req.Metadata,
+		TargetNode:     req.TargetNode,
+		Type:           req.Type,
+		AgentID:        req.AgentID,
+		Message:        message,
+		Payload:        payload,
+		ExpiresAt:      req.ExpiresAt,
+		SessionKey:     req.SessionKey,
+		Metadata:       req.Metadata,
+		IdempotencyKey: req.IdempotencyKey,
 	})
 	if err != nil {
-		respondJSON(w, http.StatusBadRequest, types.APIResult{
+		status, code := http.StatusBadRequest, "msg.publish_failed"
+		if errors.Is(err, messaging.ErrIdempotencyConflict) {
+			status, code = http.StatusConflict, "msg.idempotency_conflict"
+		}
+		respondJSON(w, status, types.APIResult{
 			OK:      false,
-			Code:    "msg.publish_failed",
+			Code:    code,
 			Message: err.Error(),
 			Data: map[string]any{
 				"targetNode": req.TargetNode,
+				"messageId":  result.MessageID,
+				"sessionKey": result.SessionKey,
 			},
 			TS: time.Now().UnixMilli(),
 		})
@@ -550,16 +564,37 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleMessages(w http.ResponseWriter, _ *http.Request) {
-	respondJSON(w, http.StatusOK, types.APIResult{
-		OK:      true,
-		Code:    "msg.recent",
-		Message: "recent messages fetched",
-		Data: map[string]any{
-			"items": s.messaging.RecentMessages(100),
-		},
-		TS: time.Now().UnixMilli(),
-	})
+func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > 1000 {
+			respondJSON(w, http.StatusBadRequest, types.APIResult{OK: false, Code: "invalid_argument", Message: "limit must be between 1 and 1000", TS: time.Now().UnixMilli()})
+			return
+		}
+		limit = value
+	}
+	if r.URL.Query().Has("after") {
+		after, err := strconv.ParseUint(r.URL.Query().Get("after"), 10, 64)
+		if err != nil {
+			respondJSON(w, http.StatusBadRequest, types.APIResult{OK: false, Code: "invalid_argument", Message: "after must be a nonnegative integer cursor", TS: time.Now().UnixMilli()})
+			return
+		}
+		page := s.messaging.MessagesAfter(after, limit)
+		respondJSON(w, http.StatusOK, types.APIResult{OK: true, Code: "msg.replay", Message: "durable messages fetched", Data: map[string]any{"items": page.Items, "cursor": page.Cursor}, TS: time.Now().UnixMilli()})
+		return
+	}
+	page := s.messaging.RecentMessagesPage(limit)
+	respondJSON(w, http.StatusOK, types.APIResult{OK: true, Code: "msg.recent", Message: "recent messages fetched", Data: map[string]any{"items": page.Items, "cursor": page.Cursor}, TS: time.Now().UnixMilli()})
+}
+
+func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
+	request, ok := s.messaging.Request(r.PathValue("messageId"))
+	if !ok {
+		respondJSON(w, http.StatusNotFound, types.APIResult{OK: false, Code: "msg.not_found", Message: "publication not found", TS: time.Now().UnixMilli()})
+		return
+	}
+	respondJSON(w, http.StatusOK, types.APIResult{OK: true, Code: "msg.request", Message: "persisted publication fetched", Data: map[string]any{"message": request.Message, "publication": request.Publication, "status": request.Status, "events": request.Events}, TS: time.Now().UnixMilli()})
 }
 
 type transferSendReq struct {

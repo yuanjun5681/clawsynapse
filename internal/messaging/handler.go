@@ -106,5 +106,5 @@ func (h *AdapterMessageHandler) HandleMessage(msg IncomingMessage) (HandlerResul
 }
 
 func isFeedbackType(t string) bool {
-	return strings.HasPrefix(t, "run.") || strings.HasSuffix(t, ".response") || strings.HasSuffix(t, ".error")
+	return t == "chat.context" || strings.HasPrefix(t, "run.") || strings.HasSuffix(t, ".response") || strings.HasSuffix(t, ".error")
 }

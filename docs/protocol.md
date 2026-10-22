@@ -430,7 +430,7 @@ Ed25519 签名的原文是下列 JSON 对象的 UTF-8 字节，而不是字段�
 
 ### 处理约定
 
-- announce 的签名覆盖整个声明（含 `displayName` 与 `labels`），发送方在签名前对 labels 做规范化；因此远端名称与 labels 只能来自签名、未过期且未重放的声明。
+- announce 的签名覆盖整个声明（含 `displayName` 与 `labels`）；发送方在签名前对 labels 做规范化。因此远端名称、能力与场景标签只能来自签名、未过期且未重放的声明。修改任意字段都会使签名失效。
 - `displayName`/`labels` 取代了旧的 `capabilities` 字段。接收端严格解码（未知字段拒绝）且签名绑定全部字段，新旧版本 announce 互不兼容：混部集群中的旧节点拒绝新 announce，新节点同样拒绝旧 announce，双方失败关闭、不会互相发现。升级时必须整批切换。
 - announce/depart 均检查真实 subject、消息类型、派生身份、签名、时间与消息 ID；`open` 模式不跳过签名。
 - 发现消息最多 32 KiB，metadata 最多 8 KiB，TTL 最大 2 分钟，未来时间偏差最大 30 秒；无效声明被拒绝。
@@ -483,10 +483,11 @@ NodeID 与签名在此仅作结构示意，不能直接用于实际验签。
 - `chat.message` — 文本输入，放入 `payload.text`
 - `task.request`、`task.assign` — 结构化任务，使用 `payload.instruction/input`
 
-非投递类型（仅存入 inbox，不转发）：
+非命令类型（持久存入 inbox，不触发 LLM）：
 
 - `event.forward` — 事件转发
 - `run.started`、`run.output.delta`、`run.completed`、`run.failed`、`run.accepted` — 执行反馈，不进入 LLM；Webhook 可消费，但不产生反馈回复
+- `chat.context` — 经授权共享的聊天历史／群成员观察数据；仅投递 Webhook 数据消费者，与 deliverablePrefixes 无关；不生成 run.started/output/completed，不对观察再发反馈，native Adapter 不执行
 
 可通过配置 `deliverablePrefixes` 扩展可投递前缀，详见环境变量 `DELIVERABLE_PREFIXES`。
 
@@ -514,11 +515,15 @@ NodeID 与签名在此仅作结构示意，不能直接用于实际验签。
 
 - 使用精确 inbox subject，按原请求 ID 关联执行事件；终态不重复携带已通过 delta 发出的全文。
 - 正常模式要求双方认证与信任；`open` 仅用于非生产环境，仍要求已发现身份和有效签名。
-- 8 个串行工作分片，每分片最多等待 16 条；按发送方、Agent、会话分片，过载返回结构化失败，不启动无界 goroutine。
-- LLM 会话按发送方、Agent、原会话键隔离；Webhook 保留原会话键与事件关联字段。
+- 8 个串行工作分片，按发送方、会话及可选本地 agentId 排序；等待项持久化在本地 journal，不依赖内存队列容量，也不为每条消息启动 goroutine。执行前重新检查认证与信任；未知/尚未恢复认证的节点等待，明确撤销的节点不会执行。
+- 通用任务的 LLM 会话按发送方与原会话键隔离；DSH 聊天以 `metadata.dsynapseChat.chatId` 建立节点级单会话，聊天参与者只有节点。Webhook 保留会话键与事件关联字段。
 - `run.accepted` 只表示异步接纳，`payload.adapterRunId` 可用于业务端回查；`run.completed` 也不等于设备物理动作完成。
 - 结果未知时 `run.failed.payload.indeterminate=true`，不能据此自动重跑。
-- Core NATS 发布不是持久接纳；断连时拒绝发布，不使用重连缓冲积压命令。事件序号可检测缺口，但目前不提供事件回放或持久执行查询。
+- 点对点收件箱使用文件存储的共享 JetStream `CLAWSYNAPSE_MESSAGES` stream，subject 为 `clawsynapse.msg.*.inbox`，Limits retention 默认 7 天。初始化不改写现有 stream 的其他 subject，也不清除其他节点消息；不兼容的现有 stream 失败关闭。
+- 每节点使用固定 durable pull consumer、explicit ACK。有效签名消息和待投递工作在本地 fsync 后才 ACK；重投按发送节点+消息 ID 去重。签名历史消息可归档，过期命令生成 execution.expired，而历史反馈仅作为数据消费。
+- 本地 publication/outbox、幂等键、接收游标、admitted work 均持久化。发布接口成功只表示 JetStream durable ACK，不回退 Core NATS。输出事件先与工作序号原子写入本地 outbox，再按执行顺序重试发送；原始目标 agentId 与 metadata.dsynapseChat 的 chatId/messageId 保留，历史上下文不重复到每个 delta。
+- 进入 Adapter 前先持久标记 admitted。重启发现未终结 admitted command 时生成 `run.failed`、`indeterminate=true`，不盲目重放副作用。仅能证明 HTTP dial 未建立的 Webhook 失败可按同一消息 ID 重试；反馈是非执行数据，可按同一 ID 重投。不能据此宣称外部系统副作用 exactly-once。
+- `GET /v1/messages?after=N&limit=N` 提供本地持久接收游标；`GET /v1/requests/{messageId}` 提供发布与关联执行事件查询，详见本地 API 文档。
 
 ## PubSub
 

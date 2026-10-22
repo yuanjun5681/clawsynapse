@@ -65,7 +65,7 @@ func startMessagingBus(t *testing.T) *natsbus.Client {
 	if binary == "" {
 		t.Skip("nats-server unavailable; set NATS_SERVER_BIN to exercise broker integration")
 	}
-	cmd := exec.Command(binary, "-a", "127.0.0.1", "-p", "-1")
+	cmd := exec.Command(binary, "-a", "127.0.0.1", "-p", "-1", "-js", "-sd", t.TempDir())
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -118,6 +118,9 @@ func TestBrokerStreamingRejectsReplayAndRouteTampering(t *testing.T) {
 		nodes[i] = identity.DeriveNodeID(identity.DeriveNodeDID(id.PublicKey))
 		peers.Upsert(types.Peer{NodeID: nodes[i], AuthStatus: types.AuthAuthenticated, TrustStatus: types.TrustTrusted, Metadata: map[string]any{"publicKey": base64.RawURLEncoding.EncodeToString(id.PublicKey)}})
 		services[i] = NewService(log, peers, bus, nodes[i], id, "explicit", nil)
+		if err := services[i].SetStatePath(dir + "/messages.jsonl"); err != nil {
+			t.Fatal(err)
+		}
 		t.Cleanup(services[i].Close)
 	}
 	events := make(chan protocol.MessageEnvelope, 32)
@@ -226,6 +229,12 @@ func TestBrokerStreamingRejectsReplayAndRouteTampering(t *testing.T) {
 	}
 	close(release)
 	terminal := next()
+	for terminal.RequestID == expired.ID {
+		if terminal.Type != "run.failed" || terminal.Payload.Code != "execution.expired" {
+			t.Fatalf("expired command admitted: %#v", terminal)
+		}
+		terminal = next()
+	}
 	if terminal.Type != "run.failed" || terminal.Payload.Code != "timeout" || !terminal.Payload.Indeterminate || terminal.RequestID != result.MessageID || terminal.Seq != delta.Seq+1 {
 		t.Fatalf("partial failure misreported: %#v", terminal)
 	}
@@ -235,6 +244,9 @@ func TestBrokerStreamingRejectsReplayAndRouteTampering(t *testing.T) {
 	}
 	for {
 		event := next()
+		if event.RequestID == expired.ID && event.Type == "run.failed" && event.Payload.Code == "execution.expired" {
+			continue
+		}
 		if event.RequestID == barrier.MessageID && event.Type == "run.completed" {
 			break
 		}
@@ -246,8 +258,20 @@ func TestBrokerStreamingRejectsReplayAndRouteTampering(t *testing.T) {
 		t.Fatalf("unexpected executions: %d", executions.Load())
 	}
 	stored := services[1].RecentMessages(10)
-	if len(stored) != 2 {
+	if len(stored) != 3 {
 		data, _ := json.Marshal(stored)
 		t.Fatalf("rejected messages stored: %s", data)
+	}
+}
+
+func TestSharedChatContextNeverExecutesNativeAdapter(t *testing.T) {
+	message := IncomingMessage{Type: "chat.context", Payload: protocol.MessagePayload{Text: "untrusted shared history"}}
+	native := NewAdapterMessageHandler(nil, time.Second)
+	if result, err := native.HandleMessage(message); err != nil || result != (HandlerResult{}) {
+		t.Fatalf("context observation reached native execution: %#v / %v", result, err)
+	}
+	webhook := NewAdapterMessageHandler(resultAdapter{&adapter.DeliverMessageResult{Success: true, Accepted: true, Reply: "observation stored"}}, time.Second, WithFeedbackDelivery())
+	if result, err := webhook.HandleMessage(message); err != nil || result.Reply != "observation stored" {
+		t.Fatalf("context observation not delivered to webhook consumer: %#v / %v", result, err)
 	}
 }

@@ -97,6 +97,7 @@ func NewServer(addr string, peers *discovery.Registry, authSvc *auth.Service, tr
 	mux.HandleFunc("GET /v1/trust/pending", s.handleTrustPending)
 	mux.HandleFunc("POST /v1/publish", s.handlePublish)
 	mux.HandleFunc("GET /v1/messages", s.handleMessages)
+	mux.HandleFunc("GET /v1/requests/{messageId}", s.handleRequest)
 	mux.HandleFunc("POST /v1/transfer/send", s.handleTransferSend)
 	mux.HandleFunc("GET /v1/transfers", s.handleTransfers)
 	mux.HandleFunc("GET /v1/transfer/{transferId}", s.handleTransfer)

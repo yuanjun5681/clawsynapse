@@ -69,7 +69,8 @@ title: "ClawSynapse API Reference"
 | `GET` | `/v1/config` | 获取当前启动配置快照 |
 | `PUT` | `/v1/config` | 校验并保存配置文件（需重启生效） |
 | `POST` | `/v1/publish` | 向目标节点发布消息 |
-| `GET` | `/v1/messages` | 获取最近收到的消息 |
+| `GET` | `/v1/messages` | 获取持久收件箱与游标增量回放 |
+| `GET` | `/v1/requests/{messageId}` | 查询持久发布记录及关联执行状态 |
 | `POST` | `/v1/auth/challenge` | 向目标节点发起认证握手 |
 | `GET` | `/v1/trust/pending` | 获取待处理的信任请求 |
 | `POST` | `/v1/trust/request` | 向目标节点发起信任请求 |
@@ -343,7 +344,7 @@ title: "ClawSynapse API Reference"
 
 ## POST /v1/publish
 
-向目标节点发布 v2 结构化消息。成功仅表示当前 Core NATS 发布调用成功，不表示对端持久接纳或 Agent 完成。连接断开时拒绝发布，不积压待重连执行的命令。
+向目标节点发布 v2 结构化消息。成功表示 JetStream 已确认持久接纳，不表示对端 Agent 已执行或完成。消息先写入本地持久 outbox；网络故障时接口返回失败，但已持久化的同一消息 ID 会继续等待发送，不能因此换新 ID 重发。JetStream 不可用时不降级为 Core NATS。命令默认 10 分钟执行有效期，过期后不会启动 Agent。
 
 **请求**
 
@@ -362,12 +363,15 @@ title: "ClawSynapse API Reference"
 |------|------|------|------|
 | `targetNode` | string | 是 | 目标节点 ID，由对端 DID 自动派生 |
 | `type` | string | 否 | 消息类型（如 `chat.message`, `task.assign`） |
-| `agentId` | string | 否 | 目标本地授权列表内的 Agent；Codex 不支持指定 Agent |
+| `agentId` | string | 否 | 可选的适配器内部路由提示；聊天参与者是节点，DSH 集成不应携带。通用 CLI 适配器仍按其本地目标配置校验，Codex 仅接受 `default` |
 | `message` | string | 否 | 文本快捷输入，映射为 payload.text；与 payload 互斥 |
 | `payload` | object | 否 | text 或 instruction/input 等结构化正文 |
 | `expiresAt` | int64 | 否 | Unix 毫秒有效期；默认 10 分钟，最长发送时间起 10 分钟 |
 | `sessionKey` | string | 否 | 会话标识，用于关联上下文 |
 | `metadata` | object | 否 | 附加元数据 |
+| `idempotencyKey` | string | 否 | ≤512 字节；相同 key 与规范化请求返回原 messageId/sessionKey，跨 daemon 重启有效；同 key 不同内容返回 HTTP 409 `msg.idempotency_conflict` |
+
+规范化包含默认 type、message→payload.text、结构化 input 对象键排序及全部显式业务字段；未指定的 sessionKey/expiresAt 在第一次持久化时生成，重试仍应提交相同请求。不得从本地 API 发布 `run.*`，该类事件仅由执行 authority 生成。若失败响应带有 `data.messageId`，可查询下述 request 接口；无论是否收到 ID，重试都必须沿用原 idempotencyKey。
 
 **成功响应**
 
@@ -403,7 +407,9 @@ title: "ClawSynapse API Reference"
 
 ## GET /v1/messages
 
-获取最近收到的消息与执行事件（最多 100 条），仅保存在内存中，不是持久收件箱或完整事件回放。消费者用 requestId/runId/seq 关联输出；run.completed 不重复附带全文，不能把终态正文再次追加到 delta。
+获取持久收到的消息与执行事件。无 `after` 时兼容返回最近消息（默认 100）；`GET /v1/messages?after=0&limit=100` 则按本地游标升序回放，limit 范围 1–1000。响应为 `data: {items: [{...envelope, cursor}], cursor}`：每个 item 是原封套加 `cursor`，data.cursor 是最后一条已返回记录的游标；空页保持传入 after，不越过未返回记录。cursor 是本节点持久收件箱序号，不属于签名内容或 NATS stream 序号；持久化最后成功消费的 cursor 后可跨 daemon/集成端重启恢复。
+
+消费者用 requestId/runId/seq 关联输出；run.completed 不重复附带全文，不能把终态正文再次追加到 delta。查询只包含收到的消息；本地发布状态通过 requests 查询。历史签名反馈可在原 expiresAt 后回放，但不会触发 LLM。
 
 **响应**
 
@@ -416,6 +422,7 @@ title: "ClawSynapse API Reference"
     "items": [
       {
         "id": "msg-abc123",
+        "cursor": 1,
         "type": "chat.message",
         "from": "n1-11223344556677889900aabbccddeeff",
         "to": "n1-localnodeid",
@@ -427,7 +434,8 @@ title: "ClawSynapse API Reference"
         "metadata": {},
         "protocolVersion": "v2"
       }
-    ]
+    ],
+    "cursor": 1
   },
   "ts": 1710000000000
 }
@@ -438,6 +446,7 @@ title: "ClawSynapse API Reference"
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | string | 消息唯一 ID |
+| `cursor` | uint64 | 本地持久接收序号，分页时以 data.cursor 继续 |
 | `type` | string | 消息类型 |
 | `agentId` | string | 目标节点本地智能体 ID，可能为空 |
 | `from` | string | 发送方节点 ID |
@@ -454,6 +463,28 @@ title: "ClawSynapse API Reference"
 | `protocolVersion` | string | 协议版本号 |
 
 执行类型为 `run.started`、`run.output.delta`、`run.completed`、`run.failed`、`run.accepted`。accepted 是异步接纳；failed 中的 indeterminate=true 表示可能已产生副作用，不能自动重跑。公开事件不自动重新投递给 LLM。
+
+## GET /v1/requests/{messageId}
+
+查询本节点持久化的发布记录；未知 ID 返回 HTTP 404 `msg.not_found`。成功返回：
+
+```json
+{
+  "ok": true,
+  "code": "msg.request",
+  "data": {
+    "message": {"id": "request-id", "type": "task.request"},
+    "publication": "published",
+    "status": "running",
+    "events": [{"type": "run.started", "requestId": "request-id", "runId": "daemon-run", "seq": 1}]
+  }
+}
+```
+
+示例封套省略了其余字段；实际 message/events 为完整持久封套。publication 为 `pending|published`；status 为 `sending|sent|running|accepted|completed|failed|indeterminate`。events 只关联同一原请求、对端、Agent 与会话的已接收 run 事件。`accepted` 不是完成；`indeterminate` 不能自动重跑。
+
+本地日志位于 `DataDir/state/messages.jsonl`（0600），以 fsync 后提交的记录保存发布幂等键、outbox、收件箱与 admitted work；必须持久挂载 DataDir。当前日志不自动裁剪，部署需按会话数据规模配置磁盘与备份。共享 JetStream 消息保留 7 天；本地已接收历史不受该期限裁剪。删除本地状态会丢失游标、去重和执行恢复依据，不能作为正常恢复流程。
+
 
 
 ---

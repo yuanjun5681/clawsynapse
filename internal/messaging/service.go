@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"hash/fnv"
@@ -27,23 +29,23 @@ import (
 const (
 	messageTTL  = 10 * time.Minute
 	workerCount = 8
-	queueDepth  = 16
-	maxRecent   = 1000
-	maxReplay   = 10000
 )
 
+var ErrIdempotencyConflict = errors.New("idempotency key already used for different content")
+
 type PublishRequest struct {
-	TargetNode string
-	Type       string
-	AgentID    string
-	Message    string
-	Payload    protocol.MessagePayload
-	SessionKey string
-	Metadata   map[string]any
-	ExpiresAt  int64
-	RequestID  string
-	RunID      string
-	Seq        uint64
+	TargetNode     string
+	Type           string
+	AgentID        string
+	Message        string
+	Payload        protocol.MessagePayload
+	SessionKey     string
+	Metadata       map[string]any
+	ExpiresAt      int64
+	RequestID      string
+	RunID          string
+	Seq            uint64
+	IdempotencyKey string
 }
 
 type PublishResult struct {
@@ -51,10 +53,11 @@ type PublishResult struct {
 	SessionKey string
 }
 
-type TransferHandler func(env protocol.MessageEnvelope)
+type TransferHandler func(env protocol.MessageEnvelope) error
 
 type Service struct {
 	mu                  sync.Mutex
+	publishMu           sync.Mutex
 	log                 *slog.Logger
 	peers               *discovery.Registry
 	bus                 *natsbus.Client
@@ -62,17 +65,15 @@ type Service struct {
 	identity            *identity.Identity
 	trustMode           string
 	deliverablePrefixes []string
-	inbox               []protocol.MessageEnvelope
 	handler             MessageHandler
 	transferHandler     TransferHandler
 	ctx                 context.Context
 	cancel              context.CancelFunc
 	workers             sync.WaitGroup
-	queues              [workerCount]chan protocol.MessageEnvelope
+	wake                [workerCount]chan struct{}
 	sub                 *nats.Subscription
 	started             bool
-	seen                map[string]int64
-	lastReplayGC        int64
+	journal             *messageJournal
 }
 
 func NewService(log *slog.Logger, peers *discovery.Registry, bus *natsbus.Client, nodeID string, id *identity.Identity, trustMode string, deliverablePrefixes []string) *Service {
@@ -80,22 +81,37 @@ func NewService(log *slog.Logger, peers *discovery.Registry, bus *natsbus.Client
 		deliverablePrefixes = []string{"chat", "task"}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &Service{log: log, peers: peers, bus: bus, nodeID: nodeID, identity: id, trustMode: trustMode, deliverablePrefixes: append([]string(nil), deliverablePrefixes...), inbox: []protocol.MessageEnvelope{}, ctx: ctx, cancel: cancel, seen: make(map[string]int64)}
-	for i := range s.queues {
-		s.queues[i] = make(chan protocol.MessageEnvelope, queueDepth)
+	s := &Service{log: log, peers: peers, bus: bus, nodeID: nodeID, identity: id, trustMode: trustMode, deliverablePrefixes: append([]string(nil), deliverablePrefixes...), ctx: ctx, cancel: cancel}
+	for i := range s.wake {
+		s.wake[i] = make(chan struct{}, 1)
 	}
 	return s
 }
 
+// SetStatePath opens and exclusively locks the durable journal before Start.
+func (s *Service) SetStatePath(path string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.started || s.journal != nil {
+		return errors.New("messaging state already initialized")
+	}
+	journal, err := openMessageJournal(path)
+	if err != nil {
+		return err
+	}
+	s.journal = journal
+	return nil
+}
+
 func (s *Service) SetMessageHandler(handler MessageHandler) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.handler = handler
+	s.mu.Unlock()
 }
-func (s *Service) SetTransferHandler(h TransferHandler) {
+func (s *Service) SetTransferHandler(handler TransferHandler) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.transferHandler = h
+	s.transferHandler = handler
+	s.mu.Unlock()
 }
 
 func (s *Service) Start() error {
@@ -103,36 +119,59 @@ func (s *Service) Start() error {
 		return errors.New("nats client is required")
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.started {
-		return errors.New("messaging already started")
+	if s.started || s.journal == nil || s.ctx.Err() != nil {
+		s.mu.Unlock()
+		return errors.New("messaging already started, closed, or durable state uninitialized")
 	}
-	if s.ctx.Err() != nil {
-		return s.ctx.Err()
-	}
-	sub, err := s.bus.Subscribe(inboxSubject(s.nodeID), s.handleInbox)
+	sub, err := s.bus.MessagingInbox(s.nodeID)
 	if err != nil {
+		s.mu.Unlock()
 		return err
 	}
-	s.sub = sub
-	s.started = true
-	for _, queue := range s.queues {
-		s.workers.Add(1)
-		go s.work(queue)
+	s.sub, s.started = sub, true
+	var interrupted []admittedWork
+	for _, work := range s.journal.work {
+		if work.State == "admitted" {
+			interrupted = append(interrupted, *work)
+		}
 	}
+	s.mu.Unlock()
+	// Never blindly re-execute work admitted before a process crash. Feedback
+	// delivery is non-executing and can safely be retried with its stable ID.
+	for _, work := range interrupted {
+		if isFeedbackType(work.Message.Type) || work.Message.Type == "transfer.available" {
+			if err := s.setWork(work, "queued"); err != nil {
+				s.Close()
+				return err
+			}
+		} else {
+			if err := s.emit(&work, "run.failed", protocol.MessagePayload{Code: "execution.interrupted", Stage: "restart", Indeterminate: true}, "done"); err != nil {
+				s.Close()
+				return err
+			}
+		}
+	}
+	for i := range s.wake {
+		s.workers.Add(1)
+		go s.work(i)
+	}
+	s.workers.Add(2)
+	go s.receive()
+	go s.publishPending()
 	return nil
 }
 
-// Close cancels queued and active executions before waiting for adapter cleanup.
 func (s *Service) Close() {
 	s.cancel()
-	s.mu.Lock()
-	sub := s.sub
-	s.mu.Unlock()
-	if sub != nil {
-		_ = sub.Unsubscribe()
-	}
 	s.workers.Wait()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Unsubscribe would delete a pull consumer created by this subscription.
+	// Drain/connection close is sufficient; keep the durable consumer on server.
+	if s.journal != nil && s.journal.file != nil {
+		_ = s.journal.file.Close()
+		s.journal.file = nil
+	}
 }
 
 func inboxSubject(nodeID string) string { return "clawsynapse.msg." + nodeID + ".inbox" }
@@ -149,31 +188,85 @@ func validToken(value string) bool {
 	return true
 }
 
-func (s *Service) Publish(req PublishRequest) (PublishResult, error) {
+func normalizeRequest(req PublishRequest) (PublishRequest, string, error) {
 	if !validToken(req.TargetNode) {
-		return PublishResult{}, errors.New("invalid targetNode")
+		return req, "", errors.New("invalid targetNode")
 	}
-	if s.bus == nil {
-		return PublishResult{}, errors.New("nats client is required")
-	}
-	if s.ctx.Err() != nil {
-		return PublishResult{}, s.ctx.Err()
-	}
-	peer, ok := s.peers.Get(req.TargetNode)
-	if !ok {
-		return PublishResult{}, errors.New("target peer not found")
-	}
-	if s.trustMode != "open" && (peer.TrustStatus != types.TrustTrusted || peer.AuthStatus != types.AuthAuthenticated) {
-		return PublishResult{}, protocol.NewError("control.unauthorized", "peer is not authenticated and trusted")
+	if len(req.IdempotencyKey) > 512 {
+		return req, "", errors.New("idempotency key exceeds limit")
 	}
 	if req.Message != "" {
 		if req.Payload.Text != "" || req.Payload.Instruction != "" || len(req.Payload.Input) != 0 {
-			return PublishResult{}, errors.New("message and payload are mutually exclusive")
+			return req, "", errors.New("message and payload are mutually exclusive")
 		}
-		req.Payload.Text = req.Message
+		req.Payload.Text, req.Message = req.Message, ""
 	}
 	if req.Type == "" {
 		req.Type = "chat.message"
+	}
+	if len(req.Payload.Input) != 0 {
+		var input any
+		decoder := json.NewDecoder(bytes.NewReader(req.Payload.Input))
+		decoder.UseNumber()
+		if err := decoder.Decode(&input); err != nil {
+			return req, "", err
+		}
+		canonical, err := json.Marshal(input)
+		if err != nil {
+			return req, "", err
+		}
+		req.Payload.Input = canonical
+	}
+	canonical := req
+	canonical.IdempotencyKey = ""
+	data, err := json.Marshal(canonical)
+	if err != nil {
+		return req, "", err
+	}
+	digest := sha256.Sum256(data)
+	return req, hex.EncodeToString(digest[:]), nil
+}
+
+func (s *Service) Publish(req PublishRequest) (PublishResult, error) {
+	pub, err := s.enqueue(req, nil)
+	if err != nil {
+		return PublishResult{}, err
+	}
+	result := PublishResult{MessageID: pub.Message.ID, SessionKey: pub.Message.SessionKey}
+	if err := s.flushPublication(pub.Message.ID); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func (s *Service) enqueue(req PublishRequest, work *admittedWork) (publication, error) {
+	req, fingerprint, err := normalizeRequest(req)
+	if err != nil {
+		return publication{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ctx.Err() != nil {
+		return publication{}, s.ctx.Err()
+	}
+	if s.journal == nil || s.journal.file == nil {
+		return publication{}, errors.New("durable messaging state is required")
+	}
+	if id, ok := s.journal.keys[req.IdempotencyKey]; req.IdempotencyKey != "" && ok {
+		pub := s.journal.publications[id]
+		if pub.Fingerprint != fingerprint {
+			return publication{}, ErrIdempotencyConflict
+		}
+		return *pub, nil
+	}
+	if work == nil {
+		peer, ok := s.peers.Get(req.TargetNode)
+		if !ok {
+			return publication{}, errors.New("target peer not found")
+		}
+		if s.trustMode != "open" && (peer.TrustStatus != types.TrustTrusted || peer.AuthStatus != types.AuthAuthenticated) {
+			return publication{}, protocol.NewError("control.unauthorized", "peer is not authenticated and trusted")
+		}
 	}
 	if req.SessionKey == "" {
 		req.SessionKey = randID()
@@ -184,29 +277,94 @@ func (s *Service) Publish(req PublishRequest) (PublishResult, error) {
 	}
 	env := protocol.MessageEnvelope{ID: randID(), Type: req.Type, From: s.nodeID, To: req.TargetNode, AgentID: req.AgentID, Payload: req.Payload, SessionKey: req.SessionKey, Metadata: req.Metadata, Ts: now, ExpiresAt: req.ExpiresAt, RequestID: req.RequestID, RunID: req.RunID, Seq: req.Seq, ProtocolVersion: protocol.WireVersion}
 	if err := validateEnvelope(env, now); err != nil {
-		return PublishResult{}, err
+		return publication{}, err
 	}
 	if s.identity == nil {
-		return PublishResult{}, errors.New("signing identity is required")
+		return publication{}, errors.New("signing identity is required")
 	}
-	subject := inboxSubject(req.TargetNode)
-	data, err := protocol.SignedBytes(subject, env)
+	data, err := protocol.SignedBytes(inboxSubject(env.To), env)
 	if err != nil {
-		return PublishResult{}, err
+		return publication{}, err
 	}
 	env.Sig = identity.Sign(s.identity.PrivateKey, data)
 	encoded, err := json.Marshal(env)
 	if err != nil {
-		return PublishResult{}, err
+		return publication{}, err
 	}
 	if len(encoded) > protocol.MaxMessageBytes {
-		return PublishResult{}, errors.New("message exceeds size limit")
+		return publication{}, errors.New("message exceeds size limit")
 	}
-	if err := s.bus.Publish(subject, encoded); err != nil {
-		return PublishResult{}, err
+	pub := publication{Message: cloneJSON(env), Key: req.IdempotencyKey, Fingerprint: fingerprint}
+	if env.RunID != "" {
+		pub.Previous = s.journal.tails[eventKey(env)]
 	}
-	s.log.Info("message published", "messageId", env.ID, "type", env.Type, "to", env.To)
-	return PublishResult{MessageID: env.ID, SessionKey: env.SessionKey}, nil
+	if err := s.journal.append(journalRecord{Publication: &pub, Work: work}); err != nil {
+		return publication{}, err
+	}
+	return pub, nil
+}
+
+func (s *Service) flushPublication(id string) error {
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+	s.mu.Lock()
+	pub := s.journal.publications[id]
+	if pub.Published {
+		s.mu.Unlock()
+		return nil
+	}
+	if previous := s.journal.publications[pub.Previous]; previous != nil && !previous.Published {
+		s.mu.Unlock()
+		return errors.New("previous execution event is still pending")
+	}
+	env := pub.Message
+	s.mu.Unlock()
+	if s.bus == nil {
+		return errors.New("nats client is required")
+	}
+	if !s.trusted(env.To) {
+		return protocol.NewError("control.unauthorized", "peer is no longer authenticated and trusted")
+	}
+	data, err := json.Marshal(env)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
+	defer cancel()
+	if err := s.bus.PublishMessage(ctx, inboxSubject(env.To), data, env.From+"/"+env.ID); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.journal.append(journalRecord{Published: id})
+}
+
+func (s *Service) publishPending() {
+	defer s.workers.Done()
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		s.mu.Lock()
+		pending := s.journal.pending
+		s.journal.pending = nil
+		s.mu.Unlock()
+		for _, id := range pending {
+			if s.ctx.Err() != nil {
+				return
+			}
+			if err := s.flushPublication(id); err != nil {
+				s.log.Debug("durable publication pending", "messageId", id, "error", err)
+				s.mu.Lock()
+				s.journal.pending = append(s.journal.pending, id)
+				s.mu.Unlock()
+			}
+		}
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 func validateEnvelope(env protocol.MessageEnvelope, now int64) error {
@@ -236,182 +394,334 @@ func validateEnvelope(env protocol.MessageEnvelope, now int64) error {
 func (s *Service) RecentMessages(limit int) []protocol.MessageEnvelope {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if limit <= 0 || limit > len(s.inbox) {
-		limit = len(s.inbox)
+	out := []protocol.MessageEnvelope{}
+	if s.journal == nil {
+		return out
 	}
-	// Decode copies nested metadata/Input too, so API clients cannot mutate state.
-	data, _ := json.Marshal(s.inbox[len(s.inbox)-limit:])
-	var out []protocol.MessageEnvelope
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	_ = decoder.Decode(&out)
-	return out
+	inbox := s.journal.inbox
+	if limit <= 0 || limit > len(inbox) {
+		limit = len(inbox)
+	}
+	for _, item := range inbox[len(inbox)-limit:] {
+		out = append(out, item.MessageEnvelope)
+	}
+	return cloneJSON(out)
 }
 
-func (s *Service) handleInbox(subject string, data []byte) {
+func (s *Service) RecentMessagesPage(limit int) MessagesPage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	page := MessagesPage{Items: []StoredMessage{}}
+	if s.journal == nil {
+		return page
+	}
+	inbox := s.journal.inbox
+	if limit <= 0 || limit > len(inbox) {
+		limit = len(inbox)
+	}
+	if len(inbox) != 0 {
+		page.Cursor = inbox[len(inbox)-1].Cursor
+	}
+	page.Items = append(page.Items, inbox[len(inbox)-limit:]...)
+	return cloneJSON(page)
+}
+
+func (s *Service) MessagesAfter(after uint64, limit int) MessagesPage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	page := MessagesPage{Items: []StoredMessage{}, Cursor: after}
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	if s.journal == nil {
+		return page
+	}
+	start := int(min(after, uint64(len(s.journal.inbox))))
+	end := min(start+limit, len(s.journal.inbox))
+	page.Items = append(page.Items, s.journal.inbox[start:end]...)
+	if len(page.Items) != 0 {
+		page.Cursor = page.Items[len(page.Items)-1].Cursor
+	}
+	return cloneJSON(page)
+}
+
+func (s *Service) Request(messageID string) (RequestState, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.journal == nil {
+		return RequestState{}, false
+	}
+	pub := s.journal.publications[messageID]
+	if pub == nil {
+		return RequestState{}, false
+	}
+	state := RequestState{Message: pub.Message, Publication: "pending", Status: "sending", Events: []protocol.MessageEnvelope{}}
+	if pub.Published {
+		state.Publication, state.Status = "published", "sent"
+	}
+	for _, item := range s.journal.inbox {
+		event := item.MessageEnvelope
+		if event.RequestID != messageID || event.From != pub.Message.To || event.To != pub.Message.From || event.AgentID != pub.Message.AgentID || event.SessionKey != pub.Message.SessionKey || !strings.HasPrefix(event.Type, "run.") {
+			continue
+		}
+		state.Events = append(state.Events, event)
+		switch event.Type {
+		case "run.started", "run.output.delta":
+			state.Status = "running"
+		case "run.accepted":
+			state.Status = "accepted"
+		case "run.completed":
+			state.Status = "completed"
+		case "run.failed":
+			state.Status = "failed"
+			if event.Payload.Indeterminate {
+				state.Status = "indeterminate"
+			}
+		}
+	}
+	return cloneJSON(state), true
+}
+
+func (s *Service) receive() {
+	defer s.workers.Done()
+	for s.ctx.Err() == nil {
+		messages, err := s.sub.Fetch(32, nats.MaxWait(time.Second))
+		if err != nil && !errors.Is(err, nats.ErrTimeout) && s.ctx.Err() == nil {
+			s.log.Debug("durable inbox waiting", "error", err)
+		}
+		for _, message := range messages {
+			if s.handleInbox(message.Subject, message.Data) {
+				_ = message.AckSync()
+			} else {
+				_ = message.NakWithDelay(time.Second)
+			}
+		}
+	}
+}
+
+// handleInbox returns false for transient persistence or discovery/authentication
+// delays. Invalid or explicitly revoked deliveries are discarded.
+func (s *Service) handleInbox(subject string, data []byte) bool {
 	var env protocol.MessageEnvelope
-	if err := protocol.DecodeStrict(data, &env); err != nil {
-		s.log.Warn("reject invalid message", "error", err)
-		return
+	if protocol.DecodeStrict(data, &env) != nil || subject != inboxSubject(s.nodeID) || env.To != s.nodeID {
+		return true
 	}
 	now := time.Now().UnixMilli()
-	if subject != inboxSubject(s.nodeID) || env.To != s.nodeID {
-		return
+	validationTime := now
+	// Historical signed messages remain auditable. Expired commands are stored
+	// but fail in the worker before adapter admission; feedback never executes.
+	if env.Ts <= now {
+		validationTime = env.Ts
 	}
-	if err := validateEnvelope(env, now); err != nil {
-		s.log.Warn("reject message contract", "messageId", env.ID, "error", err)
-		return
+	if err := validateEnvelope(env, validationTime); err != nil {
+		return true
 	}
-	peer, ok := s.peers.Get(env.From)
-	if env.From != s.nodeID && (!ok || (s.trustMode != "open" && (peer.TrustStatus != types.TrustTrusted || peer.AuthStatus != types.AuthAuthenticated))) {
-		return
+	if !s.trusted(env.From) {
+		return s.revoked(env.From)
 	}
 	pub, err := s.peerPublicKey(env.From)
 	if err != nil {
-		return
+		return true
 	}
 	input, err := protocol.SignedBytes(subject, env)
 	if err != nil || !identity.Verify(pub, input, env.Sig) {
-		s.log.Warn("reject invalid message signature", "messageId", env.ID)
-		return
+		return true
 	}
 	s.mu.Lock()
-	key := env.From + "/" + env.ID
-	if now-s.lastReplayGC >= 1000 || len(s.seen) >= maxReplay {
-		for id, expires := range s.seen {
-			if expires <= now {
-				delete(s.seen, id)
+	if s.journal == nil {
+		s.mu.Unlock()
+		return false
+	}
+	key := messageKey(env)
+	if s.journal.received[key] {
+		s.mu.Unlock()
+		return true
+	}
+	item := StoredMessage{MessageEnvelope: env, Cursor: uint64(len(s.journal.inbox)) + 1}
+	record := journalRecord{Received: &item}
+	if env.Type == "transfer.available" || isDeliverableType(env.Type, s.deliverablePrefixes) || isFeedbackType(env.Type) {
+		record.Work = &admittedWork{Key: key, Message: env, State: "queued", RunID: randID()}
+	}
+	err = s.journal.append(record)
+	s.mu.Unlock()
+	if err != nil {
+		s.log.Error("persist durable inbox failed", "error", err)
+		return false
+	}
+	select {
+	case s.wake[workShard(env)] <- struct{}{}:
+	default:
+	}
+	return true
+}
+
+func workShard(env protocol.MessageEnvelope) int {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(env.From + "/" + env.AgentID + "/" + env.SessionKey))
+	return int(h.Sum32() % workerCount)
+}
+
+func (s *Service) work(shard int) {
+	defer s.workers.Done()
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		for s.ctx.Err() == nil {
+			s.mu.Lock()
+			var next *admittedWork
+			for s.journal.workHeads[shard] < len(s.journal.workQueues[shard]) {
+				key := s.journal.workQueues[shard][s.journal.workHeads[shard]]
+				work := s.journal.work[key]
+				if work.State == "done" {
+					s.journal.workHeads[shard]++
+					continue
+				}
+				copy := *work
+				next = &copy
+				break
+			}
+			s.mu.Unlock()
+			if next == nil {
+				break
+			}
+			if next.State == "admitted" {
+				if isFeedbackType(next.Message.Type) {
+					if err := s.setWork(*next, "queued"); err != nil {
+						break
+					}
+				} else if err := s.emit(next, "run.failed", protocol.MessagePayload{Code: "execution.interrupted", Stage: "journal", Indeterminate: true}, "done"); err != nil {
+					break
+				}
+				continue
+			}
+			if !s.deliver(*next) {
+				break
 			}
 		}
-		s.lastReplayGC = now
-	}
-	if _, exists := s.seen[key]; exists {
-		s.mu.Unlock()
-		return
-	}
-	if len(s.seen) >= maxReplay {
-		s.mu.Unlock()
-		s.log.Warn("message replay window full")
-		return
-	}
-	s.seen[key] = env.ExpiresAt
-	s.inbox = append(s.inbox, env)
-	if len(s.inbox) > maxRecent {
-		copy(s.inbox, s.inbox[len(s.inbox)-maxRecent:])
-		s.inbox = s.inbox[:maxRecent]
-	}
-	s.mu.Unlock()
-	s.maybeDeliver(env)
-}
-
-func (s *Service) maybeDeliver(env protocol.MessageEnvelope) {
-	if env.Type != "transfer.available" && !isDeliverableType(env.Type, s.deliverablePrefixes) && !strings.HasPrefix(env.Type, "run.") {
-		return
-	}
-	// Run events can be consumed by webhook integrations, never sent back to LLMs.
-	key := env.From + "/" + env.AgentID + "/" + env.SessionKey
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(key))
-	queue := s.queues[h.Sum32()%workerCount]
-	select {
-	case <-s.ctx.Done():
-	case queue <- env:
-	default:
-		if !isFeedbackType(env.Type) {
-			_ = s.publishEvent(env, randID(), 1, "run.failed", protocol.MessagePayload{Code: "execution.overloaded", Stage: "queue"})
-		}
-	}
-}
-
-func (s *Service) work(queue <-chan protocol.MessageEnvelope) {
-	defer s.workers.Done()
-	for {
 		select {
 		case <-s.ctx.Done():
 			return
-		case env := <-queue:
-			if s.ctx.Err() != nil {
-				return
-			}
-			s.deliver(env)
+		case <-s.wake[shard]:
+		case <-ticker.C:
 		}
 	}
 }
 
-func (s *Service) deliver(env protocol.MessageEnvelope) {
+func (s *Service) setWork(work admittedWork, state string) error {
+	work.State = state
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.journal.append(journalRecord{Work: &work})
+}
+
+func (s *Service) trusted(node string) bool {
+	if node == s.nodeID {
+		return true
+	}
+	peer, ok := s.peers.Get(node)
+	return ok && (s.trustMode == "open" || (peer.TrustStatus == types.TrustTrusted && peer.AuthStatus == types.AuthAuthenticated))
+}
+
+func (s *Service) revoked(node string) bool {
+	peer, ok := s.peers.Get(node)
+	return ok && (peer.TrustStatus == types.TrustRevoked || peer.TrustStatus == types.TrustRejected || peer.AuthStatus == types.AuthRejected)
+}
+
+// deliver returns false when this shard must wait before retrying. Only a proven
+// pre-admission transport failure can move a command back to queued.
+func (s *Service) deliver(work admittedWork) bool {
+	env := work.Message
+	feedback := isFeedbackType(env.Type)
+	if !s.trusted(env.From) {
+		if s.revoked(env.From) {
+			return s.setWork(work, "done") == nil
+		}
+		return false
+	}
+	if !feedback && env.ExpiresAt <= time.Now().UnixMilli() {
+		return s.emit(&work, "run.failed", protocol.MessagePayload{Code: "execution.expired", Stage: "queue"}, "done") == nil
+	}
 	s.mu.Lock()
 	handler, transfer := s.handler, s.transferHandler
 	s.mu.Unlock()
-	if s.ctx.Err() != nil {
-		return
-	}
-	if env.ExpiresAt <= time.Now().UnixMilli() {
-		if !isFeedbackType(env.Type) {
-			_ = s.publishEvent(env, randID(), 1, "run.failed", protocol.MessagePayload{Code: "execution.expired", Stage: "queue"})
-		}
-		return
-	}
-	peer, known := s.peers.Get(env.From)
-	if env.From != s.nodeID && (!known || (s.trustMode != "open" && (peer.TrustStatus != types.TrustTrusted || peer.AuthStatus != types.AuthAuthenticated))) {
-		return
-	}
 	if env.Type == "transfer.available" {
-		if transfer != nil {
-			transfer(env)
+		if transfer == nil {
+			return false
 		}
-		return
+		if err := s.setWork(work, "admitted"); err != nil {
+			return false
+		}
+		if err := transfer(env); err != nil {
+			_ = s.setWork(work, "queued")
+			return false
+		}
+		return s.setWork(work, "done") == nil
 	}
 	if handler == nil {
-		return
+		return false
 	}
-	feedback := isFeedbackType(env.Type)
-	runID := randID()
-	var seq uint64
-	emit := func(kind string, payload protocol.MessagePayload) error {
+	if validator, ok := handler.(interface{ ValidateMessage(IncomingMessage) error }); ok && !feedback {
+		if err := validator.ValidateMessage(IncomingMessage{Type: env.Type, AgentID: env.AgentID}); err != nil {
+			return s.emit(&work, "run.failed", protocol.MessagePayload{Code: "unsupported_agent", Stage: "validation"}, "done") == nil
+		}
+	}
+	if err := s.setWork(work, "admitted"); err != nil {
+		return false
+	}
+	if !feedback && work.Seq == 0 {
+		if err := s.emit(&work, "run.started", protocol.MessagePayload{}, "admitted"); err != nil {
+			return false
+		}
+	}
+	ctx := s.ctx
+	cancel := func() {}
+	if !feedback {
+		ctx, cancel = context.WithDeadline(s.ctx, time.UnixMilli(env.ExpiresAt))
+	}
+	defer cancel()
+	streamed := false
+	requestID, runID, sequence := env.RequestID, env.RunID, env.Seq
+	if !feedback {
+		requestID, runID, sequence = env.ID, work.RunID, work.Seq
+	}
+	result, err := handler.HandleMessage(IncomingMessage{Context: ctx, MessageID: env.ID, RequestID: requestID, RunID: runID, Seq: sequence, Type: env.Type, AgentID: env.AgentID, From: env.From, To: env.To, Message: env.Payload.Text, Payload: env.Payload, SessionKey: env.SessionKey, Metadata: env.Metadata, Emit: func(event adapter.OutputEvent) error {
 		if feedback {
 			return nil
 		}
-		seq++
-		return s.publishEvent(env, runID, seq, kind, payload)
-	}
-	streamed := false
-	ctx, cancel := context.WithDeadline(s.ctx, time.UnixMilli(env.ExpiresAt))
-	defer cancel()
-	if !feedback {
-		if err := emit("run.started", protocol.MessagePayload{}); err != nil {
-			s.log.Warn("publish execution start failed", "error", err)
-			return
-		}
-	}
-	result, err := handler.HandleMessage(IncomingMessage{Context: ctx, MessageID: env.ID, RequestID: env.RequestID, RunID: env.RunID, Seq: env.Seq, Type: env.Type, AgentID: env.AgentID, From: env.From, To: env.To, Message: env.Payload.Text, Payload: env.Payload, SessionKey: env.SessionKey, Metadata: env.Metadata, Emit: func(event adapter.OutputEvent) error {
 		streamed = true
-		return emit("run.output.delta", protocol.MessagePayload{Text: event.Text, Channel: "answer"})
+		return s.emit(&work, "run.output.delta", protocol.MessagePayload{Text: event.Text, Channel: "answer"}, "admitted")
 	}})
 	if feedback {
 		if err != nil {
-			s.log.Warn("deliver execution feedback failed", "error", err)
+			var retryable interface{ Retryable() bool }
+			if errors.As(err, &retryable) && retryable.Retryable() {
+				_ = s.setWork(work, "queued")
+				return false
+			}
+			s.log.Warn("discard permanent feedback delivery failure", "type", env.Type, "error", err)
 		}
-		return
+		return s.setWork(work, "done") == nil
 	}
 	if err != nil {
+		var retryable interface{ Retryable() bool }
+		if !streamed && errors.As(err, &retryable) && retryable.Retryable() {
+			_ = s.setWork(work, "queued")
+			return false
+		}
 		payload := protocol.MessagePayload{Code: "execution.failed", Stage: "adapter"}
 		var execErr *adapter.ExecutionError
 		if errors.As(err, &execErr) {
-			payload.Code = execErr.Code
-			payload.Stage = execErr.Stage
-			payload.Indeterminate = execErr.Indeterminate
+			payload.Code, payload.Stage, payload.Indeterminate = execErr.Code, execErr.Stage, execErr.Indeterminate
+			if execErr.Code == "webhook_failed" && execErr.Err != nil {
+				payload.Text = execErr.Err.Error()
+				if len(payload.Text) > 1000 {
+					payload.Text = payload.Text[:1000]
+				}
+			}
 		} else if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-			payload.Code = "execution.interrupted"
-			payload.Indeterminate = true
+			payload.Code, payload.Indeterminate = "execution.interrupted", true
 		}
-		if sendErr := emit("run.failed", payload); sendErr != nil {
-			s.log.Warn("publish execution failure failed", "error", sendErr)
-		}
-		return
-	}
-	kind := "run.completed"
-	if result.Accepted {
-		kind = "run.accepted"
+		return s.emit(&work, "run.failed", payload, "done") == nil
 	}
 	if !streamed && result.Reply != "" {
 		for rest := result.Reply; rest != ""; {
@@ -419,40 +729,79 @@ func (s *Service) deliver(env protocol.MessageEnvelope) {
 			for size < len(rest) && size > 0 && !utf8.RuneStart(rest[size]) {
 				size--
 			}
-			if err := emit("run.output.delta", protocol.MessagePayload{Text: rest[:size], Channel: "answer"}); err != nil {
-				s.log.Warn("publish execution output failed", "error", err)
-				return
+			if err := s.emit(&work, "run.output.delta", protocol.MessagePayload{Text: rest[:size], Channel: "answer"}, "admitted"); err != nil {
+				return false
 			}
 			rest = rest[size:]
 		}
 	}
-	if err := emit(kind, protocol.MessagePayload{AdapterRunID: result.RunID}); err != nil {
-		s.log.Warn("publish execution result failed", "error", err)
+	kind := "run.completed"
+	if result.Accepted {
+		kind = "run.accepted"
+	}
+	return s.emit(&work, kind, protocol.MessagePayload{AdapterRunID: result.RunID}, "done") == nil
+}
+
+func (s *Service) emit(work *admittedWork, kind string, payload protocol.MessagePayload, state string) error {
+	next := *work
+	next.Seq++
+	next.State = state
+	orig := work.Message
+	_, err := s.enqueue(PublishRequest{TargetNode: orig.From, AgentID: orig.AgentID, Type: kind, SessionKey: orig.SessionKey, RequestID: orig.ID, RunID: work.RunID, Seq: next.Seq, Payload: payload, Metadata: eventMetadata(orig.Metadata), IdempotencyKey: "run/" + orig.From + "/" + orig.ID + "/" + work.RunID + "/" + stringSeq(next.Seq)}, &next)
+	if err != nil {
+		return err
+	}
+	*work = next
+	// Event durability is local first. The outbox retries broker outages without
+	// forcing an already-admitted adapter execution to run again.
+	return nil
+}
+
+func eventMetadata(metadata map[string]any) map[string]any {
+	chat, ok := metadata["dsynapseChat"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	identity := map[string]any{}
+	for _, key := range []string{"chatId", "messageId"} {
+		if value, ok := chat[key].(string); ok {
+			identity[key] = value
+		}
+	}
+	return map[string]any{"dsynapseChat": identity}
+}
+
+func stringSeq(seq uint64) string {
+	const digits = "0123456789"
+	var b [20]byte
+	i := len(b)
+	for {
+		i--
+		b[i] = digits[seq%10]
+		seq /= 10
+		if seq == 0 {
+			return string(b[i:])
+		}
 	}
 }
 
-func (s *Service) publishEvent(orig protocol.MessageEnvelope, runID string, seq uint64, kind string, payload protocol.MessagePayload) error {
-	_, err := s.Publish(PublishRequest{TargetNode: orig.From, Type: kind, SessionKey: orig.SessionKey, RequestID: orig.ID, RunID: runID, Seq: seq, Payload: payload})
-	return err
-}
-
 func isDeliverableType(t string, prefixes []string) bool {
-	for _, p := range prefixes {
-		if strings.HasPrefix(t, p+".") {
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(t, prefix+".") {
 			return true
 		}
 	}
 	return false
 }
 
-func (s *Service) peerPublicKey(peerNode string) (ed25519.PublicKey, error) {
-	if peerNode == s.nodeID {
+func (s *Service) peerPublicKey(node string) (ed25519.PublicKey, error) {
+	if node == s.nodeID {
 		if s.identity == nil {
 			return nil, errors.New("identity missing")
 		}
 		return s.identity.PublicKey, nil
 	}
-	peer, ok := s.peers.Get(peerNode)
+	peer, ok := s.peers.Get(node)
 	if !ok {
 		return nil, errors.New("peer not found")
 	}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -146,6 +147,16 @@ func New(cfg config.Config, version string) (*App, error) {
 		return nil, fmt.Errorf("init trust service: %w", err)
 	}
 	messagingSvc := messaging.NewService(log.With(slog.String("component", "messaging")), peers, bus, nodeID, id, cfg.TrustMode, cfg.DeliverablePrefixes)
+	if err := messagingSvc.SetStatePath(filepath.Join(cfg.DataDir, "state", "messages.jsonl")); err != nil {
+		bus.Close()
+		return nil, fmt.Errorf("init durable messaging: %w", err)
+	}
+	messagingReady := false
+	defer func() {
+		if !messagingReady {
+			messagingSvc.Close()
+		}
+	}()
 	agentAdapter, err := newAgentAdapter(cfg, nodeID, log, fs)
 	if err != nil {
 		return nil, fmt.Errorf("init agent adapter: %w", err)
@@ -211,6 +222,7 @@ func New(cfg config.Config, version string) (*App, error) {
 		bus.Close()
 		return nil, fmt.Errorf("init local API: %w", err)
 	}
+	messagingReady = true
 
 	return &App{
 		log:             log,

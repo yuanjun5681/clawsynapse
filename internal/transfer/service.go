@@ -257,9 +257,9 @@ func (s *Service) SendFile(req SendFileRequest) (SendFileResult, error) {
 	}, nil
 }
 
-func (s *Service) HandleTransferNotification(env protocol.MessageEnvelope) {
+func (s *Service) HandleTransferNotification(env protocol.MessageEnvelope) error {
 	if !s.Enabled() {
-		return
+		return fmt.Errorf("transfer service is not available")
 	}
 
 	var payload struct {
@@ -271,16 +271,16 @@ func (s *Service) HandleTransferNotification(env protocol.MessageEnvelope) {
 	}
 	if err := protocol.DecodeStrict(env.Payload.Input, &payload); err != nil {
 		s.log.Warn("decode transfer notification failed", slog.String("error", err.Error()))
-		return
+		return nil
 	}
 
 	if payload.TransferID == "" || payload.Bucket == "" {
 		s.log.Warn("transfer notification missing fields")
-		return
+		return nil
 	}
 
 	if s.isAlreadyDownloaded(payload.TransferID) {
-		return
+		return nil
 	}
 
 	if err := s.pullAndSave(payload.TransferID, payload.Bucket); err != nil {
@@ -288,7 +288,9 @@ func (s *Service) HandleTransferNotification(env protocol.MessageEnvelope) {
 			slog.String("transferId", payload.TransferID),
 			slog.String("error", err.Error()),
 		)
+		return err
 	}
+	return nil
 }
 
 func (s *Service) pullAndSave(transferID, bucket string) error {

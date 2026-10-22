@@ -120,6 +120,10 @@ LOCAL_API_ADDR=127.0.0.1:18080
 
 `agentProduct`、`agentVersion`、`displayName` 和 `labels`（含保留键 `caps`）会写入带签名的 discovery announce。接入 DeepSeek Harness 时可分别设为 `deepseek-harness`、实际 Harness 版本、节点可读名称以及插件真实支持的能力（labels 示例 `{"caps":["chat","task","transfer"]}`）。`agentVersion` 为空时使用 `clawsynapsed` 的构建版本。labels 是节点自报属性，不代表就绪状态，更不构成授权。
 
+聊天参与者是节点，使用 `displayName`、`localAlias` 和 `labels` 识别。DSH 集成每个节点只有一个产品入口，不配置 Agent 目录、Agent 显示名或聊天 `agentId`。通用 CLI 适配器仍可用 `agentAllowedIds` 约束本地命令行目标；该列表只影响本地路由，不发布到 discovery，也不进入聊天参与者目录。
+
+discovery 只发布节点级 `displayName`、`labels` 与产品/版本信息；不发布 Agent 目录。`labels` 是节点自报的能力/场景信息，不构成授权。配置修改须重启 daemon 后才能改变标签与发现声明。
+
 旧的 `AGENT_CAPABILITIES`（逗号分隔）、YAML `capabilities:` 键和 CLI `--capabilities` 仍可读取，属于已废弃的单向迁移：其值仅在未通过 `NODE_LABELS`/`labels:` 设置 `caps` 时折叠进 `labels.caps`，保存配置时不会写回旧键。新配置请使用 `NODE_DISPLAY_NAME`/`NODE_LABELS`、`displayName:`/`labels:` 或 `--display-name`/`--label`（`--label key=value` 可重复，同键重复形成数组）。
 
 `WEBHOOK_AUTH_TOKEN` 是敏感值：可从 daemon 的 OS 进程环境或项目根目录 `.env` 读取，不支持 YAML 或 CLI，且不会由配置 API 返回。

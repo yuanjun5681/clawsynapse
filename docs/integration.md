@@ -77,7 +77,7 @@ type AgentAdapter interface {
 | `localPath` | string | 本地文件路径 |
 | `mimeType` | string | 文件 MIME 类型 |
 
-`AgentID` 不允许任意覆盖本地路由；OpenClaw/OpenCode 只接受 `agentAllowedIds` 中的名称，Codex 拒绝所有非空 AgentID。
+聊天参与者是节点，`targetNode` 是唯一路由身份；DSH 集成不应发送 `agentId`。每个节点只有一个 DSH 产品，节点收到消息后交给本机 DSH，DSH 内部的 Agent/preset 选择不对外暴露。`agentId` 仅保留为通用 CLI/Webhook 适配器的可选内部提示；`agentAllowedIds` 只用于这些适配器的本地校验，不是聊天目录。`run.*`、`*.response`、`*.error` 反馈携带原始执行方身份；`chat.context` 与 `transfer.received` 是观察/系统通知，不触发模型执行。
 
 `Metadata` 字段为发送方附带的业务扩展元数据（如 `taskId`、`todoId`），与 `POST /v1/publish` 中 `metadata` 的语义一致。
 
@@ -126,6 +126,7 @@ CLI Adapter 将请求编码为 JSON prompt，不再拼接未转义的 `key=value
 - Unix 使用独立进程组，Windows 使用 Job Object 管理进程树；超时、取消与 WaitDelay 有界。Windows 已交叉编译，实际运行仍需目标 OS 验收。
 - 产品会话读写失败显式报错。仅受当前原生事件契约支持的 CLI 可用；help/auth/health 探针只验证非交互能力，不替代真实模型任务验收。
 - 有 Emit 时结果不再重复返回完整 Reply；失败使用 ExecutionError 的 code、stage 和 indeterminate，不泄露原生 stdout/stderr。
+- DSH 集成只需节点显示名与 `labels`；不要为聊天配置 Agent 名称或 Agent 目录。通用 CLI 适配器仍可使用 `--agent-allowed-ids` 约束本地目标。
 
 
 ---
@@ -138,7 +139,7 @@ CLI Adapter 将请求编码为 JSON prompt，不再拼接未转义的 `key=value
 
 投递时把来源、消息关联、会话、payload 和 metadata 编码为 JSON prompt，字段值不再解释为可拼接的 header。JSON 结构不能消除提示词注入；授权和工具限制必须由本地策略落实。
 
-只有配置在 `agentAllowedIds`／`AGENT_ALLOWED_IDS`／`--agent-allowed-ids` 中的 AgentID 才会转换为 `--agent`；默认只允许产品默认 Agent。
+只有配置在 `agentAllowedIds`／`AGENT_ALLOWED_IDS`／`--agent-allowed-ids` 中的命名 AgentID 才会转换为 `--agent`。保留 ID `default` 使用产品原生默认 Agent，不传 `--agent default`；未配置列表时只允许该默认目标。该列表只影响本地 CLI 路由，不进入节点发现或聊天参与者目录。
 
 ### 会话映射
 
@@ -278,7 +279,7 @@ token 不会写入请求 URL、日志或错误正文。
 - **2xx**：按返回内容区分完成与异步接纳；空响应只表示 Accepted。
 - 纯文本或 JSON 字符串作为同步答案；结构化对象读取 reply/message，以及 runId、sessionId、accepted、success、completed、error。
 - `completed: false` 不发布答案完成；`completed: true` 只表示 Webhook 契约确认的执行终态，不是设备物理凭据。
-- 响应超过 4 KiB 或读取失败会报错，不以截断正文判成功。
+- 非流式小响应仍限制 4 KiB，超限或读取失败会报错，不以截断正文判成功；完整长答案使用下述 NDJSON。
 - **非 2xx**：视为投递失败，仅返回状态码，不把响应正文泄露到错误中。
 
 推荐 Node webhook 直接返回结构化 JSON，例如：
@@ -292,6 +293,23 @@ token 不会写入请求 URL、日志或错误正文。
 ```
 
 只要业务端正常使用 JSON 解析，字符串中的 `\n` 会自动还原为真实换行；不要再对已经解析好的字符串做额外转义处理。
+
+### 完整输出流
+
+POST 请求发送 `Accept: application/x-ndjson, application/json`。支持流式响应的集成返回 `Content-Type: application/x-ndjson`，每行一个 JSON frame：
+
+```jsonl
+{"type":"output","text":"第一段完整答案"}
+{"type":"output","text":"后续答案，可以包含换行和 Unicode"}
+{"type":"completed"}
+```
+
+失败终态为 `{"type":"failed","error":"说明","indeterminate":true}`；确定失败可省略 indeterminate 或设为 false。每个 output.text 最多 64 KiB UTF-8，编码后的单行必须小于 128 KiB；没有总答案截断。Daemon 每收到一个 output 就以同步背压写入持久 run.output.delta，再继续读取。结果可在模型完成后分段输出，不要求是真正 token streaming；最后只发送一个终态，不能在 completed 后再输出。
+
+EOF、超限、无效 JSON/未知 frame、或建立连接后的传输中断均表示结果 indeterminate；已收到的 partial output 保留，不能当作 completed 或安全自动重跑。只有 dial 根本未建立才可按相同 messageId 重试。集成必须持久去重 queued/admitted/completed 命令：相同 messageId 不得重复启动模型或外部动作；已完成可返回持久结果，无法确认的 admitted 状态必须显式 failed/indeterminate，不能伪造成功。
+
+普通命令包含 requestId=messageId、daemon 持久 runId 和当前 seq，反馈保持其原有关联字段。run.*、chat.context 反馈与 transfer.received 是非唤醒数据，不应按用户命令路由；chat.context 只持久投递给 Webhook，由集成保存授权历史，不产生 run 反馈；transfer.received 目前是文件落盘后的本地回调，不是持久消息收件箱中的执行命令。外部副作用不提供 exactly-once 保证。
+
 
 ### 健康检查
 
