@@ -60,6 +60,7 @@ type nativeStream struct {
 	product   string
 	emitter   *answerEmitter
 	sessionID string
+	messageID string
 	completed bool
 	items     map[string]string
 	reply     strings.Builder
@@ -178,10 +179,11 @@ func (s *nativeStream) consumeOpenCode(line []byte) error {
 		Reason    string          `json:"reason"`
 		Error     json.RawMessage `json:"error"`
 		Part      *struct {
-			ID     string `json:"id"`
-			Type   string `json:"type"`
-			Text   string `json:"text"`
-			Reason string `json:"reason"`
+			ID        string `json:"id"`
+			Type      string `json:"type"`
+			Text      string `json:"text"`
+			Reason    string `json:"reason"`
+			MessageID string `json:"messageID"`
 		} `json:"part"`
 	}
 	if json.Unmarshal(line, &event) != nil || event.Type == "" {
@@ -198,6 +200,9 @@ func (s *nativeStream) consumeOpenCode(line []byte) error {
 	}
 	switch event.Type {
 	case "step_start":
+		if event.Part != nil && event.Part.MessageID != "" {
+			s.messageID = event.Part.MessageID
+		}
 		s.completed = false
 	case "text":
 		text := event.Text
@@ -206,6 +211,9 @@ func (s *nativeStream) consumeOpenCode(line []byte) error {
 			// never become an answer even if they contain a text property.
 			if event.Part.Type != "text" {
 				return nil
+			}
+			if event.Part.MessageID != "" {
+				s.messageID = event.Part.MessageID
 			}
 			text = event.Part.Text
 			if event.Part.ID != "" {

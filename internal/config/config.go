@@ -12,6 +12,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"clawsynapse/internal/store"
 	"clawsynapse/pkg/types"
 )
 
@@ -140,15 +141,7 @@ func SaveToFile(path string, cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
-		return fmt.Errorf("write config: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("rename config: %w", err)
-	}
-	return nil
+	return store.WriteAtomic(path, data, 0o600)
 }
 
 type runtimeConfig struct {
@@ -311,7 +304,7 @@ func LoadFromOS(args []string) (Config, error) {
 		announceTTL         = fs.Duration("announce-ttl", merged.AnnounceTTL, "announce ttl")
 		agentProduct        = fs.String("agent-product", merged.AgentProduct, "agent product advertised in discovery")
 		agentVersion        = fs.String("agent-version", merged.AgentVersion, "agent version advertised in discovery; defaults to daemon version")
-		displayName         = fs.String("display-name", merged.DisplayName, "human readable node name advertised in discovery")
+		displayName         = fs.String("display-name", merged.DisplayName, "human readable Bot name advertised in discovery")
 		labelFlags          = newLabelFlags()
 		capabilities        = fs.String("capabilities", strings.Join(merged.Labels.Caps(), ","), "deprecated: comma separated capabilities folded into labels.caps (use --label caps=<value>)")
 		trustMode           = fs.String("trust-mode", merged.TrustMode, "trust mode: open|tofu|explicit")
@@ -336,7 +329,7 @@ func LoadFromOS(args []string) (Config, error) {
 		checkConfig         = fs.Bool("check-config", false, "print config and exit")
 	)
 
-	fs.Var(labelFlags, "label", "node label key=value; repeat a key to make it a set (reserved key: caps)")
+	fs.Var(labelFlags, "label", "Bot label key=value; repeat a key to make it a set (reserved key: caps)")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err

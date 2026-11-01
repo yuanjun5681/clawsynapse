@@ -125,6 +125,9 @@ func (w *boundedOutput) Write(p []byte) (int, error) {
 // runProcess owns cancellation, pipe draining, quotas and child-tree cleanup.
 // Neither argv, stderr nor native stdout is included in returned diagnostics.
 func runProcess(ctx context.Context, factory commandFactory, args []string, stdin string, onLine func([]byte) error, timeout time.Duration) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, cancellationError(err, false)
+	}
 	ctx, timeoutCancel := context.WithTimeout(ctx, timeout)
 	defer timeoutCancel()
 	runCtx, cancel := context.WithCancel(ctx)

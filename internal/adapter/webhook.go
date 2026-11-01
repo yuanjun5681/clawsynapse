@@ -18,26 +18,29 @@ import (
 )
 
 type WebhookConfig struct {
-	NodeID    string
-	URL       string
-	AuthToken string
-	Logger    *slog.Logger
+	BotID, BindingRevision, Instance string
+	URL                              string
+	AuthToken                        string
+	Logger                           *slog.Logger
 }
 
 type WebhookAdapter struct {
-	nodeID string
-	url    string
-	token  string
-	log    *slog.Logger
-	client *http.Client
+	botID, binding, instance string
+	url                      string
+	token                    string
+	log                      *slog.Logger
+	client                   *http.Client
 }
 
 func NewWebhookAdapter(cfg WebhookConfig) (*WebhookAdapter, error) {
 	if cfg.URL == "" {
 		return nil, fmt.Errorf("webhook url is required")
 	}
+	if strings.TrimSpace(cfg.BotID) == "" || strings.TrimSpace(cfg.BindingRevision) == "" || strings.TrimSpace(cfg.Instance) == "" {
+		return nil, errors.New("webhook bindings require Bot ID, binding revision, and explicit receiver instance")
+	}
 	return &WebhookAdapter{
-		nodeID: cfg.NodeID,
+		botID: cfg.BotID, binding: cfg.BindingRevision, instance: cfg.Instance,
 		url:    cfg.URL,
 		token:  strings.TrimSpace(cfg.AuthToken),
 		log:    cfg.Logger,
@@ -46,18 +49,20 @@ func NewWebhookAdapter(cfg WebhookConfig) (*WebhookAdapter, error) {
 }
 
 type webhookPayload struct {
-	NodeID     string                  `json:"nodeId"`
-	MessageID  string                  `json:"messageId"`
-	RequestID  string                  `json:"requestId,omitempty"`
-	RunID      string                  `json:"runId,omitempty"`
-	Seq        uint64                  `json:"seq,omitempty"`
-	Type       string                  `json:"type"`
-	AgentID    string                  `json:"agentId,omitempty"`
-	From       string                  `json:"from"`
-	SessionKey string                  `json:"sessionKey,omitempty"`
-	Message    string                  `json:"message"`
-	Payload    protocol.MessagePayload `json:"payload"`
-	Metadata   map[string]any          `json:"metadata,omitempty"`
+	BotID           string                  `json:"botId"`
+	BindingRevision string                  `json:"bindingRevision"`
+	Instance        string                  `json:"instance"`
+	MessageID       string                  `json:"messageId"`
+	RequestID       string                  `json:"requestId,omitempty"`
+	RunID           string                  `json:"runId,omitempty"`
+	Seq             uint64                  `json:"seq,omitempty"`
+	Type            string                  `json:"type"`
+	AgentID         string                  `json:"agentId,omitempty"`
+	From            string                  `json:"from"`
+	SessionKey      string                  `json:"sessionKey,omitempty"`
+	Message         string                  `json:"message"`
+	Payload         protocol.MessagePayload `json:"payload"`
+	Metadata        map[string]any          `json:"metadata,omitempty"`
 }
 
 type webhookResponse struct {
@@ -73,7 +78,7 @@ type webhookResponse struct {
 
 func (a *WebhookAdapter) DeliverMessage(ctx context.Context, req DeliverMessageRequest) (*DeliverMessageResult, error) {
 	payload := webhookPayload{
-		NodeID:     a.nodeID,
+		BotID: a.botID, BindingRevision: a.binding, Instance: a.instance,
 		MessageID:  req.MessageID,
 		RequestID:  req.RequestID,
 		RunID:      req.RunID,
@@ -302,6 +307,9 @@ func (a *WebhookAdapter) GetStatus(ctx context.Context) (*AgentStatus, error) {
 }
 
 func (a *WebhookAdapter) authorize(req *http.Request) {
+	req.Header.Set("X-ClawSynapse-Bot-ID", a.botID)
+	req.Header.Set("X-ClawSynapse-Binding-Revision", a.binding)
+	req.Header.Set("X-ClawSynapse-Instance", a.instance)
 	if a.token != "" {
 		req.Header.Set("Authorization", "Bearer "+a.token)
 	}

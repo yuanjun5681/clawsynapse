@@ -1,18 +1,11 @@
 package api
 
 import (
-	"context"
-	"crypto/tls"
-	"errors"
-	"fmt"
 	"net/http"
-	"path/filepath"
 	"sync"
-	"time"
 
 	"clawsynapse/internal/adapter"
 	"clawsynapse/internal/auth"
-	"clawsynapse/internal/config"
 	"clawsynapse/internal/discovery"
 	"clawsynapse/internal/messaging"
 	"clawsynapse/internal/natsbus"
@@ -22,8 +15,8 @@ import (
 	"clawsynapse/pkg/types"
 )
 
+// Server is one Bot's business interface. The daemon owns listener and authorization.
 type Server struct {
-	httpServer  *http.Server
 	peers       *discovery.Registry
 	auth        *auth.Service
 	trust       *trust.Service
@@ -36,12 +29,10 @@ type Server struct {
 	attrs       *store.FSStore
 	attrsMu     sync.Mutex
 	version     string
-	cfg         config.Config
-	configPath  string
 }
 
 type SelfInfo struct {
-	NodeID              string
+	BotID               string
 	DID                 string
 	IdentityFingerprint string
 	TrustMode           string
@@ -49,86 +40,34 @@ type SelfInfo struct {
 	Labels              types.Labels
 }
 
-func NewServer(addr string, peers *discovery.Registry, authSvc *auth.Service, trustSvc *trust.Service, messagingSvc *messaging.Service, transferSvc *transfer.Service, natsClient *natsbus.Client, agentAdapter adapter.AgentAdapter, agentAdapterName string, self SelfInfo, version string, cfg config.Config, attrs *store.FSStore) (*Server, error) {
-	if err := config.ValidateAPIListener(addr, cfg.AllowRemoteAPI, cfg.APITLSCertFile, cfg.APITLSKeyFile); err != nil {
-		return nil, err
-	}
-	if cfg.APITLSCertFile != "" {
-		if _, err := tls.LoadX509KeyPair(cfg.APITLSCertFile, cfg.APITLSKeyFile); err != nil {
-			return nil, fmt.Errorf("load API TLS certificate: %w", err)
-		}
-	}
-	if cfg.APITokenPath == "" {
-		if cfg.DataDir == "" {
-			return nil, errors.New("API token path or data directory is required")
-		}
-		cfg.APITokenPath = filepath.Join(cfg.DataDir, "api.token")
-	}
-	token, err := ensureToken(cfg.APITokenPath)
-	if err != nil {
-		return nil, err
-	}
-	s := &Server{
-		peers:       peers,
-		auth:        authSvc,
-		trust:       trustSvc,
-		messaging:   messagingSvc,
-		transfer:    transferSvc,
-		nats:        natsClient,
-		adapter:     agentAdapter,
-		adapterName: agentAdapterName,
-		self:        self,
-		attrs:       attrs,
-		version:     version,
-		cfg:         cfg,
-		configPath:  cfg.ConfigPath,
-	}
+func NewBotHandler(peers *discovery.Registry, authSvc *auth.Service, trustSvc *trust.Service, messages *messaging.Service, transfers *transfer.Service, bus *natsbus.Client, harness adapter.AgentAdapter, adapterName string, self SelfInfo, version string, fs *store.FSStore) *Server {
+	return &Server{peers: peers, auth: authSvc, trust: trustSvc, messaging: messages, transfer: transfers, nats: bus, adapter: harness, adapterName: adapterName, self: self, attrs: fs, version: version}
+}
 
+// Handler uses relative paths: the authorized daemon dispatcher has already selected a Bot.
+func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/peers", s.handlePeers)
-	mux.HandleFunc("GET /v1/peers/{nodeID}/attrs", s.handlePeerAttrsGet)
-	mux.HandleFunc("PUT /v1/peers/{nodeID}/attrs", s.handlePeerAttrsPut)
-	mux.HandleFunc("DELETE /v1/peers/{nodeID}/attrs", s.handlePeerAttrsDelete)
-	mux.HandleFunc("POST /v1/auth/challenge", s.handleAuthChallenge)
-	mux.HandleFunc("POST /v1/trust/request", s.handleTrustRequest)
-	mux.HandleFunc("POST /v1/trust/approve", s.handleTrustApprove)
-	mux.HandleFunc("POST /v1/trust/reject", s.handleTrustReject)
-	mux.HandleFunc("POST /v1/trust/revoke", s.handleTrustRevoke)
-	mux.HandleFunc("GET /v1/trust/pending", s.handleTrustPending)
-	mux.HandleFunc("POST /v1/publish", s.handlePublish)
-	mux.HandleFunc("GET /v1/messages", s.handleMessages)
-	mux.HandleFunc("GET /v1/requests/{messageId}", s.handleRequest)
-	mux.HandleFunc("POST /v1/transfer/send", s.handleTransferSend)
-	mux.HandleFunc("GET /v1/transfers", s.handleTransfers)
-	mux.HandleFunc("GET /v1/transfer/{transferId}", s.handleTransfer)
-	mux.HandleFunc("DELETE /v1/transfer/{transferId}", s.handleTransferDelete)
-	mux.HandleFunc("GET /v1/health", s.handleHealth)
-	mux.HandleFunc("GET /v1/config", s.handleConfigGet)
-	mux.HandleFunc("PUT /v1/config", s.handleConfigSave)
-
-	s.httpServer = &http.Server{
-		Addr:              addr,
-		Handler:           bearerAuth(token, mux),
-		ReadHeaderTimeout: 5 * time.Second,
-		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12},
-	}
-
-	return s, nil
-}
-
-func (s *Server) Start() error {
-	var err error
-	if s.cfg.APITLSCertFile != "" {
-		err = s.httpServer.ListenAndServeTLS(s.cfg.APITLSCertFile, s.cfg.APITLSKeyFile)
-	} else {
-		err = s.httpServer.ListenAndServe()
-	}
-	if err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
-	}
-	return nil
-}
-
-func (s *Server) Shutdown(ctx context.Context) error {
-	return s.httpServer.Shutdown(ctx)
+	mux.HandleFunc("GET /peers", s.handlePeers)
+	mux.HandleFunc("GET /peers/{peerID}/attrs", s.handlePeerAttrsGet)
+	mux.HandleFunc("PUT /peers/{peerID}/attrs", s.handlePeerAttrsPut)
+	mux.HandleFunc("DELETE /peers/{peerID}/attrs", s.handlePeerAttrsDelete)
+	mux.HandleFunc("POST /auth/challenge", s.handleAuthChallenge)
+	mux.HandleFunc("POST /trust/request", s.handleTrustRequest)
+	mux.HandleFunc("POST /trust/approve", s.handleTrustApprove)
+	mux.HandleFunc("POST /trust/reject", s.handleTrustReject)
+	mux.HandleFunc("POST /trust/revoke", s.handleTrustRevoke)
+	mux.HandleFunc("GET /trust/pending", s.handleTrustPending)
+	mux.HandleFunc("GET /trust", s.handleTrustSnapshot)
+	mux.HandleFunc("POST /publish", s.handlePublish)
+	mux.HandleFunc("GET /messages", s.handleMessages)
+	mux.HandleFunc("GET /requests/{messageId}", s.handleRequest)
+	mux.HandleFunc("POST /transfer/send", s.handleTransferSend)
+	mux.HandleFunc("POST /transfer/import", s.handleTransferImport)
+	mux.HandleFunc("GET /transfers", s.handleTransfers)
+	mux.HandleFunc("GET /transfer/{transferId}", s.handleTransfer)
+	mux.HandleFunc("GET /transfer/{transferId}/file", s.handleTransferFile)
+	mux.HandleFunc("POST /transfer/{transferId}/forward", s.handleTransferForward)
+	mux.HandleFunc("DELETE /transfer/{transferId}", s.handleTransferDelete)
+	mux.HandleFunc("GET /health", s.handleHealth)
+	return mux
 }

@@ -7,8 +7,8 @@ import (
 )
 
 type OpenCodeConfig struct {
-	NodeID string
-	Logger *slog.Logger
+	BotID, BindingRevision, Workspace, Model string
+	Logger                                   *slog.Logger
 	// AllowAgentIDs is local authorization, not a remotely supplied selector.
 	AllowAgentIDs []string
 	SessionStore  *store.FSStore
@@ -18,5 +18,9 @@ type OpenCodeConfig struct {
 type OpenCodeAdapter struct{ *cliAdapter }
 
 func NewOpenCodeAdapter(cfg OpenCodeConfig) (*OpenCodeAdapter, error) {
-	return &OpenCodeAdapter{newCLIAdapter("opencode", cfg.NodeID, cfg.Logger, cfg.SessionStore, cfg.AllowAgentIDs)}, nil
+	cli, err := newCLIAdapter("opencode", cfg.BotID, cfg.BindingRevision, cfg.Workspace, cfg.Model, cfg.Logger, cfg.SessionStore, cfg.AllowAgentIDs)
+	if err != nil {
+		return nil, err
+	}
+	return &OpenCodeAdapter{cli}, nil
 }

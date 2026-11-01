@@ -22,13 +22,13 @@ func TestHandleAnnouncePreservesAuthAndTrustStatus(t *testing.T) {
 	msg := testAnnounce(t, 1)
 	r := NewRegistry()
 	r.Upsert(types.Peer{
-		NodeID:      msg.NodeID,
+		BotID:       msg.BotID,
 		AuthStatus:  types.AuthAuthenticated,
 		TrustStatus: types.TrustTrusted,
 		LastSeenMs:  1,
 	})
 
-	svc := NewService(slog.Default(), nil, r, nil, "node-alpha", "", "", 5*time.Second, 10*time.Second, "tofu")
+	svc := NewService(slog.Default(), nil, r, nil, "bot-alpha", "", "", 5*time.Second, 10*time.Second, "tofu")
 
 	b, err := json.Marshal(msg)
 	if err != nil {
@@ -37,7 +37,7 @@ func TestHandleAnnouncePreservesAuthAndTrustStatus(t *testing.T) {
 
 	svc.handleAnnounce(announceSubject, b)
 
-	peer, ok := r.Get(msg.NodeID)
+	peer, ok := r.Get(msg.BotID)
 	if !ok {
 		t.Fatal("peer should still exist")
 	}
@@ -60,7 +60,7 @@ func TestHandleAnnounceRestoresPersistedTrustStatusForNewPeer(t *testing.T) {
 	}
 	if err := fs.SaveTrustState(store.TrustState{
 		SchemaVersion: 1,
-		Trusted:       []store.TrustPeerState{{NodeID: msg.NodeID, AtMs: 100, Reason: "approve for test"}},
+		Trusted:       []store.TrustPeerState{{BotID: msg.BotID, AtMs: 100, Reason: "approve for test"}},
 		Pending:       []store.TrustPendingState{},
 		Rejected:      []store.TrustPeerState{},
 		Revoked:       []store.TrustPeerState{},
@@ -69,7 +69,7 @@ func TestHandleAnnounceRestoresPersistedTrustStatusForNewPeer(t *testing.T) {
 	}
 
 	r := NewRegistry()
-	svc := NewService(slog.Default(), nil, r, fs, "node-alpha", "", "", 5*time.Second, 10*time.Second, "tofu")
+	svc := NewService(slog.Default(), nil, r, fs, "bot-alpha", "", "", 5*time.Second, 10*time.Second, "tofu")
 
 	b, err := json.Marshal(msg)
 	if err != nil {
@@ -78,7 +78,7 @@ func TestHandleAnnounceRestoresPersistedTrustStatusForNewPeer(t *testing.T) {
 
 	svc.handleAnnounce(announceSubject, b)
 
-	peer, ok := r.Get(msg.NodeID)
+	peer, ok := r.Get(msg.BotID)
 	if !ok {
 		t.Fatal("peer should exist")
 	}
@@ -98,7 +98,7 @@ func TestHandleAnnounceAutoAuthenticatesTrustedPeer(t *testing.T) {
 	}
 	if err := fs.SaveTrustState(store.TrustState{
 		SchemaVersion: 1,
-		Trusted:       []store.TrustPeerState{{NodeID: msg.NodeID, AtMs: 100}},
+		Trusted:       []store.TrustPeerState{{BotID: msg.BotID, AtMs: 100}},
 		Pending:       []store.TrustPendingState{},
 		Rejected:      []store.TrustPeerState{},
 		Revoked:       []store.TrustPeerState{},
@@ -107,10 +107,10 @@ func TestHandleAnnounceAutoAuthenticatesTrustedPeer(t *testing.T) {
 	}
 
 	r := NewRegistry()
-	svc := NewService(slog.Default(), nil, r, fs, "node-alpha", "", "", 5*time.Second, 10*time.Second, "tofu")
+	svc := NewService(slog.Default(), nil, r, fs, "bot-alpha", "", "", 5*time.Second, 10*time.Second, "tofu")
 	called := make(chan string, 1)
-	svc.SetAutoAuthenticator(func(_ context.Context, nodeID string) error {
-		called <- nodeID
+	svc.SetAutoAuthenticator(func(_ context.Context, botID string) error {
+		called <- botID
 		return nil
 	})
 
@@ -122,9 +122,9 @@ func TestHandleAnnounceAutoAuthenticatesTrustedPeer(t *testing.T) {
 	svc.handleAnnounce(announceSubject, b)
 
 	select {
-	case nodeID := <-called:
-		if nodeID != msg.NodeID {
-			t.Fatalf("expected auto auth for %s, got %s", msg.NodeID, nodeID)
+	case botID := <-called:
+		if botID != msg.BotID {
+			t.Fatalf("expected auto auth for %s, got %s", msg.BotID, botID)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("expected auto auth to be triggered")
@@ -139,7 +139,7 @@ func TestHandleAnnounceDeduplicatesAutoAuthentication(t *testing.T) {
 	}
 	if err := fs.SaveTrustState(store.TrustState{
 		SchemaVersion: 1,
-		Trusted:       []store.TrustPeerState{{NodeID: msg.NodeID, AtMs: 100}},
+		Trusted:       []store.TrustPeerState{{BotID: msg.BotID, AtMs: 100}},
 		Pending:       []store.TrustPendingState{},
 		Rejected:      []store.TrustPeerState{},
 		Revoked:       []store.TrustPeerState{},
@@ -148,11 +148,11 @@ func TestHandleAnnounceDeduplicatesAutoAuthentication(t *testing.T) {
 	}
 
 	r := NewRegistry()
-	svc := NewService(slog.Default(), nil, r, fs, "node-alpha", "", "", 5*time.Second, 10*time.Second, "tofu")
+	svc := NewService(slog.Default(), nil, r, fs, "bot-alpha", "", "", 5*time.Second, 10*time.Second, "tofu")
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
 	var calls atomic.Int32
-	svc.SetAutoAuthenticator(func(_ context.Context, nodeID string) error {
+	svc.SetAutoAuthenticator(func(_ context.Context, botID string) error {
 		calls.Add(1)
 		started <- struct{}{}
 		<-release
@@ -188,7 +188,7 @@ func TestHandleAnnounceRejectsDIDMismatch(t *testing.T) {
 	msg.DID = "did:key:zinvalid"
 
 	r := NewRegistry()
-	svc := NewService(slog.Default(), nil, r, nil, "node-alpha", "", "", 5*time.Second, 10*time.Second, "tofu")
+	svc := NewService(slog.Default(), nil, r, nil, "bot-alpha", "", "", 5*time.Second, 10*time.Second, "tofu")
 
 	b, err := json.Marshal(msg)
 	if err != nil {
@@ -197,18 +197,18 @@ func TestHandleAnnounceRejectsDIDMismatch(t *testing.T) {
 
 	svc.handleAnnounce(announceSubject, b)
 
-	if _, ok := r.Get(msg.NodeID); ok {
+	if _, ok := r.Get(msg.BotID); ok {
 		t.Fatal("peer should not be stored when did mismatches public key")
 	}
 }
 
-func TestHandleAnnounceRejectsNodeIDMismatch(t *testing.T) {
+func TestHandleAnnounceRejectsBotIDMismatch(t *testing.T) {
 	msg := testAnnounce(t, 6)
-	msg.NodeID = "n1-deadbeefdeadbeefdeadbeefdeadbeef"
-	msg.Inbox = "clawsynapse.msg." + msg.NodeID + ".inbox"
+	msg.BotID = "n1-deadbeefdeadbeefdeadbeefdeadbeef"
+	msg.Inbox = "clawsynapse.msg." + msg.BotID + ".inbox"
 
 	r := NewRegistry()
-	svc := NewService(slog.Default(), nil, r, nil, "node-alpha", "", "", 5*time.Second, 10*time.Second, "tofu")
+	svc := NewService(slog.Default(), nil, r, nil, "bot-alpha", "", "", 5*time.Second, 10*time.Second, "tofu")
 
 	b, err := json.Marshal(msg)
 	if err != nil {
@@ -217,21 +217,21 @@ func TestHandleAnnounceRejectsNodeIDMismatch(t *testing.T) {
 
 	svc.handleAnnounce(announceSubject, b)
 
-	if _, ok := r.Get(msg.NodeID); ok {
+	if _, ok := r.Get(msg.BotID); ok {
 		t.Fatal("peer should not be stored when nodeId mismatches did")
 	}
 }
 
 func TestNewAnnounceUsesConfiguredAgentIdentity(t *testing.T) {
 	id := testIdentity(7)
-	did := identity.DeriveNodeDID(id.PublicKey)
-	nodeID := identity.DeriveNodeID(did)
+	did := identity.DeriveBotDID(id.PublicKey)
+	botID := identity.DeriveBotID(did)
 	svc := NewService(
 		slog.Default(),
 		nil,
 		NewRegistry(),
 		nil,
-		nodeID,
+		botID,
 		did,
 		base64.RawURLEncoding.EncodeToString(id.PublicKey),
 		5*time.Second,
@@ -241,7 +241,7 @@ func TestNewAnnounceUsesConfiguredAgentIdentity(t *testing.T) {
 			Identity:     id,
 			AgentProduct: "deepseek-harness",
 			AgentVersion: "0.1.2-alpha.3",
-			DisplayName:  "边缘节点-01",
+			DisplayName:  "边缘Bot-01",
 			Labels: types.Labels{
 				"env": types.LabelString("production"),
 			}.WithCaps([]string{"chat", "task", "transfer"}),
@@ -254,7 +254,7 @@ func TestNewAnnounceUsesConfiguredAgentIdentity(t *testing.T) {
 	}
 	receiver := NewService(slog.Default(), nil, NewRegistry(), nil, "receiver", "", "", time.Second, time.Minute, "tofu")
 	receiver.handleAnnounce(announceSubject, marshalDiscovery(t, msg))
-	if _, ok := receiver.peers.Get(nodeID); !ok {
+	if _, ok := receiver.peers.Get(botID); !ok {
 		t.Fatal("locally signed announce was rejected")
 	}
 	if msg.AgentProduct != "deepseek-harness" {
@@ -263,8 +263,8 @@ func TestNewAnnounceUsesConfiguredAgentIdentity(t *testing.T) {
 	if msg.Version != "0.1.2-alpha.3" {
 		t.Fatalf("version = %q, want 0.1.2-alpha.3", msg.Version)
 	}
-	if msg.DisplayName != "边缘节点-01" {
-		t.Fatalf("displayName = %q, want 边缘节点-01", msg.DisplayName)
+	if msg.DisplayName != "边缘Bot-01" {
+		t.Fatalf("displayName = %q, want 边缘Bot-01", msg.DisplayName)
 	}
 	caps := msg.Labels.Caps()
 	if got := len(caps); got != 3 {
@@ -282,19 +282,19 @@ func testAnnounce(t *testing.T, marker byte) protocol.DiscoveryAnnounce {
 	t.Helper()
 
 	id := testIdentity(marker)
-	did := identity.DeriveNodeDID(id.PublicKey)
-	nodeID := identity.DeriveNodeID(did)
+	did := identity.DeriveBotDID(id.PublicKey)
+	botID := identity.DeriveBotID(did)
 
 	msg := protocol.DiscoveryAnnounce{
 		ProtocolVersion: "v2",
 		MessageID:       "m1",
 		MessageType:     "discovery.announce",
-		NodeID:          nodeID,
+		BotID:           botID,
 		DID:             did,
 		Version:         "v0.1.1",
 		AgentProduct:    "clawsynapse",
 		Labels:          types.Labels{}.WithCaps([]string{"chat"}),
-		Inbox:           "clawsynapse.msg." + nodeID + ".inbox",
+		Inbox:           "clawsynapse.msg." + botID + ".inbox",
 		PublicKey:       base64.RawURLEncoding.EncodeToString(id.PublicKey),
 		Ts:              time.Now().UnixMilli(),
 		TTLms:           30000,
@@ -365,7 +365,7 @@ func TestAnnounceRejectsTamperingInEveryTrustMode(t *testing.T) {
 				r := NewRegistry()
 				svc := NewService(slog.Default(), nil, r, nil, "local", "", "", time.Second, time.Minute, mode)
 				svc.handleAnnounce(announceSubject, marshalDiscovery(t, msg))
-				if _, ok := r.Get(msg.NodeID); ok {
+				if _, ok := r.Get(msg.BotID); ok {
 					t.Fatal("tampered or unsigned announcement installed a peer")
 				}
 			})
@@ -384,7 +384,7 @@ func TestAnnounceRejectsInvalidSignedClaims(t *testing.T) {
 		"wrongType":      func(m *protocol.DiscoveryAnnounce) { m.MessageType = "discovery.depart" },
 		"missingID":      func(m *protocol.DiscoveryAnnounce) { m.MessageID = "" },
 		"wrongDID":       func(m *protocol.DiscoveryAnnounce) { m.DID = "did:key:wrong" },
-		"wrongNode":      func(m *protocol.DiscoveryAnnounce) { m.NodeID = "wrong-node" },
+		"wrongBot":       func(m *protocol.DiscoveryAnnounce) { m.BotID = "wrong-bot" },
 		"wrongInbox":     func(m *protocol.DiscoveryAnnounce) { m.Inbox = "attacker.inbox" },
 		"metadataSize":   func(m *protocol.DiscoveryAnnounce) { m.Metadata = map[string]any{"value": strings.Repeat("x", 9000)} },
 		"metadataCount": func(m *protocol.DiscoveryAnnounce) {
@@ -402,7 +402,7 @@ func TestAnnounceRejectsInvalidSignedClaims(t *testing.T) {
 			r := NewRegistry()
 			svc := NewService(slog.Default(), nil, r, nil, "local", "", "", time.Second, time.Minute, "tofu")
 			svc.handleAnnounce(announceSubject, marshalDiscovery(t, msg))
-			if _, ok := r.Get(msg.NodeID); ok {
+			if _, ok := r.Get(msg.BotID); ok {
 				t.Fatal("invalid signed claim installed a peer")
 			}
 		})
@@ -419,14 +419,14 @@ func TestDiscoveryRequiresCorrectSubjectAndStrictJSON(t *testing.T) {
 	}{
 		{"wrongSubject", departSubject, data},
 		{"unknownField", announceSubject, []byte(strings.TrimSuffix(string(data), "}") + `,"authStatus":"authenticated"}`)},
-		{"duplicateField", announceSubject, []byte(strings.TrimSuffix(string(data), "}") + `,"nodeId":"` + msg.NodeID + `"}`)},
+		{"duplicateField", announceSubject, []byte(strings.TrimSuffix(string(data), "}") + `,"nodeId":"` + msg.BotID + `"}`)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := NewRegistry()
 			svc := NewService(slog.Default(), nil, r, nil, "local", "", "", time.Second, time.Minute, "tofu")
 			svc.handleAnnounce(tc.subject, tc.data)
-			if _, ok := r.Get(msg.NodeID); ok {
+			if _, ok := r.Get(msg.BotID); ok {
 				t.Fatal("invalid wire message installed a peer")
 			}
 		})
@@ -450,13 +450,13 @@ func TestDiscoveryRejectsReplayAcrossDepartureAndRediscovery(t *testing.T) {
 	newer.Ts = now - 2000
 	signAnnounce(t, &newer, id)
 	deliver(newer)
-	peer, ok := r.Get(msg.NodeID)
+	peer, ok := r.Get(msg.BotID)
 	if !ok || peer.Version != "newer" {
 		t.Fatal("fresh signed heartbeat did not update the peer")
 	}
 	deliver(msg)
 	deliver(newer)
-	after, ok := r.Get(msg.NodeID)
+	after, ok := r.Get(msg.BotID)
 	if !ok || after.Version != "newer" || after.LastSeenMs != peer.LastSeenMs {
 		t.Fatal("replay changed peer state or refreshed liveness")
 	}
@@ -465,14 +465,14 @@ func TestDiscoveryRejectsReplayAcrossDepartureAndRediscovery(t *testing.T) {
 	reusedID.Version = "reused-id"
 	signAnnounce(t, &reusedID, id)
 	deliver(reusedID)
-	after, _ = r.Get(msg.NodeID)
+	after, _ = r.Get(msg.BotID)
 	if after.Version != "newer" {
 		t.Fatal("reused message ID was accepted")
 	}
-	depart := protocol.DiscoveryDepart{ProtocolVersion: "v2", MessageID: "depart", MessageType: "discovery.depart", NodeID: msg.NodeID, Reason: "shutdown", Ts: now - 1000}
+	depart := protocol.DiscoveryDepart{ProtocolVersion: "v2", MessageID: "depart", MessageType: "discovery.depart", BotID: msg.BotID, Reason: "shutdown", Ts: now - 1000}
 	signDepart(t, &depart, id)
 	svc.handleDepart(departSubject, marshalDiscovery(t, depart))
-	if _, ok := r.Get(msg.NodeID); ok {
+	if _, ok := r.Get(msg.BotID); ok {
 		t.Fatal("valid signed departure did not remove the peer")
 	}
 	deliver(newer)
@@ -480,7 +480,7 @@ func TestDiscoveryRejectsReplayAcrossDepartureAndRediscovery(t *testing.T) {
 	olderWithNewID.MessageID = "unseen-old-heartbeat"
 	signAnnounce(t, &olderWithNewID, id)
 	deliver(olderWithNewID)
-	if _, ok := r.Get(msg.NodeID); ok {
+	if _, ok := r.Get(msg.BotID); ok {
 		t.Fatal("old announce resurrected a departed peer")
 	}
 	fresh := newer
@@ -489,20 +489,20 @@ func TestDiscoveryRejectsReplayAcrossDepartureAndRediscovery(t *testing.T) {
 	fresh.Version = "rediscovered"
 	signAnnounce(t, &fresh, id)
 	deliver(fresh)
-	if _, ok := r.Get(msg.NodeID); !ok {
+	if _, ok := r.Get(msg.BotID); !ok {
 		t.Fatal("fresh announce failed to rediscover peer")
 	}
 	svc.handleDepart(departSubject, marshalDiscovery(t, depart))
 	depart.MessageID = "unseen-old-depart"
 	signDepart(t, &depart, id)
 	svc.handleDepart(departSubject, marshalDiscovery(t, depart))
-	if _, ok := r.Get(msg.NodeID); !ok {
+	if _, ok := r.Get(msg.BotID); !ok {
 		t.Fatal("old departure removed the rediscovered peer")
 	}
 }
 
 func TestForgedDepartCannotEvictKnownPeer(t *testing.T) {
-	cases := []string{"otherKey", "unsigned", "tamperedReason", "tamperedTime", "wrongType", "oldVersion", "future", "expired", "wrongSubject", "unknownNode"}
+	cases := []string{"otherKey", "unsigned", "tamperedReason", "tamperedTime", "wrongType", "oldVersion", "future", "expired", "wrongSubject", "unknownBot"}
 	for _, name := range cases {
 		t.Run(name, func(t *testing.T) {
 			msg := testAnnounce(t, 24)
@@ -511,7 +511,7 @@ func TestForgedDepartCannotEvictKnownPeer(t *testing.T) {
 			r := NewRegistry()
 			svc := NewService(slog.Default(), nil, r, nil, "local", "", "", time.Second, time.Minute, "open")
 			svc.handleAnnounce(announceSubject, marshalDiscovery(t, msg))
-			depart := protocol.DiscoveryDepart{ProtocolVersion: "v2", MessageID: "depart", MessageType: "discovery.depart", NodeID: msg.NodeID, Reason: "shutdown", Ts: time.Now().UnixMilli()}
+			depart := protocol.DiscoveryDepart{ProtocolVersion: "v2", MessageID: "depart", MessageType: "discovery.depart", BotID: msg.BotID, Reason: "shutdown", Ts: time.Now().UnixMilli()}
 			subject := departSubject
 			switch name {
 			case "wrongType":
@@ -524,8 +524,8 @@ func TestForgedDepartCannotEvictKnownPeer(t *testing.T) {
 				depart.Ts = time.Now().Add(-3 * time.Minute).UnixMilli()
 			case "wrongSubject":
 				subject = announceSubject
-			case "unknownNode":
-				depart.NodeID = "unknown-node"
+			case "unknownBot":
+				depart.BotID = "unknown-bot"
 			}
 			signDepart(t, &depart, testIdentity(24))
 			switch name {
@@ -539,7 +539,7 @@ func TestForgedDepartCannotEvictKnownPeer(t *testing.T) {
 				depart.Ts++
 			}
 			svc.handleDepart(subject, marshalDiscovery(t, depart))
-			if _, ok := r.Get(msg.NodeID); !ok {
+			if _, ok := r.Get(msg.BotID); !ok {
 				t.Fatal("invalid departure evicted the legitimate peer")
 			}
 		})
@@ -550,18 +550,18 @@ func TestAnnounceImportsSignedRemoteLabelsButPreservesLocalAttrs(t *testing.T) {
 	id := testIdentity(26)
 	msg := testAnnounce(t, 26)
 	msg.Ts = time.Now().Add(-5 * time.Second).UnixMilli()
-	msg.DisplayName = "远程节点"
+	msg.DisplayName = "远程Bot"
 	msg.Labels = types.Labels{
 		"env": types.LabelString("staging"),
 	}.WithCaps([]string{"chat", "task"})
 	msg.Metadata = map[string]any{"authStatus": types.AuthAuthenticated, "trustStatus": types.TrustTrusted, "ttlMs": 999999999, "publicKey": "forged"}
 	signAnnounce(t, &msg, id)
 	r := NewRegistry()
-	r.SetLocalAttrs(msg.NodeID, types.PeerLocalAttrs{Alias: "本地备注"})
+	r.SetLocalAttrs(msg.BotID, types.PeerLocalAttrs{Alias: "本地备注"})
 	svc := NewService(slog.Default(), nil, r, nil, "local", "", "", time.Second, time.Minute, "open")
 	before := time.Now().UnixMilli()
 	svc.handleAnnounce(announceSubject, marshalDiscovery(t, msg))
-	peer, ok := r.Get(msg.NodeID)
+	peer, ok := r.Get(msg.BotID)
 	if !ok {
 		t.Fatal("valid signed announcement rejected")
 	}
@@ -574,8 +574,8 @@ func TestAnnounceImportsSignedRemoteLabelsButPreservesLocalAttrs(t *testing.T) {
 	if peer.Metadata["publicKey"] != msg.PublicKey || metadataInt64(peer.Metadata, "ttlMs") != msg.TTLms {
 		t.Fatal("remote metadata overrode verified discovery attributes")
 	}
-	if peer.DisplayName != "远程节点" {
-		t.Fatalf("displayName = %q, want 远程节点", peer.DisplayName)
+	if peer.DisplayName != "远程Bot" {
+		t.Fatalf("displayName = %q, want 远程Bot", peer.DisplayName)
 	}
 	if caps := peer.Labels.Caps(); len(caps) != 2 || caps[0] != "chat" || caps[1] != "task" {
 		t.Fatalf("caps = %#v, want chat/task", caps)
@@ -596,7 +596,7 @@ func TestAnnounceImportsSignedRemoteLabelsButPreservesLocalAttrs(t *testing.T) {
 	heartbeat.Labels = types.Labels{}.WithCaps([]string{"chat"})
 	signAnnounce(t, &heartbeat, id)
 	svc.handleAnnounce(announceSubject, marshalDiscovery(t, heartbeat))
-	peer, ok = r.Get(msg.NodeID)
+	peer, ok = r.Get(msg.BotID)
 	if !ok {
 		t.Fatal("peer disappeared after heartbeat")
 	}
@@ -608,13 +608,13 @@ func TestAnnounceImportsSignedRemoteLabelsButPreservesLocalAttrs(t *testing.T) {
 	}
 
 	svc.gc()
-	if _, ok := r.Get(msg.NodeID); !ok {
+	if _, ok := r.Get(msg.BotID); !ok {
 		t.Fatal("fresh local reception expired prematurely")
 	}
 	peer.LastSeenMs = time.Now().UnixMilli() - msg.TTLms - 1
 	r.Upsert(peer)
 	svc.gc()
-	if _, ok := r.Get(msg.NodeID); ok {
+	if _, ok := r.Get(msg.BotID); ok {
 		t.Fatal("peer remained discoverable after its bounded TTL expired")
 	}
 }
@@ -635,7 +635,7 @@ func TestConcurrentDiscoveryCannotResurrectDepartedPeer(t *testing.T) {
 		signAnnounce(t, &heartbeat, id)
 		heartbeats[i] = marshalDiscovery(t, heartbeat)
 	}
-	depart := protocol.DiscoveryDepart{ProtocolVersion: "v2", MessageID: "depart", MessageType: "discovery.depart", NodeID: msg.NodeID, Ts: time.Now().UnixMilli()}
+	depart := protocol.DiscoveryDepart{ProtocolVersion: "v2", MessageID: "depart", MessageType: "discovery.depart", BotID: msg.BotID, Ts: time.Now().UnixMilli()}
 	signDepart(t, &depart, id)
 	departData := marshalDiscovery(t, depart)
 	var wg sync.WaitGroup
@@ -656,16 +656,16 @@ func TestConcurrentDiscoveryCannotResurrectDepartedPeer(t *testing.T) {
 	}()
 	close(start)
 	wg.Wait()
-	if _, ok := r.Get(msg.NodeID); ok {
+	if _, ok := r.Get(msg.BotID); ok {
 		t.Fatal("out-of-order concurrent heartbeat resurrected a departed peer")
 	}
 }
 
 func TestLocalAnnounceDoesNotAdvertiseUnboundedTTL(t *testing.T) {
 	id := testIdentity(28)
-	did := identity.DeriveNodeDID(id.PublicKey)
-	nodeID := identity.DeriveNodeID(did)
-	svc := NewService(slog.Default(), nil, NewRegistry(), nil, nodeID, did,
+	did := identity.DeriveBotDID(id.PublicKey)
+	botID := identity.DeriveBotID(did)
+	svc := NewService(slog.Default(), nil, NewRegistry(), nil, botID, did,
 		base64.RawURLEncoding.EncodeToString(id.PublicKey), time.Second, time.Hour, "tofu", AnnounceConfig{Identity: id})
 	msg, err := svc.newAnnounce()
 	if err != nil {
@@ -676,7 +676,7 @@ func TestLocalAnnounceDoesNotAdvertiseUnboundedTTL(t *testing.T) {
 	}
 	receiver := NewService(slog.Default(), nil, NewRegistry(), nil, "receiver", "", "", time.Second, time.Minute, "tofu")
 	receiver.handleAnnounce(announceSubject, marshalDiscovery(t, msg))
-	if _, ok := receiver.peers.Get(nodeID); !ok {
+	if _, ok := receiver.peers.Get(botID); !ok {
 		t.Fatal("bounded, locally signed announcement was rejected")
 	}
 }

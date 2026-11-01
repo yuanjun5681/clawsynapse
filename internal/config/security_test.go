@@ -8,7 +8,7 @@ import (
 )
 
 func TestProductionRejectsWeakTransportsAndTrust(t *testing.T) {
-	strong := Config{NATSServers: []string{"tls://nats.example:4222"}, TrustMode: "explicit", Production: true, NATSCredentialsFile: "/private/node.creds", LocalAPIAddr: "127.0.0.1:18080"}
+	strong := Config{NATSServers: []string{"tls://nats.example:4222"}, TrustMode: "explicit", Production: true, NATSCredentialsFile: "/private/bot.creds", LocalAPIAddr: "127.0.0.1:18080"}
 	if err := ValidateSecurity(strong); err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestSecurityConfigurationSourcesAndPersistence(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	path := filepath.Join(home, "config.yaml")
-	data := []byte("production: true\ntrustMode: explicit\nnatsServers: [tls://nats.example:4222]\nnatsCredentialsFile: /private/node.creds\nnatsTLSCAFile: /private/ca.pem\nnatsTLSCertFile: /private/client.pem\nnatsTLSKeyFile: /private/client.key\nnatsTLSServerName: nats.example\nallowRemoteAPI: true\nlocalApiAddr: 0.0.0.0:18080\napiTLSCertFile: /private/api.pem\napiTLSKeyFile: /private/api.key\napiTokenPath: /private/api.token\nagentAdapter: codex\n")
+	data := []byte("production: true\ntrustMode: explicit\nnatsServers: [tls://nats.example:4222]\nnatsCredentialsFile: /private/bot.creds\nnatsTLSCAFile: /private/ca.pem\nnatsTLSCertFile: /private/client.pem\nnatsTLSKeyFile: /private/client.key\nnatsTLSServerName: nats.example\nallowRemoteAPI: true\nlocalApiAddr: 0.0.0.0:18080\napiTLSCertFile: /private/api.pem\napiTLSKeyFile: /private/api.key\napiTokenPath: /private/api.token\nagentAdapter: codex\n")
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		t.Fatal(err)
 	}

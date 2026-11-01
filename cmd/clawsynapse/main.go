@@ -50,11 +50,13 @@ func run(args []string, stdout, stderr *os.File) int {
 		printUsage(stderr)
 	}
 
-	defaultAPIAddr := strings.TrimSpace(os.Getenv("LOCAL_API_ADDR"))
+	defaultAPIAddr := ""
 
 	apiAddr := fs.String("api-addr", defaultAPIAddr, "local API address")
 	timeout := fs.Duration("timeout", 5*time.Second, "local API timeout")
 	asJSON := fs.Bool("json", false, "print raw JSON response")
+	bot := fs.String("bot", "", "explicit Bot ID or unambiguous prefix")
+	tokenFile := fs.String("token-file", "", "private credential file for this daemon endpoint")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -67,6 +69,13 @@ func run(args []string, stdout, stderr *os.File) int {
 	if len(rest) == 0 {
 		printUsage(stderr)
 		return 2
+	}
+	if rest[0] == "migrate" {
+		if err := runMigrate(rest[1:], stdout, stderr); err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		return 0
 	}
 	if rest[0] == "init" {
 		if err := runInit(rest[1:], os.Stdin, stdout, stderr); err != nil {
@@ -89,7 +98,17 @@ func run(args []string, stdout, stderr *os.File) int {
 		return 0
 	}
 	if rest[0] == "dashboard" {
-		if err := runDashboard(rest[1:], stdout, stderr); err != nil {
+		dashboardArgs := append([]string{}, rest[1:]...)
+		if *apiAddr != "" {
+			dashboardArgs = append(dashboardArgs, "--api-addr", *apiAddr)
+		}
+		if *tokenFile != "" {
+			dashboardArgs = append(dashboardArgs, "--token-file", *tokenFile)
+		}
+		if *bot != "" {
+			dashboardArgs = append(dashboardArgs, "--bot", *bot)
+		}
+		if err := runDashboard(dashboardArgs, stdout, stderr); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
 				return 0
 			}
@@ -109,7 +128,7 @@ func run(args []string, stdout, stderr *os.File) int {
 		return 0
 	}
 	if rest[0] == "upgrade" {
-		if err := runUpgrade(rest[1:], os.Stdin, stdout, stderr, *apiAddr); err != nil {
+		if err := runUpgrade(rest[1:], os.Stdin, stdout, stderr, *apiAddr, *tokenFile); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
 				return 0
 			}
@@ -123,11 +142,30 @@ func run(args []string, stdout, stderr *os.File) int {
 		return 0
 	}
 
-	client := api.NewClient(*apiAddr, *timeout)
+	clientOptions := []api.ClientOption{}
+	if *tokenFile != "" {
+		clientOptions = append(clientOptions, api.WithTokenFile(*tokenFile))
+	}
+	client := api.NewClient(*apiAddr, *timeout, clientOptions...)
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-
-	result, err := dispatch(ctx, client, rest)
+	var result types.APIResult
+	var err error
+	switch rest[0] {
+	case "bots":
+		result, err = client.Get(ctx, "/v2/bots")
+	case "bot":
+		result, err = runBot(ctx, client, *bot, rest[1:])
+	case "daemon":
+		result, err = client.Get(ctx, "/v2/health")
+	default:
+		var id string
+		id, err = resolveBot(ctx, client, *bot)
+		if err == nil {
+			scoped := api.NewClient(*apiAddr, *timeout, append(clientOptions, api.WithBot(id))...)
+			result, err = dispatch(ctx, scoped, rest)
+		}
+	}
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -146,13 +184,13 @@ func run(args []string, stdout, stderr *os.File) int {
 func dispatch(ctx context.Context, client localAPIClient, args []string) (types.APIResult, error) {
 	switch args[0] {
 	case "health":
-		return client.Get(ctx, "/v1/health")
+		return client.Get(ctx, "/health")
 	case "peers":
 		return runPeers(ctx, client, args[1:])
 	case "peer":
 		return runPeer(ctx, client, args[1:])
 	case "messages":
-		return client.Get(ctx, "/v1/messages")
+		return client.Get(ctx, "/messages")
 	case "publish":
 		return runPublish(ctx, client, args[1:])
 	case "auth":
@@ -162,7 +200,7 @@ func dispatch(ctx context.Context, client localAPIClient, args []string) (types.
 	case "transfer":
 		return runTransfer(ctx, client, args[1:])
 	case "transfers":
-		return client.Get(ctx, "/v1/transfers")
+		return client.Get(ctx, "/transfers")
 	default:
 		return types.APIResult{}, fmt.Errorf("unknown command: %s", args[0])
 	}
@@ -199,7 +237,7 @@ func runPeers(ctx context.Context, client localAPIClient, args []string) (types.
 		query.WriteString(url.QueryEscape(trimmed))
 	}
 
-	endpoint := "/v1/peers"
+	endpoint := "/peers"
 	if query.Len() > 0 {
 		endpoint += "?" + strings.TrimPrefix(query.String(), "&")
 	}
@@ -215,11 +253,11 @@ func runPeer(ctx context.Context, client localAPIClient, args []string) (types.A
 		return types.APIResult{}, flag.ErrHelp
 	}
 	if len(args) < 2 {
-		return types.APIResult{}, fmt.Errorf("peer %s requires a node id", args[0])
+		return types.APIResult{}, fmt.Errorf("peer %s requires a Bot id", args[0])
 	}
-	nodeID := args[1]
+	botID := args[1]
 	rest := args[2:]
-	attrsPath := "/v1/peers/" + url.PathEscape(nodeID) + "/attrs"
+	attrsPath := "/peers/" + url.PathEscape(botID) + "/attrs"
 
 	switch args[0] {
 	case "alias":
@@ -299,23 +337,23 @@ func decodePeerAttrs(data map[string]any) (types.PeerLocalAttrs, error) {
 }
 
 func printPeerHelp(stderr *os.File) {
-	fmt.Fprintln(stderr, "usage: clawsynapse peer <subcommand> <node-id> [args]")
+	fmt.Fprintln(stderr, "usage: clawsynapse --bot <local-id> peer <subcommand> <peer-bot-id> [args]")
 	fmt.Fprintln(stderr, "")
 	fmt.Fprintln(stderr, "Subcommands:")
-	fmt.Fprintln(stderr, "  alias <node-id> [alias]           set (or clear) a local alias")
-	fmt.Fprintln(stderr, "  describe <node-id> [text]         set (or clear) a local description")
-	fmt.Fprintln(stderr, "  label <node-id> <key> <value>...  set a local label (one value = scalar, many = set)")
-	fmt.Fprintln(stderr, "  unlabel <node-id> <key>           remove a local label")
+	fmt.Fprintln(stderr, "  alias <bot-id> [alias]           set (or clear) a local alias")
+	fmt.Fprintln(stderr, "  describe <bot-id> [text]         set (or clear) a local description")
+	fmt.Fprintln(stderr, "  label <bot-id> <key> <value>...  set a local label (one value = scalar, many = set)")
+	fmt.Fprintln(stderr, "  unlabel <bot-id> <key>           remove a local label")
 	fmt.Fprintln(stderr, "")
 	fmt.Fprintln(stderr, "Examples:")
-	fmt.Fprintln(stderr, "  clawsynapse peer alias <node-id> build-box")
-	fmt.Fprintln(stderr, "  clawsynapse peer label <node-id> caps shell fs.read")
-	fmt.Fprintln(stderr, "  clawsynapse peer unlabel <node-id> env")
+	fmt.Fprintln(stderr, "  clawsynapse --bot <local-id> peer alias <peer-id> build-box")
+	fmt.Fprintln(stderr, "  clawsynapse --bot <local-id> peer label <peer-id> caps shell fs.read")
+	fmt.Fprintln(stderr, "  clawsynapse --bot <local-id> peer unlabel <peer-id> env")
 }
 
 func runPublish(ctx context.Context, client localAPIClient, args []string) (types.APIResult, error) {
 	fs := flag.NewFlagSet("publish", flag.ContinueOnError)
-	target := fs.String("target", "", "target node id")
+	target := fs.String("target", "", "target Bot id")
 	msgType := fs.String("type", "", "message type (e.g. chat.message, task.assign)")
 	agentID := fs.String("agent", "", "target agent id override")
 	message := fs.String("message", "", "message content")
@@ -336,7 +374,7 @@ func runPublish(ctx context.Context, client localAPIClient, args []string) (type
 		return types.APIResult{}, err
 	}
 	body := map[string]any{
-		"targetNode": *target,
+		"targetBot":  *target,
 		"message":    *message,
 		"sessionKey": *sessionKey,
 		"metadata":   metadata,
@@ -347,7 +385,7 @@ func runPublish(ctx context.Context, client localAPIClient, args []string) (type
 	if strings.TrimSpace(*agentID) != "" {
 		body["agentId"] = *agentID
 	}
-	return client.Post(ctx, "/v1/publish", body)
+	return client.Post(ctx, "/publish", body)
 }
 
 func printPublishHelp(stderr *os.File) {
@@ -356,7 +394,7 @@ func printPublishHelp(stderr *os.File) {
 	fmt.Fprintln(stderr, "Flags:")
 	fs := flag.NewFlagSet("publish", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.String("target", "", "target node id")
+	fs.String("target", "", "target Bot id")
 	fs.String("type", "", "message type (e.g. chat.message, task.assign)")
 	fs.String("agent", "", "target agent id override")
 	fs.String("message", "", "message content")
@@ -379,7 +417,7 @@ func runAuth(ctx context.Context, client localAPIClient, args []string) (types.A
 	}
 
 	fs := flag.NewFlagSet("auth challenge", flag.ContinueOnError)
-	target := fs.String("target", "", "target node id")
+	target := fs.String("target", "", "target Bot id")
 	if err := fs.Parse(args[1:]); err != nil {
 		return types.APIResult{}, err
 	}
@@ -387,8 +425,8 @@ func runAuth(ctx context.Context, client localAPIClient, args []string) (types.A
 		return types.APIResult{}, fmt.Errorf("missing --target")
 	}
 
-	return client.Post(ctx, "/v1/auth/challenge", map[string]any{
-		"targetNode": *target,
+	return client.Post(ctx, "/auth/challenge", map[string]any{
+		"targetBot": *target,
 	})
 }
 
@@ -404,10 +442,10 @@ func runTrust(ctx context.Context, client localAPIClient, args []string) (types.
 
 	switch args[0] {
 	case "pending":
-		return client.Get(ctx, "/v1/trust/pending")
+		return client.Get(ctx, "/trust/pending")
 	case "request":
 		fs := flag.NewFlagSet("trust request", flag.ContinueOnError)
-		target := fs.String("target", "", "target node id")
+		target := fs.String("target", "", "target Bot id")
 		reason := fs.String("reason", "", "request reason")
 		var capabilities stringList
 		fs.Var(&capabilities, "capability", "capability; repeatable")
@@ -417,8 +455,8 @@ func runTrust(ctx context.Context, client localAPIClient, args []string) (types.
 		if strings.TrimSpace(*target) == "" {
 			return types.APIResult{}, fmt.Errorf("missing --target")
 		}
-		return client.Post(ctx, "/v1/trust/request", map[string]any{
-			"targetNode":   *target,
+		return client.Post(ctx, "/trust/request", map[string]any{
+			"targetBot":    *target,
 			"reason":       *reason,
 			"capabilities": []string(capabilities),
 		})
@@ -432,9 +470,9 @@ func runTrust(ctx context.Context, client localAPIClient, args []string) (types.
 		if strings.TrimSpace(*requestID) == "" {
 			return types.APIResult{}, fmt.Errorf("missing --request-id")
 		}
-		endpoint := "/v1/trust/approve"
+		endpoint := "/trust/approve"
 		if args[0] == "reject" {
-			endpoint = "/v1/trust/reject"
+			endpoint = "/trust/reject"
 		}
 		return client.Post(ctx, endpoint, map[string]any{
 			"requestId": *requestID,
@@ -442,7 +480,7 @@ func runTrust(ctx context.Context, client localAPIClient, args []string) (types.
 		})
 	case "revoke":
 		fs := flag.NewFlagSet("trust revoke", flag.ContinueOnError)
-		target := fs.String("target", "", "target node id")
+		target := fs.String("target", "", "target Bot id")
 		reason := fs.String("reason", "", "revoke reason")
 		if err := fs.Parse(args[1:]); err != nil {
 			return types.APIResult{}, err
@@ -450,9 +488,9 @@ func runTrust(ctx context.Context, client localAPIClient, args []string) (types.
 		if strings.TrimSpace(*target) == "" {
 			return types.APIResult{}, fmt.Errorf("missing --target")
 		}
-		return client.Post(ctx, "/v1/trust/revoke", map[string]any{
-			"targetNode": *target,
-			"reason":     *reason,
+		return client.Post(ctx, "/trust/revoke", map[string]any{
+			"targetBot": *target,
+			"reason":    *reason,
 		})
 	case "help":
 		printTrustHelp(os.Stderr)
@@ -470,12 +508,12 @@ func printTrustHelp(stderr *os.File) {
 	fmt.Fprintln(stderr, "  request               send a trust request")
 	fmt.Fprintln(stderr, "  approve               approve a trust request")
 	fmt.Fprintln(stderr, "  reject                reject a trust request")
-	fmt.Fprintln(stderr, "  revoke                revoke trust for a node")
+	fmt.Fprintln(stderr, "  revoke                revoke trust for a Bot")
 	fmt.Fprintln(stderr, "")
 	fmt.Fprintln(stderr, "Examples:")
-	fmt.Fprintln(stderr, "  clawsynapse trust pending")
-	fmt.Fprintln(stderr, "  clawsynapse trust request --target <node-id>")
-	fmt.Fprintln(stderr, "  clawsynapse trust approve --request-id <id>")
+	fmt.Fprintln(stderr, "  clawsynapse --bot <local-id> trust pending")
+	fmt.Fprintln(stderr, "  clawsynapse --bot <local-id> trust request --target <peer-id>")
+	fmt.Fprintln(stderr, "  clawsynapse --bot <local-id> trust approve --request-id <id>")
 }
 
 func runTransfer(ctx context.Context, client localAPIClient, args []string) (types.APIResult, error) {
@@ -489,10 +527,31 @@ func runTransfer(ctx context.Context, client localAPIClient, args []string) (typ
 	}
 
 	switch args[0] {
+	case "import":
+		fs := flag.NewFlagSet("transfer import", flag.ContinueOnError)
+		file := fs.String("file", "", "host file imported with administrator credentials")
+		if err := fs.Parse(args[1:]); err != nil {
+			return types.APIResult{}, err
+		}
+		if strings.TrimSpace(*file) == "" {
+			return types.APIResult{}, fmt.Errorf("missing --file")
+		}
+		return client.Post(ctx, "/transfer/import", map[string]any{"filePath": *file})
+	case "forward":
+		fs := flag.NewFlagSet("transfer forward", flag.ContinueOnError)
+		id := fs.String("id", "", "authorized transfer ID in selected Bot")
+		target := fs.String("target", "", "target Bot ID")
+		if err := fs.Parse(args[1:]); err != nil {
+			return types.APIResult{}, err
+		}
+		if strings.TrimSpace(*id) == "" || strings.TrimSpace(*target) == "" {
+			return types.APIResult{}, fmt.Errorf("missing --id or --target")
+		}
+		return client.Post(ctx, "/transfer/"+url.PathEscape(*id)+"/forward", map[string]any{"targetBot": *target})
 	case "send":
 		fs := flag.NewFlagSet("transfer send", flag.ContinueOnError)
-		target := fs.String("target", "", "target node id")
-		filePath := fs.String("file", "", "local file path")
+		target := fs.String("target", "", "target Bot id")
+		filePath := fs.String("file", "", "file path within the selected Bot workspace")
 		mimeType := fs.String("mime-type", "", "mime type")
 		var metadataFlags stringList
 		fs.Var(&metadataFlags, "metadata", "metadata key=value; repeatable")
@@ -510,14 +569,14 @@ func runTransfer(ctx context.Context, client localAPIClient, args []string) (typ
 			return types.APIResult{}, err
 		}
 		payload := map[string]any{
-			"targetNode": *target,
-			"filePath":   *filePath,
-			"mimeType":   *mimeType,
+			"targetBot": *target,
+			"filePath":  *filePath,
+			"mimeType":  *mimeType,
 		}
 		if len(metadata) > 0 {
 			payload["metadata"] = metadata
 		}
-		return client.Post(ctx, "/v1/transfer/send", payload)
+		return client.Post(ctx, "/transfer/send", payload)
 	case "get":
 		fs := flag.NewFlagSet("transfer get", flag.ContinueOnError)
 		transferID := fs.String("id", "", "transfer id")
@@ -527,7 +586,7 @@ func runTransfer(ctx context.Context, client localAPIClient, args []string) (typ
 		if strings.TrimSpace(*transferID) == "" {
 			return types.APIResult{}, fmt.Errorf("missing --id")
 		}
-		return client.Get(ctx, "/v1/transfer/"+strings.TrimSpace(*transferID))
+		return client.Get(ctx, "/transfer/"+url.PathEscape(strings.TrimSpace(*transferID)))
 	case "delete":
 		fs := flag.NewFlagSet("transfer delete", flag.ContinueOnError)
 		transferID := fs.String("id", "", "transfer id")
@@ -537,9 +596,9 @@ func runTransfer(ctx context.Context, client localAPIClient, args []string) (typ
 		if strings.TrimSpace(*transferID) == "" {
 			return types.APIResult{}, fmt.Errorf("missing --id")
 		}
-		return client.Delete(ctx, "/v1/transfer/"+strings.TrimSpace(*transferID))
+		return client.Delete(ctx, "/transfer/"+url.PathEscape(strings.TrimSpace(*transferID)))
 	case "list":
-		return client.Get(ctx, "/v1/transfers")
+		return client.Get(ctx, "/transfers")
 	case "help":
 		printTransferHelp(os.Stderr)
 		return types.APIResult{}, flag.ErrHelp
@@ -552,15 +611,19 @@ func printTransferHelp(stderr *os.File) {
 	fmt.Fprintln(stderr, "usage: clawsynapse transfer <subcommand>")
 	fmt.Fprintln(stderr, "")
 	fmt.Fprintln(stderr, "Subcommands:")
-	fmt.Fprintln(stderr, "  send     send a file to a target node")
+	fmt.Fprintln(stderr, "  send     send a selected-Bot workspace file to a target Bot")
+	fmt.Fprintln(stderr, "  import   admin-only import of an external host file into selected Bot references")
+	fmt.Fprintln(stderr, "  forward  send an authorized transfer reference to a target Bot")
 	fmt.Fprintln(stderr, "  get      get transfer details by id")
 	fmt.Fprintln(stderr, "  delete   delete a transfer by id")
 	fmt.Fprintln(stderr, "  list     list all transfers")
 	fmt.Fprintln(stderr, "")
 	fmt.Fprintln(stderr, "Examples:")
-	fmt.Fprintln(stderr, "  clawsynapse transfer send --target <node-id> --file <path>")
-	fmt.Fprintln(stderr, "  clawsynapse transfer get --id <transfer-id>")
-	fmt.Fprintln(stderr, "  clawsynapse transfer list")
+	fmt.Fprintln(stderr, "  clawsynapse --bot <local-id> transfer import --file <host-path>")
+	fmt.Fprintln(stderr, "  clawsynapse --bot <local-id> transfer forward --id <transfer-id> --target <peer-id>")
+	fmt.Fprintln(stderr, "  clawsynapse --bot <local-id> transfer send --target <peer-id> --file <workspace-path>")
+	fmt.Fprintln(stderr, "  clawsynapse --bot <local-id> transfer get --id <transfer-id>")
+	fmt.Fprintln(stderr, "  clawsynapse --bot <local-id> transfer list")
 }
 
 func parseMetadata(values []string) (map[string]any, error) {
@@ -651,8 +714,8 @@ func printHealthResult(stream *os.File, data map[string]any) {
 	nats, _ := data["nats"].(map[string]any)
 	adapter, _ := data["adapter"].(map[string]any)
 
-	if nodeID, _ := self["nodeId"].(string); nodeID != "" {
-		fmt.Fprintf(stream, "nodeId: %s\n", nodeID)
+	if botID, _ := self["botId"].(string); botID != "" {
+		fmt.Fprintf(stream, "botId: %s\n", botID)
 	}
 	if name, _ := self["displayName"].(string); name != "" {
 		fmt.Fprintf(stream, "displayName: %s\n", name)
@@ -700,11 +763,11 @@ func printPeersResult(stream *os.File, data map[string]any) {
 func renderPeersTable(peers []types.Peer) string {
 	var buf strings.Builder
 	w := tabwriter.NewWriter(&buf, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tNODE\tAUTH\tTRUST\tLABELS")
+	fmt.Fprintln(w, "NAME\tBOT\tAUTH\tTRUST\tLABELS")
 	for _, peer := range peers {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
 			peerDisplayName(peer),
-			peerNodeRef(peer),
+			peerBotRef(peer),
 			emptyDash(peer.AuthStatus),
 			emptyDash(peer.TrustStatus),
 			renderLabels(peer.Labels),
@@ -724,15 +787,15 @@ func peerDisplayName(peer types.Peer) string {
 	return "-"
 }
 
-func peerNodeRef(peer types.Peer) string {
+func peerBotRef(peer types.Peer) string {
 	if did := strings.TrimSpace(peer.DID); did != "" {
 		return identity.FingerprintFromDID(did)
 	}
 	const shortLen = 12
-	if len(peer.NodeID) > shortLen {
-		return peer.NodeID[:shortLen]
+	if len(peer.BotID) > shortLen {
+		return peer.BotID[:shortLen]
 	}
-	return peer.NodeID
+	return peer.BotID
 }
 
 // renderLabels renders labels compactly: k=v for scalars, k=[a,b] for sets.
@@ -792,8 +855,8 @@ func printPeerAttrsResult(stream *os.File, data map[string]any) {
 	if err != nil {
 		return
 	}
-	if nodeID, _ := data["nodeId"].(string); nodeID != "" {
-		fmt.Fprintf(stream, "nodeId: %s\n", nodeID)
+	if botID, _ := data["botId"].(string); botID != "" {
+		fmt.Fprintf(stream, "botId: %s\n", botID)
 	}
 	fmt.Fprintf(stream, "alias: %s\n", attrs.Alias)
 	fmt.Fprintf(stream, "description: %s\n", attrs.Description)
@@ -801,11 +864,11 @@ func printPeerAttrsResult(stream *os.File, data map[string]any) {
 }
 
 func printPublishResult(stream *os.File, data map[string]any) {
-	targetNode, _ := data["targetNode"].(string)
+	targetBot, _ := data["targetBot"].(string)
 	messageID, _ := data["messageId"].(string)
 	sessionKey, _ := data["sessionKey"].(string)
-	if targetNode != "" {
-		fmt.Fprintf(stream, "targetNode: %s\n", targetNode)
+	if targetBot != "" {
+		fmt.Fprintf(stream, "targetBot: %s\n", targetBot)
 	}
 	if messageID != "" {
 		fmt.Fprintf(stream, "messageId: %s\n", messageID)
@@ -816,10 +879,10 @@ func printPublishResult(stream *os.File, data map[string]any) {
 }
 
 func printTrustRequestResult(stream *os.File, data map[string]any) {
-	targetNode, _ := data["targetNode"].(string)
+	targetBot, _ := data["targetBot"].(string)
 	requestID, _ := data["requestId"].(string)
-	if targetNode != "" {
-		fmt.Fprintf(stream, "targetNode: %s\n", targetNode)
+	if targetBot != "" {
+		fmt.Fprintf(stream, "targetBot: %s\n", targetBot)
 	}
 	if requestID != "" {
 		fmt.Fprintf(stream, "requestId: %s\n", requestID)
@@ -838,17 +901,17 @@ func printTrustDecisionResult(stream *os.File, data map[string]any) {
 }
 
 func printTrustRevokeResult(stream *os.File, data map[string]any) {
-	targetNode, _ := data["targetNode"].(string)
-	if targetNode != "" {
-		fmt.Fprintf(stream, "targetNode: %s\n", targetNode)
+	targetBot, _ := data["targetBot"].(string)
+	if targetBot != "" {
+		fmt.Fprintf(stream, "targetBot: %s\n", targetBot)
 	}
 }
 
 func printAuthChallengeResult(stream *os.File, data map[string]any) {
-	targetNode, _ := data["targetNode"].(string)
+	targetBot, _ := data["targetBot"].(string)
 	status, _ := data["status"].(string)
-	if targetNode != "" {
-		fmt.Fprintf(stream, "targetNode: %s\n", targetNode)
+	if targetBot != "" {
+		fmt.Fprintf(stream, "targetBot: %s\n", targetBot)
 	}
 	if status != "" {
 		fmt.Fprintf(stream, "status: %s\n", status)
@@ -924,7 +987,7 @@ func asInt64(v any) (int64, bool) {
 }
 
 func printUsage(stderr *os.File) {
-	fmt.Fprintln(stderr, "usage: clawsynapse [--api-addr host:port] [--timeout 5s] [--json] <command> [args]")
+	fmt.Fprintln(stderr, "usage: clawsynapse [--api-addr host:port] [--token-file FILE] [--bot ID] [--timeout 5s] [--json] <command> [args]")
 	fmt.Fprintln(stderr, "")
 	fmt.Fprintln(stderr, "Commands:")
 	fmt.Fprintln(stderr, "  init                 generate configuration file")
@@ -933,7 +996,11 @@ func printUsage(stderr *os.File) {
 	fmt.Fprintln(stderr, "  logs                 view daemon logs")
 	fmt.Fprintln(stderr, "  upgrade              check for or apply upgrades")
 	fmt.Fprintln(stderr, "  version              print version")
-	fmt.Fprintln(stderr, "  health               check daemon health")
+	fmt.Fprintln(stderr, "  bots                 list local Bot identities")
+	fmt.Fprintln(stderr, "  bot                  create|get|config|start|stop|archive|restore|export|import")
+	fmt.Fprintln(stderr, "  migrate              explicitly migrate legacy configuration to daemon storage")
+	fmt.Fprintln(stderr, "  daemon               check daemon health without a Bot selection")
+	fmt.Fprintln(stderr, "  health               check selected Bot health")
 	fmt.Fprintln(stderr, "  peers                list connected peers")
 	fmt.Fprintln(stderr, "                       flags: --name <substr>  --label k=v (exact, repeatable)  --label-has k=v (set member, repeatable)")
 	fmt.Fprintln(stderr, "  peer                 manage local peer remarks (alias|describe|label|unlabel)")
@@ -946,6 +1013,8 @@ func printUsage(stderr *os.File) {
 	fmt.Fprintln(stderr, "")
 	fmt.Fprintln(stderr, "Global Flags:")
 	fmt.Fprintln(stderr, "  --api-addr string    local API address (default \"127.0.0.1:18080\")")
+	fmt.Fprintln(stderr, "  --bot string         required Bot ID or unambiguous prefix for business commands")
+	fmt.Fprintln(stderr, "  --token-file string  private credential for the exact daemon endpoint")
 	fmt.Fprintln(stderr, "  --timeout duration   local API timeout (default 5s)")
 	fmt.Fprintln(stderr, "  --json               print raw JSON response")
 	fmt.Fprintln(stderr, "")
@@ -954,11 +1023,11 @@ func printUsage(stderr *os.File) {
 	fmt.Fprintln(stderr, "  clawsynapse service status")
 	fmt.Fprintln(stderr, "  clawsynapse logs --lines 50")
 	fmt.Fprintln(stderr, "  clawsynapse upgrade check")
-	fmt.Fprintln(stderr, "  clawsynapse publish --target <node-id> --message \"hello\"")
-	fmt.Fprintln(stderr, "  clawsynapse peers --label role=builder --label-has caps=shell")
-	fmt.Fprintln(stderr, "  clawsynapse peer alias <node-id> build-box")
-	fmt.Fprintln(stderr, "  clawsynapse trust request --target <node-id>")
-	fmt.Fprintln(stderr, "  clawsynapse transfer send --target <node-id> --file <path>")
+	fmt.Fprintln(stderr, "  clawsynapse --bot <local-id> publish --target <peer-id> --message \"hello\"")
+	fmt.Fprintln(stderr, "  clawsynapse --bot <local-id> peers --label role=builder --label-has caps=shell")
+	fmt.Fprintln(stderr, "  clawsynapse --bot <local-id> peer alias <peer-id> build-box")
+	fmt.Fprintln(stderr, "  clawsynapse --bot <local-id> trust request --target <peer-id>")
+	fmt.Fprintln(stderr, "  clawsynapse --bot <local-id> transfer send --target <peer-id> --file <workspace-path>")
 	fmt.Fprintln(stderr, "")
 	fmt.Fprintln(stderr, "Run \"clawsynapse <command> -h\" for more details on a command.")
 }

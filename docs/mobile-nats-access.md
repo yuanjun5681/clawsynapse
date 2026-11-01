@@ -5,7 +5,7 @@ title: "Harness 移动端 NATS 接入设计"
 
 # Harness 移动端 NATS 接入设计
 
-最后更新：2026-10-20
+最后更新：2026-10-31
 
 ## 文档状态与范围
 
@@ -14,12 +14,12 @@ title: "Harness 移动端 NATS 接入设计"
 本文只讨论：
 
 - 移动 App 与 Harness 后端如何通信。
-- 如何复用 NATS，避免手机安装独立节点服务。
+- 如何复用 NATS，避免手机安装独立 daemon 或承载 Bot。
 - Harness 与 ClawSynapse 的职责，以及移动端认证、权限和恢复语义。
 
 **Harness 内部多个 Agent 如何调度、执行或互相通信，不属于本文范围。**
 
-现有接入方式见 [集成与适配](./integration.md)，节点间协议见 [协议文档](./protocol.md)。本文不会修改既有节点间协议。
+现有接入方式见 [集成与适配](./integration.md)，Bot 间协议见 [协议文档](./protocol.md)。本文不会修改既有 Bot 间协议。
 
 ## 设计结论
 
@@ -27,7 +27,7 @@ title: "Harness 移动端 NATS 接入设计"
 
 > HTTPS 登录与文件传输 + NATS over WSS 双向业务消息 + Harness 后端持久记录与重连同步。
 
-移动 App 内置 NATS 客户端库，直接连接 NATS Server 的 WSS 入口。手机不运行 NATS Server，不安装 `clawsynapsed`，也不承担 ClawSynapse 节点的发现、认证和信任管理职责。
+移动 App 内置 NATS 客户端库，直接连接 NATS Server 的 WSS 入口。手机不运行 NATS Server，不安装 `clawsynapsed`，也不承担 ClawSynapse Bot 的发现、认证和信任管理职责。移动接入本身仍是待实现方案，不因多 Bot 本地管理已落地而变为可用功能。
 
 这不是完全取消 WebSocket，而是**用 NATS 协议替代自定义业务 WebSocket 协议，底层仍使用 WSS**。在已有 NATS 基础设施的前提下，可以避免再增加一个只转发消息的 WebSocket 网关。
 
@@ -42,24 +42,24 @@ flowchart LR
     L[HTTPS 登录与文件入口] <--> M
     L <--> H
     S[Slack / Telegram] <-->|平台接口| H
-    H <-->|现有 Adapter 与本地 API| C[ClawSynapse Node]
-    C <-->|节点间协议| E[NATS：跨节点网络 Account]
-    E <--> P[其他 ClawSynapse Node]
+    H <-->|Adapter 与 Bot 作用域本地 API| C[Daemon 托管的独立 Bot]
+    C <-->|wire v2 Bot 间协议| E[NATS：跨 Bot 网络 Account]
+    E <--> P[其他 ClawSynapse Bot]
 ```
 
-移动接入与跨节点网络可以共用一套 NATS Server 部署，但应使用独立 Account 隔离 subject 命名空间和权限。不要直接向手机开放现有节点网络。
+移动接入与跨 Bot 网络可以共用一套 NATS Server 部署，但应使用独立 Account 隔离 subject 命名空间和权限。不要直接向手机开放现有 Bot 网络。
 
 | 角色 | 职责 |
 |---|---|
 | 移动 App | 用户交互、提交命令、接收事件、审批交互、重连同步 |
 | NATS | 连接管理、发布订阅、Request-Reply、subject 级权限执行 |
 | Harness 后端 | 用户与设备绑定、业务授权、会话管理、命令去重、持久记录、事件路由 |
-| ClawSynapse Node | 跨节点身份、发现、认证、信任与消息交换 |
+| ClawSynapse Daemon / Bot | daemon 托管多个独立 Bot；各 Bot 分别负责身份、发现、认证、信任与消息交换 |
 | Slack / Telegram 接入 | 平台消息收发、渠道账号绑定、平台会话与 Harness 会话映射 |
 
-同一个独立信任主体的 Node 可以为 Harness 中多个逻辑 Bot 提供网络入口；多个移动设备和聊天渠道可以访问这些 Bot。它们不需要分别部署 Node。
+一个 daemon 可以托管多个长期协作身份 Bot，每个 Bot 独立持有 Ed25519 密钥、DID、信任、消息、Session 映射和文件引用，并绑定一个 Harness 接入。Harness 内部 Agent、subagent 和 Session 不自动成为 Bot 或联系人；多个手机和渠道可访问经后端授权的 Bot，不需要分别部署 daemon。
 
-但当前 ClawSynapse 的信任主要是节点级的。`AgentID` 用于路由，不等于 Agent 级或租户级授权。不能仅因多个客户共享后端，就让他们无条件共享节点身份和信任状态。
+`botId` 沿用 Ed25519 → `did:key` → `n1-<hash>` 算法，与 wire v2 `nodeId` 是同一值；此本地分层不改 `nodeId/from/to`、subject、签名或 consumer。信任按 Bot 而非 daemon 共享；A 信任 R 不授予 B 信任或文件权限。`agentId` 只作所选 Binding 内的受限路由提示，不等于 Agent 级/租户级授权。共享进程和同 OS 用户不构成强多租户沙箱。
 
 ## 移动端连接流程
 
@@ -70,6 +70,8 @@ flowchart LR
 5. 凭据过期、设备撤销或权限变化时，按所选认证方案续期、撤销或断开连接。
 
 NATS 凭据不能作为“客户端已经获准执行所有业务操作”的证明。Harness 后端仍需校验会话访问权和操作权限，并将请求关联到服务器授权的身份，不能相信消息正文中自报的用户 ID。
+
+移动凭据代表用户/设备的移动入口权限，不是 Bot 的 Ed25519 身份、Bot 本地 HTTP token 或 daemon 管理凭据。后端必须将用户操作映射到其被授权的 Bot 与会话；不能让手机通过自报 `botId` 取得另一个 Bot 的身份或文件引用。Harness 调用本地 API 时使用对应 Bot 的作用域凭据及 `/v2/bots/{botId}/...`，不把管理 token 下发给设备。
 
 ## 消息 Interface
 
@@ -83,7 +85,7 @@ app.v1.<userId>.<deviceId>.events
 
 `userId` 和 `deviceId` 应使用服务器分配的 subject-safe 标识，不能直接拼接用户输入、邮箱地址或渠道名称。
 
-上述命名用于移动接入，不复用 `clawsynapse.*` 节点间 subject。用户与设备隔离必须由服务器权限强制执行，不能只靠命名约定。
+上述命名用于移动接入，不复用 `clawsynapse.*` Bot 间 subject。用户与设备隔离必须由服务器权限强制执行，不能只靠命名约定。
 
 ### 命令与事件
 
@@ -150,7 +152,7 @@ Reply inbox 也必须隔离，不能让所有客户端共同获得整个 `_INBOX
 ### 凭据与连接管理
 
 - 公网接入使用 WSS 并验证服务器证书。
-- 不在 App 内置共享长期密码、节点私钥、服务器管理凭据或签名密钥。
+- 不在 App 内置共享长期密码、Bot 私钥、服务器管理凭据或签名密钥。
 - 凭据有有效期，并设计设备撤销与现有连接失效机制；只停止签发新凭据不足以撤销已建立的连接。
 - 限制连接数、订阅数、负载大小和请求频率；处理慢消费者与客户端异常流量。
 - 对登录、凭据签发、授权失败和敏感操作保留必要审计记录，不记录凭据正文。
@@ -177,18 +179,18 @@ NATS subject 权限只决定可以向哪里发消息、从哪里收消息，不�
 
 目前可复用的接入能力：
 
-- `internal/adapter/adapter.go` 的 `AgentAdapter` 投递接口。
-- Webhook Adapter：节点向 Harness 后端投递消息。
-- 本地发布接口：Harness 需要向其他节点发送消息时调用。
+- `AgentAdapter`：目标 Bot 通过自己的 Binding 向 Harness 投递消息。
+- Bot 作用域本地发布接口：Harness 向其他 Bot 发消息时调用 `/v2/bots/{botId}/publish`，本地目标字段为 `targetBot`。
+- 该 Bot 授权的传输接口：内容去重不共享访问权，移动用户仍需后端业务授权；文件备份/导出须包含 Bot 引用的共享实体，不能只复制 Bot 目录。
 
-新增移动 NATS 接入不要求先把 ClawSynapse 改成嵌入式 Core，也不要求给手机签发节点身份。先保留 Node 与 Harness 的现有接入方式，避免同时修改两条链路。
+新增移动 NATS 接入不要求把 ClawSynapse 改成嵌入式 Core，也不要求给手机签发 Bot 身份。保持 Harness 与 Bot 的显式接入边界，不把设备凭据升级为跨 Bot 管理权限。
 
 必须区分两个恢复范围：
 
 - **手机与 Harness 之间**：由本文的持久记录和同步方案处理。
-- **ClawSynapse Node 之间**：当前 Messaging 使用普通 NATS 订阅，内存 recent messages 也不是持久收件箱。本文不解决消息进入 Harness 之前的跨节点离线丢失。
+- **ClawSynapse Bot 之间**：Messaging 已使用 JetStream durable consumer、本地 journal/outbox 与持久游标，并按 Bot 隔离；重启中未终结 admitted 执行保留不确定结果，不盲目重跑。这不等于 Harness 已持久接受，也不等于手机已展示。
 
-若产品要求端到端可靠投递，需要另外补齐跨节点消息的持久化、确认与恢复语义，不能仅因移动接入使用 NATS 就声称整条链路可靠。
+端到端恢复仍须连接这两个范围，核对 Harness 接受确认、持久记录、游标同步及副作用语义；不能仅因两条链路都使用 NATS 就声称整条链路可靠或恰好执行一次。
 
 ## 实施与验收范围
 
@@ -196,18 +198,18 @@ NATS subject 权限只决定可以向哪里发消息、从哪里收消息，不�
 
 至少验证以下行为：
 
-- 手机无需安装 Node 或维护本地监听端口即可完成消息收发。
-- 用户不能发布或订阅其他用户及设备的 subject，不能访问节点管理和信任操作。
+- 手机无需安装 daemon、承载 Bot 或维护本地监听端口即可完成消息收发。
+- 用户不能发布或订阅其他用户及设备的 subject，不能访问 daemon 管理或 Bot 信任操作。
 - 接受回复丢失后，用同一个 `requestId` 重试不会重复提交。
 - App 离线期间产生的关键状态，恢复后可同步且不重复展示。
 - 历史同步与实时事件交叠时，不遗漏、不回退已应用状态。
 - 设备撤销、凭据到期、网络切换和同步游标过期都有明确行为。
 
-不在本方案中扩展 Harness 内部 Agent 调度、设备独立节点身份、根密钥委派或 P2P 网络。
+不在本方案中扩展 Harness 内部 Agent 调度、设备独立 Bot 身份、根密钥委派或 P2P 网络。
 
 ## 参考资料
 
 - [NATS：WebSocket 接入](https://docs.nats.io/learn/websocket/)
 - [NATS：发布与订阅授权](https://docs.nats.io/learn/security/authorization)
 - [ClawSynapse 集成与适配](./integration.md)
-- [ClawSynapse 节点间协议](./protocol.md)
+- [ClawSynapse Bot 间协议](./protocol.md)

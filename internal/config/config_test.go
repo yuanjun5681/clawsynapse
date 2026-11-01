@@ -86,7 +86,7 @@ func TestLoadFromOSMergesDotEnvEnvAndFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := os.WriteFile(filepath.Join(project, ".env"), []byte("TRUST_MODE=open\nTRUST_AUTO_APPROVE=true\nNATS_SERVERS=nats://10.0.0.2:4222\nAGENT_ADAPTER=openclaw\nAGENT_ADAPTER_TIMEOUT=15m\nAGENT_PRODUCT=deepseek-harness\nAGENT_VERSION=0.1.2-alpha.3\nNODE_DISPLAY_NAME=Deepseek Node\nNODE_LABELS={\"env\":\"test\",\"caps\":[\"chat\",\"task\",\"transfer\"]}\nLOG_LEVEL=debug\nLOG_FORMAT=text\nLOG_ADD_SOURCE=true\nLOG_FILE_PATH=./runtime/clawsynapsed.log\nLOG_ROTATE_MAX_SIZE_MB=64\nLOG_ROTATE_MAX_BACKUPS=5\nLOG_ROTATE_MAX_AGE_DAYS=14\nLOG_ROTATE_COMPRESS=true\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(project, ".env"), []byte("TRUST_MODE=open\nTRUST_AUTO_APPROVE=true\nNATS_SERVERS=nats://10.0.0.2:4222\nAGENT_ADAPTER=openclaw\nAGENT_ADAPTER_TIMEOUT=15m\nAGENT_PRODUCT=deepseek-harness\nAGENT_VERSION=0.1.2-alpha.3\nNODE_DISPLAY_NAME=Deepseek Bot\nNODE_LABELS={\"env\":\"test\",\"caps\":[\"chat\",\"task\",\"transfer\"]}\nLOG_LEVEL=debug\nLOG_FORMAT=text\nLOG_ADD_SOURCE=true\nLOG_FILE_PATH=./runtime/clawsynapsed.log\nLOG_ROTATE_MAX_SIZE_MB=64\nLOG_ROTATE_MAX_BACKUPS=5\nLOG_ROTATE_MAX_AGE_DAYS=14\nLOG_ROTATE_COMPRESS=true\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -157,7 +157,7 @@ func TestLoadFromOSMergesDotEnvEnvAndFlags(t *testing.T) {
 	if cfg.AgentVersion != "0.1.2-alpha.3" {
 		t.Fatalf("expected dotenv agent version 0.1.2-alpha.3, got %q", cfg.AgentVersion)
 	}
-	if cfg.DisplayName != "Deepseek Node" {
+	if cfg.DisplayName != "Deepseek Bot" {
 		t.Fatalf("expected dotenv display name, got %q", cfg.DisplayName)
 	}
 	if caps := cfg.Labels.Caps(); len(caps) != 3 || caps[2] != "transfer" {
@@ -414,7 +414,7 @@ func TestSaveToFileAndReadBack(t *testing.T) {
 		AgentAdapterTimeout: "20m",
 		AgentProduct:        "deepseek-harness",
 		AgentVersion:        "0.1.2-alpha.3",
-		DisplayName:         "Deepseek Node",
+		DisplayName:         "Deepseek Bot",
 		Labels: types.Labels{
 			"env":  types.LabelString("production"),
 			"role": types.LabelSet([]string{"worker", "batch"}),
@@ -460,7 +460,7 @@ func TestSaveToFileAndReadBack(t *testing.T) {
 	if loaded.AgentProduct != "deepseek-harness" || loaded.AgentVersion != "0.1.2-alpha.3" {
 		t.Fatalf("unexpected agent identity: product=%q version=%q", loaded.AgentProduct, loaded.AgentVersion)
 	}
-	if loaded.DisplayName != "Deepseek Node" {
+	if loaded.DisplayName != "Deepseek Bot" {
 		t.Fatalf("expected display name to round trip, got %q", loaded.DisplayName)
 	}
 	if !loaded.Labels.MatchExact("env", "production") {
@@ -572,7 +572,7 @@ func TestLoadLegacyAgentCapabilitiesFromEnv(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsInvalidNodeLabelsEnv(t *testing.T) {
+func TestLoadRejectsInvalidBotLabelsEnv(t *testing.T) {
 	home := t.TempDir()
 	project := t.TempDir()
 	t.Setenv("HOME", home)
@@ -592,11 +592,11 @@ func TestLabelFlagsAccumulate(t *testing.T) {
 	clearConfigEnv(t)
 	chdirTempProject(t, project)
 
-	cfg, err := LoadFromOS([]string{"--display-name", "Node One", "--label", "env=staging", "--label", "role=worker", "--label", "role=batch"})
+	cfg, err := LoadFromOS([]string{"--display-name", "Bot One", "--label", "env=staging", "--label", "role=worker", "--label", "role=batch"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DisplayName != "Node One" {
+	if cfg.DisplayName != "Bot One" {
 		t.Fatalf("expected display name from flag, got %q", cfg.DisplayName)
 	}
 	if !cfg.Labels.MatchExact("env", "staging") {
@@ -669,7 +669,7 @@ func TestValidateRejectsInvalidLabels(t *testing.T) {
 	}
 
 	valid := base
-	valid.DisplayName = "Node One"
+	valid.DisplayName = "Bot One"
 	valid.Labels = types.Labels{"env": types.LabelString("prod"), "caps": types.LabelSet([]string{"chat"})}
 	if err := Validate(valid); err != nil {
 		t.Fatalf("expected valid labels, got %v", err)

@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"clawsynapse/internal/config"
 	"clawsynapse/internal/messaging"
 	"clawsynapse/internal/protocol"
 	"clawsynapse/internal/store"
@@ -18,11 +17,11 @@ import (
 )
 
 type challengeReq struct {
-	TargetNode string `json:"targetNode"`
+	TargetBot string `json:"targetBot"`
 }
 
 type trustRequestReq struct {
-	TargetNode   string   `json:"targetNode"`
+	TargetBot    string   `json:"targetBot"`
 	Reason       string   `json:"reason,omitempty"`
 	Capabilities []string `json:"capabilities,omitempty"`
 }
@@ -33,12 +32,12 @@ type trustDecisionReq struct {
 }
 
 type trustRevokeReq struct {
-	TargetNode string `json:"targetNode"`
-	Reason     string `json:"reason,omitempty"`
+	TargetBot string `json:"targetBot"`
+	Reason    string `json:"reason,omitempty"`
 }
 
 type publishReq struct {
-	TargetNode     string                   `json:"targetNode"`
+	TargetBot      string                   `json:"targetBot"`
 	Type           string                   `json:"type,omitempty"`
 	AgentID        string                   `json:"agentId,omitempty"`
 	Message        *string                  `json:"message,omitempty"`
@@ -56,7 +55,7 @@ type peerFilter struct {
 }
 
 // parsePeerFilter parses the optional `label` (exact scalar), `labelHas`
-// (set member) and `name` (substring) query filters for /v1/peers.
+// (set member) and `name` (substring) query filters for a Bot's peer view.
 func parsePeerFilter(r *http.Request) (peerFilter, error) {
 	var f peerFilter
 	q := r.URL.Query()
@@ -139,7 +138,7 @@ func (s *Server) listRemotePeers() []types.Peer {
 	peers := s.peers.List()
 	out := make([]types.Peer, 0, len(peers))
 	for _, peer := range peers {
-		if peer.NodeID == s.self.NodeID {
+		if peer.BotID == s.self.BotID {
 			continue
 		}
 		out = append(out, peer)
@@ -147,7 +146,7 @@ func (s *Server) listRemotePeers() []types.Peer {
 	return out
 }
 
-// peerAttrsPatch is the PUT /v1/peers/{nodeID}/attrs body. Pointer fields
+// peerAttrsPatch updates one remote Bot's local attributes. Pointer fields
 // distinguish "key omitted" (leave untouched) from "explicit empty" (clear).
 type peerAttrsPatch struct {
 	Alias       *string       `json:"alias"`
@@ -155,52 +154,52 @@ type peerAttrsPatch struct {
 	Labels      *types.Labels `json:"labels"`
 }
 
-// peerAttrsNodeID validates the {nodeID} path value. It is a local lookup
+// peerAttrsBotID validates the {botID} path value. It is a local lookup
 // key only and is never joined into a filesystem path.
-func peerAttrsNodeID(w http.ResponseWriter, r *http.Request) (string, bool) {
-	nodeID := strings.TrimSpace(r.PathValue("nodeID"))
-	if nodeID == "" || len(nodeID) > 256 {
+func peerAttrsBotID(w http.ResponseWriter, r *http.Request) (string, bool) {
+	botID := strings.TrimSpace(r.PathValue("peerID"))
+	if botID == "" || len(botID) > 256 {
 		respondJSON(w, http.StatusBadRequest, types.APIResult{
 			OK:      false,
 			Code:    "peer_attrs.invalid",
-			Message: "invalid node id",
+			Message: "invalid bot id",
 			TS:      time.Now().UnixMilli(),
 		})
 		return "", false
 	}
-	return nodeID, true
+	return botID, true
 }
 
-func (s *Server) respondPeerAttrs(w http.ResponseWriter, nodeID string) {
-	attrs := s.peers.LocalAttrsSnapshot()[nodeID]
+func (s *Server) respondPeerAttrs(w http.ResponseWriter, botID string) {
+	attrs := s.peers.LocalAttrsSnapshot()[botID]
 	respondJSON(w, http.StatusOK, types.APIResult{
 		OK:      true,
 		Code:    "peer_attrs.ok",
 		Message: "peer attrs fetched",
 		Data: map[string]any{
-			"nodeId": nodeID,
-			"attrs":  attrs,
+			"botId": botID,
+			"attrs": attrs,
 		},
 		TS: time.Now().UnixMilli(),
 	})
 }
 
 func (s *Server) handlePeerAttrsGet(w http.ResponseWriter, r *http.Request) {
-	nodeID, ok := peerAttrsNodeID(w, r)
+	botID, ok := peerAttrsBotID(w, r)
 	if !ok {
 		return
 	}
-	s.respondPeerAttrs(w, nodeID)
+	s.respondPeerAttrs(w, botID)
 }
 
-func (s *Server) persistPeerAttrs(w http.ResponseWriter, nodeID string) bool {
+func (s *Server) persistPeerAttrs(w http.ResponseWriter, botID string) bool {
 	if s.attrs == nil {
 		return true
 	}
 	st := store.PeerAttrsState{SchemaVersion: 1, Peers: s.peers.LocalAttrsSnapshot()}
 	if err := s.attrs.SavePeerAttrsState(st); err != nil {
 		slog.Error("persist peer attrs failed; in-memory change kept",
-			slog.String("nodeId", nodeID),
+			slog.String("botId", botID),
 			slog.String("error", err.Error()),
 		)
 		respondJSON(w, http.StatusInternalServerError, types.APIResult{
@@ -215,7 +214,7 @@ func (s *Server) persistPeerAttrs(w http.ResponseWriter, nodeID string) bool {
 }
 
 func (s *Server) handlePeerAttrsPut(w http.ResponseWriter, r *http.Request) {
-	nodeID, ok := peerAttrsNodeID(w, r)
+	botID, ok := peerAttrsBotID(w, r)
 	if !ok {
 		return
 	}
@@ -231,7 +230,7 @@ func (s *Server) handlePeerAttrsPut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.attrsMu.Lock()
-	attrs := s.peers.LocalAttrsSnapshot()[nodeID]
+	attrs := s.peers.LocalAttrsSnapshot()[botID]
 	if patch.Alias != nil {
 		attrs.Alias = *patch.Alias
 	}
@@ -263,28 +262,28 @@ func (s *Server) handlePeerAttrsPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.peers.SetLocalAttrs(nodeID, normalized)
-	persisted := s.persistPeerAttrs(w, nodeID)
+	s.peers.SetLocalAttrs(botID, normalized)
+	persisted := s.persistPeerAttrs(w, botID)
 	s.attrsMu.Unlock()
 	if !persisted {
 		return
 	}
-	s.respondPeerAttrs(w, nodeID)
+	s.respondPeerAttrs(w, botID)
 }
 
 func (s *Server) handlePeerAttrsDelete(w http.ResponseWriter, r *http.Request) {
-	nodeID, ok := peerAttrsNodeID(w, r)
+	botID, ok := peerAttrsBotID(w, r)
 	if !ok {
 		return
 	}
 	s.attrsMu.Lock()
-	s.peers.SetLocalAttrs(nodeID, types.PeerLocalAttrs{})
-	persisted := s.persistPeerAttrs(w, nodeID)
+	s.peers.SetLocalAttrs(botID, types.PeerLocalAttrs{})
+	persisted := s.persistPeerAttrs(w, botID)
 	s.attrsMu.Unlock()
 	if !persisted {
 		return
 	}
-	s.respondPeerAttrs(w, nodeID)
+	s.respondPeerAttrs(w, botID)
 }
 
 func (s *Server) handleAuthChallenge(w http.ResponseWriter, r *http.Request) {
@@ -302,13 +301,13 @@ func (s *Server) handleAuthChallenge(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextWithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	if err := s.auth.StartChallenge(ctx, req.TargetNode); err != nil {
+	if err := s.auth.StartChallenge(ctx, req.TargetBot); err != nil {
 		respondJSON(w, http.StatusBadRequest, types.APIResult{
 			OK:      false,
 			Code:    "auth.challenge_failed",
 			Message: err.Error(),
 			Data: map[string]any{
-				"targetNode": req.TargetNode,
+				"targetBot": req.TargetBot,
 			},
 			TS: time.Now().UnixMilli(),
 		})
@@ -320,8 +319,8 @@ func (s *Server) handleAuthChallenge(w http.ResponseWriter, r *http.Request) {
 		Code:    "auth.challenge_accepted",
 		Message: "challenge completed",
 		Data: map[string]any{
-			"targetNode": req.TargetNode,
-			"status":     "authenticated",
+			"targetBot": req.TargetBot,
+			"status":    "authenticated",
 		},
 		TS: time.Now().UnixMilli(),
 	})
@@ -376,7 +375,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		Message: "service healthy",
 		Data: map[string]any{
 			"self": map[string]any{
-				"nodeId":              s.self.NodeID,
+				"botId":               s.self.BotID,
 				"did":                 s.self.DID,
 				"version":             s.version,
 				"identityFingerprint": s.self.IdentityFingerprint,
@@ -399,14 +398,14 @@ func (s *Server) handleTrustRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	requestID, err := s.trust.Request(r.Context(), req.TargetNode, req.Reason, req.Capabilities)
+	requestID, err := s.trust.Request(r.Context(), req.TargetBot, req.Reason, req.Capabilities)
 	if err != nil {
 		respondJSON(w, http.StatusBadRequest, types.APIResult{
 			OK:      false,
 			Code:    "trust.request_failed",
 			Message: err.Error(),
 			Data: map[string]any{
-				"targetNode": req.TargetNode,
+				"targetBot": req.TargetBot,
 			},
 			TS: time.Now().UnixMilli(),
 		})
@@ -418,8 +417,8 @@ func (s *Server) handleTrustRequest(w http.ResponseWriter, r *http.Request) {
 		Code:    "trust.requested",
 		Message: "trust request sent",
 		Data: map[string]any{
-			"targetNode": req.TargetNode,
-			"requestId":  requestID,
+			"targetBot": req.TargetBot,
+			"requestId": requestID,
 		},
 		TS: time.Now().UnixMilli(),
 	})
@@ -470,7 +469,7 @@ func (s *Server) handleTrustRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.trust.Revoke(req.TargetNode, req.Reason); err != nil {
+	if err := s.trust.Revoke(req.TargetBot, req.Reason); err != nil {
 		respondJSON(w, http.StatusBadRequest, types.APIResult{OK: false, Code: "trust.revoke_failed", Message: err.Error(), TS: time.Now().UnixMilli()})
 		return
 	}
@@ -480,7 +479,7 @@ func (s *Server) handleTrustRevoke(w http.ResponseWriter, r *http.Request) {
 		Code:    "trust.revoked",
 		Message: "trust revoked",
 		Data: map[string]any{
-			"targetNode": req.TargetNode,
+			"targetBot": req.TargetBot,
 		},
 		TS: time.Now().UnixMilli(),
 	})
@@ -522,7 +521,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := s.messaging.Publish(messaging.PublishRequest{
-		TargetNode:     req.TargetNode,
+		TargetBot:      req.TargetBot,
 		Type:           req.Type,
 		AgentID:        req.AgentID,
 		Message:        message,
@@ -542,7 +541,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 			Code:    code,
 			Message: err.Error(),
 			Data: map[string]any{
-				"targetNode": req.TargetNode,
+				"targetBot":  req.TargetBot,
 				"messageId":  result.MessageID,
 				"sessionKey": result.SessionKey,
 			},
@@ -556,7 +555,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		Code:    "msg.published",
 		Message: "message published",
 		Data: map[string]any{
-			"targetNode": req.TargetNode,
+			"targetBot":  req.TargetBot,
 			"messageId":  result.MessageID,
 			"sessionKey": result.SessionKey,
 		},
@@ -598,10 +597,10 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 type transferSendReq struct {
-	TargetNode string         `json:"targetNode"`
-	FilePath   string         `json:"filePath"`
-	MimeType   string         `json:"mimeType,omitempty"`
-	Metadata   map[string]any `json:"metadata,omitempty"`
+	TargetBot string         `json:"targetBot"`
+	FilePath  string         `json:"filePath"`
+	MimeType  string         `json:"mimeType,omitempty"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
 }
 
 func (s *Server) handleTransferSend(w http.ResponseWriter, r *http.Request) {
@@ -622,10 +621,10 @@ func (s *Server) handleTransferSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := s.transfer.SendFile(transfer.SendFileRequest{
-		TargetNode: req.TargetNode,
-		FilePath:   req.FilePath,
-		MimeType:   req.MimeType,
-		Metadata:   req.Metadata,
+		TargetBot: req.TargetBot,
+		FilePath:  req.FilePath,
+		MimeType:  req.MimeType,
+		Metadata:  req.Metadata,
 	})
 	if err != nil {
 		respondJSON(w, http.StatusBadRequest, types.APIResult{
@@ -633,7 +632,7 @@ func (s *Server) handleTransferSend(w http.ResponseWriter, r *http.Request) {
 			Code:    "transfer.send_failed",
 			Message: err.Error(),
 			Data: map[string]any{
-				"targetNode": req.TargetNode,
+				"targetBot": req.TargetBot,
 			},
 			TS: time.Now().UnixMilli(),
 		})
@@ -740,67 +739,5 @@ func (s *Server) handleTransferDelete(w http.ResponseWriter, r *http.Request) {
 			"transferId": transferID,
 		},
 		TS: time.Now().UnixMilli(),
-	})
-}
-
-func (s *Server) handleConfigGet(w http.ResponseWriter, _ *http.Request) {
-	respondJSON(w, http.StatusOK, types.APIResult{
-		OK:      true,
-		Code:    "config.ok",
-		Message: "config fetched",
-		Data: map[string]any{
-			"config": s.cfg,
-		},
-		TS: time.Now().UnixMilli(),
-	})
-}
-
-func (s *Server) handleConfigSave(w http.ResponseWriter, r *http.Request) {
-	var cfg config.Config
-	if err := decodeRequest(r, &cfg); err != nil {
-		respondJSON(w, http.StatusBadRequest, types.APIResult{
-			OK:      false,
-			Code:    "invalid_argument",
-			Message: "invalid json payload",
-			TS:      time.Now().UnixMilli(),
-		})
-		return
-	}
-
-	if err := config.Validate(cfg); err != nil {
-		respondJSON(w, http.StatusBadRequest, types.APIResult{
-			OK:      false,
-			Code:    "config.invalid",
-			Message: err.Error(),
-			TS:      time.Now().UnixMilli(),
-		})
-		return
-	}
-
-	if s.configPath == "" {
-		respondJSON(w, http.StatusInternalServerError, types.APIResult{
-			OK:      false,
-			Code:    "config.no_path",
-			Message: "config file path not available",
-			TS:      time.Now().UnixMilli(),
-		})
-		return
-	}
-
-	if err := config.SaveToFile(s.configPath, cfg); err != nil {
-		respondJSON(w, http.StatusInternalServerError, types.APIResult{
-			OK:      false,
-			Code:    "config.save_failed",
-			Message: err.Error(),
-			TS:      time.Now().UnixMilli(),
-		})
-		return
-	}
-
-	respondJSON(w, http.StatusOK, types.APIResult{
-		OK:      true,
-		Code:    "config.saved",
-		Message: "config saved, restart daemon to apply",
-		TS:      time.Now().UnixMilli(),
 	})
 }

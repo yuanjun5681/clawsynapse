@@ -10,8 +10,8 @@ func TestTrustStateRoundTrip(t *testing.T) {
 
 	in := TrustState{
 		SchemaVersion: 1,
-		Trusted:       []TrustPeerState{{NodeID: "node-beta", AtMs: 100}},
-		Pending:       []TrustPendingState{{RequestID: "req-1", From: "node-gamma", To: "node-alpha", Direction: "inbound", ReceivedAtMs: 200}},
+		Trusted:       []TrustPeerState{{BotID: "bot-beta", AtMs: 100}},
+		Pending:       []TrustPendingState{{RequestID: "req-1", From: "bot-gamma", To: "bot-alpha", Direction: "inbound", ReceivedAtMs: 200}},
 		Rejected:      []TrustPeerState{},
 		Revoked:       []TrustPeerState{},
 	}
@@ -25,7 +25,7 @@ func TestTrustStateRoundTrip(t *testing.T) {
 		t.Fatalf("load trust state failed: %v", err)
 	}
 
-	if len(out.Trusted) != 1 || out.Trusted[0].NodeID != "node-beta" {
+	if len(out.Trusted) != 1 || out.Trusted[0].BotID != "bot-beta" {
 		t.Fatalf("unexpected trusted state: %+v", out.Trusted)
 	}
 	if len(out.Pending) != 1 || out.Pending[0].RequestID != "req-1" {

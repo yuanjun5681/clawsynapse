@@ -15,7 +15,7 @@ import (
 )
 
 // StoredMessage adds a local replay cursor without changing the signed envelope.
-// Cursors belong to this node's durable received-message journal, not NATS.
+// Cursors belong to this Bot's durable received-message journal, not NATS.
 type StoredMessage struct {
 	protocol.MessageEnvelope
 	Cursor uint64 `json:"cursor"`
@@ -57,16 +57,17 @@ type journalRecord struct {
 }
 
 type messageJournal struct {
-	file         *os.File
-	publications map[string]*publication
-	keys         map[string]string
-	inbox        []StoredMessage
-	received     map[string]bool
-	work         map[string]*admittedWork
-	pending      []string
-	workQueues   [workerCount][]string
-	workHeads    [workerCount]int
-	tails        map[string]string
+	file            *os.File
+	publications    map[string]*publication
+	keys            map[string]string
+	inbox           []StoredMessage
+	received        map[string]bool
+	work            map[string]*admittedWork
+	pending         []string
+	workQueues      [workerCount][]string
+	workHeads       [workerCount]int
+	tails           map[string]string
+	pendingCommands int
 }
 
 func openMessageJournal(path string) (*messageJournal, error) {
@@ -196,6 +197,14 @@ func (j *messageJournal) apply(record journalRecord) {
 			} else if record.Received != nil {
 				w.Message = record.Received.MessageEnvelope
 			}
+		}
+		previous := j.work[w.Key]
+		command := !isFeedbackType(w.Message.Type) && w.Message.Type != "transfer.available"
+		if command && w.State != "done" && (previous == nil || previous.State == "done") {
+			j.pendingCommands++
+		}
+		if command && w.State == "done" && previous != nil && previous.State != "done" {
+			j.pendingCommands--
 		}
 		if j.work[w.Key] == nil {
 			shard := workShard(w.Message)

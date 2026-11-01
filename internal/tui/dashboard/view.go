@@ -16,7 +16,10 @@ import (
 )
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(m.refreshCmd(), dashboardTickCmd())
+	if len(m.botID) == 35 && strings.HasPrefix(m.botID, "n1-") {
+		return tea.Batch(m.refreshCmd(), dashboardTickCmd())
+	}
+	return tea.Batch(m.botsCmd(), dashboardTickCmd())
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -26,11 +29,40 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.recalcLayout()
 	case tea.KeyPressMsg:
+		if msg.String() == "ctrl+c" {
+			return m, tea.Quit
+		}
+		if m.selectingBot {
+			switch msg.String() {
+			case "q":
+				return m, tea.Quit
+			case "down", "j":
+				m.botCursor = clampInt(m.botCursor+1, 0, maxInt(0, len(m.bots)-1))
+			case "up", "k":
+				m.botCursor = clampInt(m.botCursor-1, 0, maxInt(0, len(m.bots)-1))
+			case "enter":
+				if len(m.bots) > 0 {
+					m.selectBot(m.bots[m.botCursor].BotID)
+					return m, m.refreshCmd()
+				}
+			case "r":
+				return m, m.botsCmd()
+			case "escape":
+				if m.botID != "" {
+					m.selectingBot = false
+				}
+			}
+			return m, nil
+		}
 		if m.activeTab == 4 && m.cfgState.editing {
 			return m.handleConfigEditKey(msg)
 		}
 		if m.activeTab == 1 && m.peerFilter.editing {
 			return m.handlePeerFilterKey(msg)
+		}
+		if msg.String() == "b" {
+			m.selectingBot = true
+			return m, m.botsCmd()
 		}
 		switch msg.String() {
 		case "ctrl+c", "q":
@@ -93,19 +125,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.refreshCmd()
 		}
 	case configSaveMsg:
+		if msg.scope != m.scope {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.cfgState.statusMsg = "Save failed: " + msg.err.Error()
 		} else {
-			m.cfgState.statusMsg = "Saved. Restart daemon to apply."
+			m.cfgState.statusMsg = "Saved selected Bot configuration."
 			m.cfgState.dirty = false
 			for i := range m.cfgState.fields {
 				m.cfgState.fields[i].Changed = false
 			}
+			m.cfgState.statusAt = time.Now()
+			return m, m.refreshCmd()
 		}
 		m.cfgState.statusAt = time.Now()
 	case refreshMsg:
+		if msg.scope != m.scope {
+			return m, nil
+		}
 		m.loading = false
 		if msg.err != nil {
+			if msg.snapshot.ConfigData != nil {
+				m.snapshot = msg.snapshot
+				m.syncConfigFields(msg.snapshot.ConfigData)
+			}
 			m.errText = msg.err.Error()
 			return m, nil
 		}
@@ -114,7 +158,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.errText = ""
 		m.clampSelections()
 		m.syncConfigFields(msg.snapshot.ConfigData)
+	case botsMsg:
+		if msg.err != nil {
+			m.loading = false
+			m.errText = msg.err.Error()
+			return m, nil
+		}
+		m.bots = msg.bots
+		m.botCursor = clampInt(m.botCursor, 0, maxInt(0, len(m.bots)-1))
+		if m.botID != "" && !m.selectingBot {
+			id, err := resolveBotSelection(m.botID, m.bots)
+			if err != nil {
+				m.loading = false
+				m.errText = err.Error()
+				m.selectingBot = true
+				return m, nil
+			}
+			m.selectBot(id)
+			return m, m.refreshCmd()
+		}
+		m.loading = false
 	case time.Time:
+		if m.selectingBot || m.botID == "" {
+			return m, dashboardTickCmd()
+		}
 		if m.loading {
 			return m, dashboardTickCmd()
 		}
@@ -127,9 +194,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) View() tea.View {
 	if m.width > 0 && m.width < dashboardMinWidth || m.height > 0 && m.height < dashboardMinHeight {
-		hint := fmt.Sprintf("Terminal too small (%dx%d). Need at least %dx%d.\nPress q to quit.",
-			m.width, m.height, dashboardMinWidth, dashboardMinHeight)
+		hint := fmt.Sprintf("Active Bot: %s\nTerminal too small (%dx%d). Need at least %dx%d.\nPress q to quit.",
+			fallbackString(m.botID, "NONE"), m.width, m.height, dashboardMinWidth, dashboardMinHeight)
 		v := tea.NewView(hint)
+		v.AltScreen = true
+		return v
+	}
+	if m.selectingBot {
+		lines := []string{"Select a local Bot explicitly (j/k, enter; r refresh).", ""}
+		for i, bot := range m.bots {
+			marker := "  "
+			if i == m.botCursor {
+				marker = "> "
+			}
+			lines = append(lines, marker+bot.BotID+"  "+bot.DisplayName+"  "+bot.State)
+		}
+		if len(m.bots) == 0 {
+			lines = append(lines, "No local Bots. Create one with clawsynapse bot create.")
+		}
+		if m.errText != "" {
+			lines = append(lines, m.errText)
+		}
+		v := tea.NewView(m.headerView(maxInt(m.width, 40)) + "\n" + strings.Join(lines, "\n"))
 		v.AltScreen = true
 		return v
 	}
@@ -219,6 +305,7 @@ func (m model) headerView(width int) string {
 			),
 		}
 	}
+	lines = append(lines, "Active Bot: "+fallbackString(m.botID, "NONE")+"  | b: choose Bot")
 	if m.errText != "" {
 		lines = append(lines, taggedLine(dashboardTagBad, "Last refresh failed: "+truncateRight(m.errText, maxInt(12, width-22))))
 	}
@@ -289,7 +376,7 @@ func (m model) overviewView(width, height int) string {
 	}
 
 	cards := []string{
-		renderMetricPanel("Peers", fmt.Sprintf("%d", len(m.snapshot.Peers)), "discovered nodes", cardWidth),
+		renderMetricPanel("Peers", fmt.Sprintf("%d", len(m.snapshot.Peers)), "discovered Bots", cardWidth),
 		renderMetricPanel("NATS", boolWord(m.snapshot.Health.NATS.Connected, "connected", "offline"), fallbackString(m.snapshot.Health.NATS.Status, "unknown"), cardWidth),
 		renderMetricPanel("Inbound", fmt.Sprintf("%d msgs", m.snapshot.Health.NATS.InMsgs), formatBytes(m.snapshot.Health.NATS.InBytes), cardWidth),
 		renderMetricPanel("Outbound", fmt.Sprintf("%d msgs", m.snapshot.Health.NATS.OutMsgs), formatBytes(m.snapshot.Health.NATS.OutBytes), cardWidth),
@@ -429,7 +516,7 @@ func (m model) selectedPeerLines() []string {
 	authDot := peerAuthDot(peer.AuthStatus)
 	trustDot := peerTrustDot(peer.TrustStatus)
 	lines := []string{
-		taggedLine(dashboardTagAccent, fmt.Sprintf("  nodeId      %s", peer.NodeID)),
+		taggedLine(dashboardTagAccent, fmt.Sprintf("  botId       %s", peer.BotID)),
 		taggedLine(dashboardTagMuted, fmt.Sprintf("  fingerprint %s", peerFingerprint(peer))),
 		taggedLine(dashboardPeerAuthTag(peer.AuthStatus), fmt.Sprintf("  auth        %s %s", authDot, fallbackString(peer.AuthStatus, "unknown"))),
 		taggedLine(dashboardPeerTrustTag(peer.TrustStatus), fmt.Sprintf("  trust       %s %s", trustDot, fallbackString(peer.TrustStatus, "none"))),
@@ -597,8 +684,8 @@ func (m model) logsView(_ int, height int) string {
 			if entry.Peer != "" {
 				ctx = append(ctx, "peer="+entry.Peer)
 			}
-			if entry.NodeID != "" {
-				ctx = append(ctx, "nodeId="+entry.NodeID)
+			if entry.BotID != "" {
+				ctx = append(ctx, "botId="+entry.BotID)
 			}
 			if entry.From != "" {
 				ctx = append(ctx, "from="+entry.From)
@@ -703,16 +790,17 @@ func (m model) footerView(width int) string {
 }
 
 func (m model) refreshCmd() tea.Cmd {
-	client := m.client
+	client := scopedClient{Client: m.client, botID: m.botID}
 	logs := m.logs
 	timeout := m.timeout
 	logLines := m.logLines
+	scope := m.scope
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 
 		snapshot, err := loadSnapshot(ctx, client, logs, logLines)
-		return refreshMsg{snapshot: snapshot, err: err}
+		return refreshMsg{scope: scope, snapshot: snapshot, err: err}
 	}
 }
 
@@ -1020,86 +1108,75 @@ func (m model) handleConfigEditKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m model) saveConfigCmd() tea.Cmd {
 	fields := make([]configField, len(m.cfgState.fields))
 	copy(fields, m.cfgState.fields)
-	configPath := m.cfgState.configPath
+	base := m.snapshot.ConfigData
+	client := scopedClient{Client: m.client, botID: m.botID}
+	scope := m.scope
+	timeout := m.timeout
 	return func() tea.Msg {
-		cfg, err := buildConfigFromFields(fields)
-		if err != nil {
-			return configSaveMsg{err: err}
+		if client.botID == "" {
+			return configSaveMsg{scope: scope, err: fmt.Errorf("select a Bot first")}
 		}
-		if err := appconfig.Validate(cfg); err != nil {
-			return configSaveMsg{err: err}
+		cfg, err := buildBotConfigFromFields(fields, base)
+		if err == nil {
+			err = appconfig.ValidateBot(cfg)
 		}
-		if configPath == "" {
-			return configSaveMsg{err: fmt.Errorf("config file path not available")}
+		if err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+			_, err = client.Put(ctx, "/config", cfg)
 		}
-		err = appconfig.SaveToFile(configPath, cfg)
-		return configSaveMsg{err: err}
+		return configSaveMsg{scope: scope, err: err}
 	}
 }
 
-func buildConfigFromFields(fields []configField) (appconfig.Config, error) {
-	valMap := make(map[string]configField, len(fields))
+func buildBotConfigFromFields(fields []configField, base map[string]any) (appconfig.BotConfig, error) {
+	data := make(map[string]any, len(base))
+	for k, v := range base {
+		data[k] = v
+	}
 	for _, f := range fields {
-		valMap[f.Key] = f
-	}
-	v := func(key string) string {
-		return valMap[key].Value
-	}
-	csv := func(key string) []string {
-		parts := strings.Split(valMap[key].Value, ",")
-		clean := make([]string, 0, len(parts))
-		for _, p := range parts {
-			p = strings.TrimSpace(p)
-			if p != "" {
-				clean = append(clean, p)
+		if !f.Changed {
+			continue
+		}
+		switch f.Key {
+		case "labels":
+			value, err := parseLabelsField(f.Value)
+			if err != nil {
+				return appconfig.BotConfig{}, err
+			}
+			data[f.Key] = value
+		case "harness":
+			var value any
+			if err := json.Unmarshal([]byte(f.Value), &value); err != nil {
+				return appconfig.BotConfig{}, fmt.Errorf("%s: %w", f.Label, err)
+			}
+			data[f.Key] = value
+		case "maxConcurrent", "maxQueued", "fileQuotaBytes", "transferMaxFileSize":
+			value, err := strconv.ParseInt(f.Value, 10, 64)
+			if err != nil {
+				return appconfig.BotConfig{}, err
+			}
+			data[f.Key] = value
+		default:
+			switch f.Kind {
+			case cfkBool:
+				data[f.Key] = f.Value == "true"
+			case cfkStringSlice:
+				var values []string
+				for _, v := range strings.Split(f.Value, ",") {
+					if v = strings.TrimSpace(v); v != "" {
+						values = append(values, v)
+					}
+				}
+				data[f.Key] = values
+			default:
+				data[f.Key] = f.Value
 			}
 		}
-		return clean
 	}
-	var maxFileSize int64
-	if n, err := strconv.ParseInt(v("transferMaxFileSize"), 10, 64); err == nil {
-		maxFileSize = n
-	}
-	labels, err := parseLabelsField(v("labels"))
-	if err != nil {
-		return appconfig.Config{}, err
-	}
-	return appconfig.Config{
-		NATSServers:         csv("natsServers"),
-		LocalAPIAddr:        v("localApiAddr"),
-		APITokenPath:        v("apiTokenPath"),
-		AllowRemoteAPI:      v("allowRemoteAPI") == "true",
-		APITLSCertFile:      v("apiTLSCertFile"),
-		APITLSKeyFile:       v("apiTLSKeyFile"),
-		Production:          v("production") == "true",
-		NATSCredentialsFile: v("natsCredentialsFile"),
-		NATSTLSCAFile:       v("natsTLSCAFile"),
-		NATSTLSCertFile:     v("natsTLSCertFile"),
-		NATSTLSKeyFile:      v("natsTLSKeyFile"),
-		NATSTLSServerName:   v("natsTLSServerName"),
-		DataDir:             v("dataDir"),
-		IdentityKeyPath:     v("identityKeyPath"),
-		IdentityPubPath:     v("identityPubPath"),
-		HeartbeatInterval:   v("heartbeatInterval"),
-		AnnounceTTL:         v("announceTtl"),
-		AgentProduct:        v("agentProduct"),
-		AgentVersion:        v("agentVersion"),
-		DisplayName:         v("displayName"),
-		Labels:              labels,
-		TrustMode:           v("trustMode"),
-		TrustAutoApprove:    v("trustAutoApprove") == "true",
-		AgentAdapter:        v("agentAdapter"),
-		AgentAdapterTimeout: v("agentAdapterTimeout"),
-		AgentAllowedIDs:     csv("agentAllowedIds"),
-		WebhookURL:          v("webhookUrl"),
-		DeliverablePrefixes: csv("deliverablePrefixes"),
-		TransferDir:         v("transferDir"),
-		TransferMaxFileSize: maxFileSize,
-		TransferTTL:         v("transferTtl"),
-		LogLevel:            v("logLevel"),
-		LogFormat:           v("logFormat"),
-		LogAddSource:        v("logAddSource") == "true",
-	}, nil
+	var cfg appconfig.BotConfig
+	err := decodeInto(data, &cfg)
+	return cfg, err
 }
 
 func dashboardTickCmd() tea.Cmd {

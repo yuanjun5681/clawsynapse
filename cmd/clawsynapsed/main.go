@@ -12,7 +12,6 @@ import (
 
 	"clawsynapse/internal/app"
 	"clawsynapse/internal/config"
-	"clawsynapse/internal/logging"
 )
 
 var version = "dev"
@@ -24,7 +23,7 @@ func main() {
 		return
 	}
 
-	cfg, err := config.LoadFromOS(args)
+	cfg, err := config.LoadDaemon(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
 		os.Exit(1)
@@ -37,31 +36,12 @@ func main() {
 		return
 	}
 
-	log, err := logging.New(logging.Options{
-		Level:     cfg.LogLevel,
-		Format:    cfg.LogFormat,
-		AddSource: cfg.LogAddSource,
-		FilePath:  cfg.LogFilePath,
-		Rotate: logging.RotateOptions{
-			MaxSizeMB:  cfg.LogRotateMaxSizeMB,
-			MaxBackups: cfg.LogRotateMaxBackups,
-			MaxAgeDays: cfg.LogRotateMaxAgeDays,
-			Compress:   cfg.LogRotateCompress,
-		},
-	})
+	a, err := app.NewDaemon(cfg, version)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "logger error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "bootstrap error: %v\n", err)
 		os.Exit(1)
 	}
-	log = log.With(
-		slog.String("service", "clawsynapsed"),
-	)
-
-	a, err := app.New(cfg, version)
-	if err != nil {
-		log.Error("bootstrap failed", slog.String("error", err.Error()))
-		os.Exit(1)
-	}
+	log := slog.Default()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

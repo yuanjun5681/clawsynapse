@@ -5,7 +5,7 @@ title: "ClawSynapse Messaging"
 
 # ClawSynapse Messaging
 
-最后更新：2026-10-20
+最后更新：2026-10-31
 
 ## 协议边界
 
@@ -13,30 +13,30 @@ title: "ClawSynapse Messaging"
 
 ## 在线投递模型
 
-节点之间使用 Core NATS 点对点 inbox，每条请求或事件是一个完整 JSON 对象。Messaging 与 Discovery 已切换为 v2，不接收旧版封套，也不自动降级；升级时必须协调所有节点与直接集成调用方。
+Bot 之间使用 NATS JetStream 持久 inbox，每条请求或事件是一个完整签名 JSON 对象。Messaging 与 Discovery 使用 wire v2，不接收旧版封套，也不自动降级；升级时必须协调所有 Bot 与直接集成调用方。同 daemon 的 Bot 也有独立身份/NATS 上下文，不共享认证与信任。
 
-- 请求正文使用 `payload.text` 或 `payload.instruction/input`，不再使用网络 `content` 字段。
-- 本地 API 的 `message` 仍是文本快捷输入，映射为 `payload.text`；不能和 `payload` 同时提交。
-- 发布成功只说明当前发布调用成功，不等于 broker 持久化、对端接纳或业务完成。
-- 断连时拒绝发布，不使用 NATS 重连缓冲积压命令；连接瞬间失效等情况下，结果仍可能不确定。
-- 日志只记录关联标识与阶段，不默认记录请求正文。
+- 本地 HTTP 使用 `/v2/bots/{botId}/…`，没有 v1 别名或默认 Bot；目标字段是 `targetBot`，本地身份是 `botId`。wire v2 的 `from`/`to`、签名、subject 不因多 Bot 改名。
+- 请求正文使用 `payload.text` 或 `payload.instruction/input`，不使用网络 content；本地 API 的 message 是 payload.text 快捷输入，不能与 payload 同时提交。
+- 发布先以 fsync 记录到所选 Bot 的持久 outbox；HTTP 成功说明 JetStream 已确认接纳，不表示对端业务接纳或模型完成。JetStream 不可用不降级到 Core NATS。
+- 网络错误可能发生在持久记录之后；同一 intent 仍会从 outbox 发送。HTTP 调用方使用稳定 idempotencyKey 重试，不换新 key 重发副作用；同 key 不同内容拒绝。API 失败不是“肯定没执行”。
+- 日志只记录关联标识与阶段，不默认记录请求正文；持久消息日志包含正文，应按私有业务数据备份和控制权限。
 
-## 节点发现与消息入口
+## Bot 发现与消息入口
 
-每个 daemon 加载 Ed25519 身份，连接 NATS，订阅发现及控制 subject，并发布签名 announce、周期续租。
+每个 running Bot 加载自己的 Ed25519 身份，建立独立 NATS 连接，订阅自身 inbox、发现及控制 subject，并发布签名 announce、周期续租。daemon manager 共享资源但不承担统一网络身份；catalog 中 stopped/archived 的 Bot 不主动上线。
 
-接收 announce 时校验版本、派生身份、完整签名、时效和重放记录；`lastSeenMs` 取本地接收时间。只有已知节点的有效签名 depart 才会驱逐节点，异常退出仍通过 TTL 清理。自报能力不直接授予通信或业务权限。
+接收 announce 时校验版本、派生身份、完整签名、时效和重放记录；lastSeenMs 取本地接收时间。只有已知 Bot 的有效签名 depart 才会驱逐其发现记录，异常退出通过 TTL 清理。自报能力不直接授予权限。
 
-首次通信应通过本地 auth API/CLI 完成握手，再发起并批准信任请求。不能假设一次 publish 会自动建立首次认证或信任；正常模式下未认证或未受信任的目标会被拒绝。
+首次通信应对显式选择的本地 Bot 调用 auth API/CLI 完成握手，再请求并批准信任。不能假设 publish 会自动建立首次认证/信任；正常模式下未认证或未受信任目标拒绝。A 的信任或 alias 不会被 B 继承，即便它们共用 daemon。
 
 ## 结构化请求与执行事件
 
 ```mermaid
 sequenceDiagram
     participant A as Agent-1
-    participant N1 as Node-1
+    participant N1 as Bot-1
     participant B as NATS
-    participant N2 as Node-2
+    participant N2 as Bot-2
     participant AD as Adapter / Agent-2
     A->>N1: 本地结构化 publish
     N1->>B: 完整签名 JSON 请求
@@ -51,7 +51,7 @@ sequenceDiagram
     B-->>N1: 按原请求关联的事件
 ```
 
-- `requestId` 指向原请求消息 ID；`runId` 由接收 Node 生成；`seq` 在单次执行中从 1 递增。
+- `requestId` 指向原请求消息 ID；`runId` 由接收 Bot 生成；`seq` 在单次执行中从 1 递增。
 - Codex/OpenCode 原生 JSONL 被 Adapter 增量解析，每个归一化事件再成为一条独立 NATS 消息。OpenClaw Gateway JSON 响应是一次性结果，不宣称原生流式输出。
 - delta 仅承载允许发布的答案，不直接透传思考、工具参数和原生 stderr。
 - 明确终态不会再次附带已经发出的完整答案；消费者不要重复追加。
@@ -61,16 +61,24 @@ sequenceDiagram
 
 ## 有界执行与会话
 
-- 固定 8 个串行工作分片，每分片最多等待 16 条消息；同发送方、Agent、会话进入同一分片，不会相互越序。不同会话可能共享分片，宁可保守串行，也不引入无界队列。
-- 过载返回结构化失败；排队后再次检查有效期与节点认证/信任状态。
-- 消息默认有效 10 分钟，最大 10 分钟；时效更短的业务必须显式设置 `expiresAt`。
-- LLM 产品会话按发送方、目标 Agent 与会话键作用域隔离，避免不同发送方碰撞会话。旧会话失效时明确报错，不静默新建并重跑。
-- daemon 关停取消在途执行；CLI runner 限制输出、管理进程树并处理取消。
+- 每 Bot 保留固定串行工作分片，同发送方、Agent、会话进入同一分片，不相互越序；不同会话可能保守串行。
+- 每 Bot maxQueued/maxConcurrent 和 daemon maxConcurrent 有界。过载明确失败，排队后及等待预算后再次检查有效期与授权；配置不意味着无界 goroutine 或执行池。
+- 请求默认有效 10 分钟，最大 10 分钟；更短业务显式 expiresAt。已持久排队但过期的命令不启动 Harness。
+- LLM 产品会话按本地 Bot、bindingRevision、产品、发送方、目标 Agent 和会话键隔离；原生 CLI 使用各 Bot 绑定 workspace 作为 cwd，并传入该 Bot model。旧会话失效明确报错，不静默新建重跑。
+- daemon 关停取消在途执行，CLI runner 有界输出并管理进程树。显式 Bot stop 仅停止该 Bot；daemon 关闭保留 catalog desiredState，重启按它恢复。
 
 ## 恢复与生产边界
 
-当前 recent messages 最多保留 1000 条，本地 HTTP 最多返回最近 100 条。消息去重和发现新鲜度记录均在内存中；它们不是持久收件箱、执行数据库或可恢复的事件日志。
+每个 Bot 独立的 `state/messages.jsonl`（0600）是持久 journal，不是纯内存 recent ring。fsync 提交发布幂等键、outbox、收件箱 cursor、去重记录及 queued/admitted/done 工作；进程崩溃只允许截掉未提交的最后不完整 append，不忽略中间损坏。journal 独占锁避免两个 runtime 同时写同一 Bot 状态。
 
-因此当前不承诺离线投递、重启后的执行去重、无缺口续流或业务 exactly-once。序号只能帮助检测缺口，不能自行补齐。持久状态、查询、回执与恢复属于 [能力路线图](./capability-improvement-roadmap.md) 的 P1。
+- queued 工作恢复后仍需检查授权/有效期；未启动执行的过期请求确定失败。
+- 崩溃前已经 admitted 的执行不能证明副作用是否发生；恢复发出 run.failed，code=execution.interrupted、stage=restart、indeterminate=true，不自动重新调用模型或外部动作。反馈和文件处理按非模型执行语义恢复，不构成副作用 exactly-once 承诺。
+- 执行事件先写本地 outbox，broker 故障由同一事件 ID 重试，不因结果尚未发布而再次执行模型。
+- `GET /v2/bots/{botId}/messages?after=CURSOR&limit=100` 按本地持久游标回放，limit 1–1000，默认无 after 返回最近 100 条。消费者按 Bot 保存成功消费的 cursor；seq 检测单 run 缺口，不能代替 cursor，也不能自行补全。
+- `GET /v2/bots/{botId}/requests/{messageId}` 查询持久发布/执行状态。accepted 只代表异步接纳；indeterminate 必须查询执行 authority 或人工对账，不自动重跑。
+- 文件接收的引用先持久提交，pending 本地通知有自己的 admission 状态；callback 前记 admitted，崩溃后的 admitted 通知不自动回调重放。引用恢复/可读不代表通知已处理，更不代表外部动作完成。
+- 文件引用恢复同样 fail closed：catalog 或已注册 Bot/引用目录缺失不能当作空历史。GC 在核验完整 catalog 和所有注册 Bot（含 stopped/archived）的引用根后才允许回收；运行时不能通过自动建空 transfers 目录“修复”授权记录丢失，应保留证据并核对一致性备份。
 
-设备审批、远程启动及文件接收凭据仍须满足 [Camind 规划](./camind-capability-improvement-plan.md) 的全部生产前置要求；通信执行终态不能代替设备端凭据。
+持久挂载并备份完整 DataDir；当前 journal 不自动裁剪，需规划磁盘。JetStream 共享消息保留 7 天，本地已接收历史不随它裁剪；超过 broker 保留期且本地尚未收到的数据不保证可回放。发现新鲜度仍不是执行日志。持久去重不等于业务 exactly-once，也不承诺无限离线投递或无限保留。文件按 Bot 持久引用授权，下载/转发必须使用 Bot-qualified API，不暴露共享内容路径。
+
+设备审批、远程启动及文件接收凭据仍需由目标业务系统定义并验证；通信执行终态不能代替设备端凭据或业务授权。

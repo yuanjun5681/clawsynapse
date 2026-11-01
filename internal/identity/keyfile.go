@@ -1,12 +1,12 @@
 package identity
 
 import (
+	"bytes"
+	"clawsynapse/internal/protocol"
+	"clawsynapse/internal/store"
 	"crypto/ed25519"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 )
 
 type privateFile struct {
@@ -20,21 +20,21 @@ type publicFile struct {
 }
 
 func tryLoad(privatePath, publicPath string) (ed25519.PrivateKey, ed25519.PublicKey, error) {
-	privRaw, err := os.ReadFile(privatePath)
+	privRaw, err := store.ReadFile(privatePath)
 	if err != nil {
 		return nil, nil, err
 	}
-	pubRaw, err := os.ReadFile(publicPath)
+	pubRaw, err := store.ReadFile(publicPath)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	var pf privateFile
-	if err := json.Unmarshal(privRaw, &pf); err != nil {
+	if err := protocol.DecodeStrict(privRaw, &pf); err != nil {
 		return nil, nil, err
 	}
 	var pubf publicFile
-	if err := json.Unmarshal(pubRaw, &pubf); err != nil {
+	if err := protocol.DecodeStrict(pubRaw, &pubf); err != nil {
 		return nil, nil, err
 	}
 
@@ -55,9 +55,9 @@ func tryLoad(privatePath, publicPath string) (ed25519.PrivateKey, ed25519.Public
 		return nil, nil, errors.New("invalid key size")
 	}
 
-	return ed25519.PrivateKey(privBytes), ed25519.PublicKey(pubBytes), nil
-}
-
-func dirOf(path string) string {
-	return filepath.Dir(path)
+	private := ed25519.NewKeyFromSeed(privBytes[:ed25519.SeedSize])
+	if !bytes.Equal(private, privBytes) || !bytes.Equal(private.Public().(ed25519.PublicKey), pubBytes) {
+		return nil, nil, errors.New("identity public and private keys do not match")
+	}
+	return private, ed25519.PublicKey(pubBytes), nil
 }

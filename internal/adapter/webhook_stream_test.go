@@ -31,7 +31,7 @@ func TestWebhookStreamsCompleteLongUnicodeAnswerBeforeTerminal(t *testing.T) {
 		_ = encoder.Encode(webhookFrame{Type: "completed"})
 	}))
 	defer srv.Close()
-	a, _ := NewWebhookAdapter(WebhookConfig{URL: srv.URL})
+	a, _ := NewWebhookAdapter(testWebhookConfig(t, WebhookConfig{URL: srv.URL}))
 	var answer strings.Builder
 	done := make(chan error, 1)
 	go func() {
@@ -86,7 +86,7 @@ func TestWebhookPartialFailureNeverBecomesCompletionOrSafeRetry(t *testing.T) {
 				_, _ = io.WriteString(w, "{\"type\":\"output\",\"text\":\"partial\"}\n"+tc.tail)
 			}))
 			defer srv.Close()
-			a, _ := NewWebhookAdapter(WebhookConfig{URL: srv.URL})
+			a, _ := NewWebhookAdapter(testWebhookConfig(t, WebhookConfig{URL: srv.URL}))
 			var text string
 			_, err := a.DeliverMessage(context.Background(), DeliverMessageRequest{Emit: func(event OutputEvent) error { text += event.Text; return nil }})
 			var failure *ExecutionError

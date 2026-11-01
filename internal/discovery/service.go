@@ -29,7 +29,7 @@ const (
 	maxFutureSkew     = 30 * time.Second
 	maxDiscoveryBytes = 32 * 1024
 	maxMetadataBytes  = 8 * 1024
-	maxReplayNodes    = 4096
+	maxReplayBots     = 4096
 	maxReplayMessages = 16384
 )
 
@@ -37,7 +37,7 @@ var (
 	errAnnouncePublicKeyRequired = errors.New("publicKey is required")
 	errAnnounceDIDRequired       = errors.New("did is required")
 	errAnnounceDIDMismatch       = errors.New("did does not match publicKey")
-	errAnnounceNodeIDMismatch    = errors.New("nodeId does not match did")
+	errAnnounceBotIDMismatch     = errors.New("nodeId does not match did")
 )
 
 type Service struct {
@@ -45,7 +45,7 @@ type Service struct {
 	bus             *natsbus.Client
 	peers           *Registry
 	store           *store.FSStore
-	nodeID          string
+	botID           string
 	did             string
 	publicKey       string
 	ttl             time.Duration
@@ -58,6 +58,9 @@ type Service struct {
 	autoAuth        func(context.Context, string) error
 	authMu          sync.Mutex
 	authing         map[string]struct{}
+	authCtx         context.Context
+	authWorkers     sync.WaitGroup
+	stopping        bool
 	id              *identity.Identity
 	discoveryMu     sync.Mutex
 	latest          map[string]discoveryClaim
@@ -65,6 +68,7 @@ type Service struct {
 	nextPruneMs     int64
 	publishMu       sync.Mutex
 	lastPublishedTs int64
+	workers         sync.WaitGroup
 }
 
 type discoveryClaim struct {
@@ -73,8 +77,8 @@ type discoveryClaim struct {
 }
 
 type discoveryMessage struct {
-	nodeID string
-	id     string
+	botID string
+	id    string
 }
 
 type AnnounceConfig struct {
@@ -85,7 +89,7 @@ type AnnounceConfig struct {
 	Labels       types.Labels
 }
 
-func NewService(log *slog.Logger, bus *natsbus.Client, peers *Registry, fs *store.FSStore, nodeID string, did string, publicKey string, heartbeat, ttl time.Duration, trustMode string, announceConfigs ...AnnounceConfig) *Service {
+func NewService(log *slog.Logger, bus *natsbus.Client, peers *Registry, fs *store.FSStore, botID string, did string, publicKey string, heartbeat, ttl time.Duration, trustMode string, announceConfigs ...AnnounceConfig) *Service {
 	announce := AnnounceConfig{
 		AgentProduct: "clawsynapse",
 		AgentVersion: "v0.1.0",
@@ -112,7 +116,7 @@ func NewService(log *slog.Logger, bus *natsbus.Client, peers *Registry, fs *stor
 		bus:          bus,
 		peers:        peers,
 		store:        fs,
-		nodeID:       nodeID,
+		botID:        botID,
 		did:          did,
 		publicKey:    publicKey,
 		ttl:          ttl,
@@ -140,6 +144,9 @@ func (s *Service) Start(ctx context.Context) error {
 	if s.heartbeat <= 0 || s.ttl <= 0 {
 		return errors.New("discovery heartbeat and TTL must be positive")
 	}
+	s.authMu.Lock()
+	s.authCtx = ctx
+	s.authMu.Unlock()
 	if _, err := s.bus.Subscribe(announceSubject, s.handleAnnounce); err != nil {
 		return err
 	}
@@ -153,8 +160,10 @@ func (s *Service) Start(ctx context.Context) error {
 
 	heartbeatTicker := time.NewTicker(s.heartbeat)
 	gcTicker := time.NewTicker(time.Second)
+	s.workers.Add(1)
 
 	go func() {
+		defer s.workers.Done()
 		defer heartbeatTicker.Stop()
 		defer gcTicker.Stop()
 		for {
@@ -173,6 +182,15 @@ func (s *Service) Start(ctx context.Context) error {
 	}()
 
 	return nil
+}
+
+// Wait joins the cancellation/depart loop before the owning Bot closes NATS.
+func (s *Service) Wait() {
+	s.authMu.Lock()
+	s.stopping = true
+	s.authMu.Unlock()
+	s.workers.Wait()
+	s.authWorkers.Wait()
 }
 
 func (s *Service) publishAnnounce() error {
@@ -202,13 +220,13 @@ func (s *Service) newAnnounce() (protocol.DiscoveryAnnounce, error) {
 		ProtocolVersion: "v2",
 		MessageID:       randID(),
 		MessageType:     "discovery.announce",
-		NodeID:          s.nodeID,
+		BotID:           s.botID,
 		DID:             s.did,
 		Version:         s.agentVersion,
 		AgentProduct:    s.agentProduct,
 		DisplayName:     strings.TrimSpace(s.displayName),
 		Labels:          labels,
-		Inbox:           "clawsynapse.msg." + s.nodeID + ".inbox",
+		Inbox:           "clawsynapse.msg." + s.botID + ".inbox",
 		PublicKey:       s.publicKey,
 		Ts:              s.nextTimestamp(),
 		TTLms:           ttl.Milliseconds(),
@@ -223,7 +241,7 @@ func (s *Service) publishDepart(reason string) error {
 		ProtocolVersion: "v2",
 		MessageID:       randID(),
 		MessageType:     "discovery.depart",
-		NodeID:          s.nodeID,
+		BotID:           s.botID,
 		Reason:          reason,
 		Ts:              s.nextTimestamp(),
 	}
@@ -245,13 +263,13 @@ func (s *Service) handleAnnounce(subject string, data []byte) {
 		return
 	}
 	now := time.Now().UnixMilli()
-	if msg.NodeID == s.nodeID || msg.ProtocolVersion != "v2" || msg.MessageType != "discovery.announce" ||
+	if msg.BotID == s.botID || msg.ProtocolVersion != "v2" || msg.MessageType != "discovery.announce" ||
 		!validMessageID(msg.MessageID) || msg.TTLms <= 0 || msg.TTLms > maxDiscoveryAge.Milliseconds() ||
 		!validDiscoveryTime(msg.Ts, now, msg.TTLms) {
 		return
 	}
 	if err := validateAnnounceIdentity(msg); err != nil {
-		s.log.Warn("reject invalid announce identity", logging.Peer(msg.NodeID), logging.Error(err))
+		s.log.Warn("reject invalid announce identity", logging.Peer(msg.BotID), logging.Error(err))
 		return
 	}
 	if !validAnnounceAttributes(msg) {
@@ -268,23 +286,23 @@ func (s *Service) handleAnnounce(subject string, data []byte) {
 
 	// Serialise freshness checks and mutations across both subscription callbacks.
 	s.discoveryMu.Lock()
-	existing, ok := s.peers.Get(msg.NodeID)
+	existing, ok := s.peers.Get(msg.BotID)
 	if ok {
 		if known, _ := existing.Metadata["publicKey"].(string); known != "" && known != msg.PublicKey {
 			s.discoveryMu.Unlock()
 			return
 		}
 	}
-	if !s.acceptClaim(msg.NodeID, msg.MessageID, msg.Ts, now) {
+	if !s.acceptClaim(msg.BotID, msg.MessageID, msg.Ts, now) {
 		s.discoveryMu.Unlock()
 		return
 	}
 	trustStatus := existing.TrustStatus
 	if !ok {
-		trustStatus = s.persistedTrustStatus(msg.NodeID)
+		trustStatus = s.persistedTrustStatus(msg.BotID)
 	}
 	peer := types.Peer{
-		NodeID:       msg.NodeID,
+		BotID:        msg.BotID,
 		DID:          msg.DID,
 		Version:      msg.Version,
 		AgentProduct: msg.AgentProduct,
@@ -309,7 +327,7 @@ func (s *Service) handleAnnounce(subject string, data []byte) {
 	if !ok {
 		s.log.Info("peer discovered",
 			logging.Event("peer.discovered"),
-			logging.Peer(msg.NodeID),
+			logging.Peer(msg.BotID),
 			slog.String("inbox", msg.Inbox),
 			slog.String("version", msg.Version),
 			slog.String("agentProduct", msg.AgentProduct),
@@ -319,7 +337,7 @@ func (s *Service) handleAnnounce(subject string, data []byte) {
 	} else if existing.Inbox != msg.Inbox || existing.Version != msg.Version || existing.AgentProduct != msg.AgentProduct {
 		s.log.Info("peer refreshed",
 			logging.Event("peer.refreshed"),
-			logging.Peer(msg.NodeID),
+			logging.Peer(msg.BotID),
 			slog.String("inbox", msg.Inbox),
 			slog.String("version", msg.Version),
 			slog.String("agentProduct", msg.AgentProduct),
@@ -329,42 +347,42 @@ func (s *Service) handleAnnounce(subject string, data []byte) {
 	} else {
 		s.log.Debug("peer heartbeat received",
 			logging.Event("peer.heartbeat.received"),
-			logging.Peer(msg.NodeID),
+			logging.Peer(msg.BotID),
 			slog.Int64("ts", msg.Ts),
 		)
 	}
 
-	s.maybeAutoAuthenticate(msg.NodeID)
+	s.maybeAutoAuthenticate(msg.BotID)
 }
 
-func (s *Service) persistedTrustStatus(nodeID string) string {
+func (s *Service) persistedTrustStatus(botID string) string {
 	if s.store == nil {
 		return types.TrustNone
 	}
 
 	st, err := s.store.LoadTrustState()
 	if err != nil {
-		s.log.Warn("load trust state failed", logging.Peer(nodeID), logging.Error(err))
+		s.log.Warn("load trust state failed", logging.Peer(botID), logging.Error(err))
 		return types.TrustNone
 	}
 
 	for _, peer := range st.Trusted {
-		if peer.NodeID == nodeID {
+		if peer.BotID == botID {
 			return types.TrustTrusted
 		}
 	}
 	for _, peer := range st.Pending {
-		if peer.From == nodeID || peer.To == nodeID {
+		if peer.From == botID || peer.To == botID {
 			return types.TrustPending
 		}
 	}
 	for _, peer := range st.Rejected {
-		if peer.NodeID == nodeID {
+		if peer.BotID == botID {
 			return types.TrustRejected
 		}
 	}
 	for _, peer := range st.Revoked {
-		if peer.NodeID == nodeID {
+		if peer.BotID == botID {
 			return types.TrustRevoked
 		}
 	}
@@ -372,12 +390,12 @@ func (s *Service) persistedTrustStatus(nodeID string) string {
 	return types.TrustNone
 }
 
-func (s *Service) maybeAutoAuthenticate(nodeID string) {
+func (s *Service) maybeAutoAuthenticate(botID string) {
 	if s.autoAuth == nil || s.trustMode == "open" {
 		return
 	}
 
-	peer, ok := s.peers.Get(nodeID)
+	peer, ok := s.peers.Get(botID)
 	if !ok {
 		return
 	}
@@ -386,33 +404,43 @@ func (s *Service) maybeAutoAuthenticate(nodeID string) {
 	}
 
 	s.authMu.Lock()
-	if _, exists := s.authing[nodeID]; exists {
+	if s.stopping {
 		s.authMu.Unlock()
 		return
 	}
-	s.authing[nodeID] = struct{}{}
+	if _, exists := s.authing[botID]; exists {
+		s.authMu.Unlock()
+		return
+	}
+	s.authing[botID] = struct{}{}
+	authCtx := s.authCtx
+	if authCtx == nil {
+		authCtx = context.Background()
+	}
+	s.authWorkers.Add(1)
 	s.authMu.Unlock()
 	s.log.Info("starting automatic authentication",
 		logging.Event("auth.auto.start"),
-		logging.Peer(nodeID),
+		logging.Peer(botID),
 	)
 
 	go func() {
-		defer s.clearAutoAuth(nodeID)
+		defer s.clearAutoAuth(botID)
+		defer s.authWorkers.Done()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(authCtx, 10*time.Second)
 		defer cancel()
 
-		if err := s.autoAuth(ctx, nodeID); err != nil {
-			s.log.Warn("auto auth challenge failed", logging.Peer(nodeID), logging.Error(err))
+		if err := s.autoAuth(ctx, botID); err != nil {
+			s.log.Warn("auto auth challenge failed", logging.Peer(botID), logging.Error(err))
 		}
 	}()
 }
 
-func (s *Service) clearAutoAuth(nodeID string) {
+func (s *Service) clearAutoAuth(botID string) {
 	s.authMu.Lock()
 	defer s.authMu.Unlock()
-	delete(s.authing, nodeID)
+	delete(s.authing, botID)
 }
 
 func (s *Service) handleDepart(subject string, data []byte) {
@@ -425,33 +453,33 @@ func (s *Service) handleDepart(subject string, data []byte) {
 		return
 	}
 	now := time.Now().UnixMilli()
-	if msg.NodeID == s.nodeID || msg.ProtocolVersion != "v2" || msg.MessageType != "discovery.depart" ||
+	if msg.BotID == s.botID || msg.ProtocolVersion != "v2" || msg.MessageType != "discovery.depart" ||
 		!validMessageID(msg.MessageID) || len(msg.Reason) > 1024 ||
 		!validDiscoveryTime(msg.Ts, now, maxDiscoveryAge.Milliseconds()) {
 		return
 	}
 	s.discoveryMu.Lock()
 	defer s.discoveryMu.Unlock()
-	peer, ok := s.peers.Get(msg.NodeID)
+	peer, ok := s.peers.Get(msg.BotID)
 	if !ok {
 		return
 	}
 	known, _ := peer.Metadata["publicKey"].(string)
 	pub, err := identity.DecodePublicKey(known)
-	if err != nil || identity.DeriveNodeID(identity.DeriveNodeDID(pub)) != msg.NodeID {
+	if err != nil || identity.DeriveBotID(identity.DeriveBotDID(pub)) != msg.BotID {
 		return
 	}
 	signed, err := protocol.SignedBytes(subject, msg)
 	if err != nil || !identity.Verify(pub, signed, msg.Signature) {
 		return
 	}
-	if !s.acceptClaim(msg.NodeID, msg.MessageID, msg.Ts, now) {
+	if !s.acceptClaim(msg.BotID, msg.MessageID, msg.Ts, now) {
 		return
 	}
-	s.peers.Remove(msg.NodeID)
+	s.peers.Remove(msg.BotID)
 	s.log.Info("peer departed",
 		logging.Event("peer.departed"),
-		logging.Peer(msg.NodeID),
+		logging.Peer(msg.BotID),
 		slog.String("reason", msg.Reason),
 	)
 }
@@ -462,7 +490,7 @@ func (s *Service) gc() {
 	now := time.Now().UnixMilli()
 	s.pruneClaims(now)
 	for _, peer := range s.peers.List() {
-		if peer.NodeID == s.nodeID {
+		if peer.BotID == s.botID {
 			continue
 		}
 		ttlMs := metadataInt64(peer.Metadata, "ttlMs")
@@ -470,10 +498,10 @@ func (s *Service) gc() {
 			ttlMs = maxDiscoveryAge.Milliseconds()
 		}
 		if now-peer.LastSeenMs > ttlMs {
-			s.peers.Remove(peer.NodeID)
+			s.peers.Remove(peer.BotID)
 			s.log.Info("peer expired",
 				logging.Event("peer.expired"),
-				logging.Peer(peer.NodeID),
+				logging.Peer(peer.BotID),
 				slog.Int64("lastSeenMs", peer.LastSeenMs),
 				slog.Int64("ttlMs", ttlMs),
 			)
@@ -514,14 +542,14 @@ func validateAnnounceIdentity(msg protocol.DiscoveryAnnounce) error {
 		return fmt.Errorf("decode publicKey: %w", err)
 	}
 
-	expectedDID := identity.DeriveNodeDID(pub)
+	expectedDID := identity.DeriveBotDID(pub)
 	if msg.DID != expectedDID {
 		return errAnnounceDIDMismatch
 	}
 
-	expectedNodeID := identity.DeriveNodeID(expectedDID)
-	if msg.NodeID != expectedNodeID {
-		return errAnnounceNodeIDMismatch
+	expectedBotID := identity.DeriveBotID(expectedDID)
+	if msg.BotID != expectedBotID {
+		return errAnnounceBotIDMismatch
 	}
 
 	return nil
@@ -535,10 +563,10 @@ func (s *Service) validateLocalIdentity() error {
 	if !bytes.Equal(derived, s.id.PrivateKey) || !bytes.Equal(derived.Public().(ed25519.PublicKey), s.id.PublicKey) {
 		return errors.New("discovery identity key pair does not match")
 	}
-	did := identity.DeriveNodeDID(s.id.PublicKey)
-	if s.did != did || s.nodeID != identity.DeriveNodeID(did) ||
+	did := identity.DeriveBotDID(s.id.PublicKey)
+	if s.did != did || s.botID != identity.DeriveBotID(did) ||
 		s.publicKey != base64.RawURLEncoding.EncodeToString(s.id.PublicKey) {
-		return errors.New("discovery identity does not match local node")
+		return errors.New("discovery identity does not match local Bot")
 	}
 	return nil
 }
@@ -574,7 +602,7 @@ func validDiscoveryTime(ts, now, maxAge int64) bool {
 }
 
 func validAnnounceAttributes(msg protocol.DiscoveryAnnounce) bool {
-	if msg.Inbox != "clawsynapse.msg."+msg.NodeID+".inbox" || len(msg.Version) > 256 ||
+	if msg.Inbox != "clawsynapse.msg."+msg.BotID+".inbox" || len(msg.Version) > 256 ||
 		len(msg.AgentProduct) > 256 || len(msg.Metadata) > 64 {
 		return false
 	}
@@ -590,22 +618,22 @@ func validAnnounceAttributes(msg protocol.DiscoveryAnnounce) bool {
 
 // acceptClaim is called with discoveryMu held. Unexpired entries are never
 // evicted to make room: saturation fails closed instead of reopening replay.
-func (s *Service) acceptClaim(nodeID, messageID string, ts, now int64) bool {
+func (s *Service) acceptClaim(botID, messageID string, ts, now int64) bool {
 	s.pruneClaims(now)
-	key := discoveryMessage{nodeID: nodeID, id: messageID}
+	key := discoveryMessage{botID: botID, id: messageID}
 	if _, seen := s.seen[key]; seen {
 		return false
 	}
-	latest, exists := s.latest[nodeID]
+	latest, exists := s.latest[botID]
 	if exists && ts <= latest.ts {
 		return false
 	}
-	if (!exists && len(s.latest) >= maxReplayNodes) || len(s.seen) >= maxReplayMessages {
+	if (!exists && len(s.latest) >= maxReplayBots) || len(s.seen) >= maxReplayMessages {
 		return false
 	}
 	// Keep depart tombstones until every previously valid claim is too old.
 	expiresAt := now + maxDiscoveryAge.Milliseconds() + maxFutureSkew.Milliseconds()
-	s.latest[nodeID] = discoveryClaim{ts: ts, expiresAt: expiresAt}
+	s.latest[botID] = discoveryClaim{ts: ts, expiresAt: expiresAt}
 	s.seen[key] = expiresAt
 	return true
 }
@@ -615,9 +643,9 @@ func (s *Service) pruneClaims(now int64) {
 		return
 	}
 	s.nextPruneMs = now + time.Second.Milliseconds()
-	for nodeID, claim := range s.latest {
+	for botID, claim := range s.latest {
 		if claim.expiresAt < now {
-			delete(s.latest, nodeID)
+			delete(s.latest, botID)
 		}
 	}
 	for key, expiresAt := range s.seen {

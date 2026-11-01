@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestDeriveNodeDID(t *testing.T) {
+func TestDeriveBotDID(t *testing.T) {
 	// deterministic key for reproducible test
 	seed := make([]byte, ed25519.SeedSize)
 	for i := range seed {
@@ -17,14 +17,14 @@ func TestDeriveNodeDID(t *testing.T) {
 	priv := ed25519.NewKeyFromSeed(seed)
 	pub := priv.Public().(ed25519.PublicKey)
 
-	did := DeriveNodeDID(pub)
+	did := DeriveBotDID(pub)
 
 	if !strings.HasPrefix(did, "did:key:z") {
 		t.Fatalf("DID must start with did:key:z, got %s", did)
 	}
 
 	// same key must produce same DID
-	did2 := DeriveNodeDID(pub)
+	did2 := DeriveBotDID(pub)
 	if did != did2 {
 		t.Fatalf("DID must be deterministic: %s != %s", did, did2)
 	}
@@ -34,7 +34,7 @@ func TestDeriveNodeDID(t *testing.T) {
 	seed2[0] = 0xff
 	priv2 := ed25519.NewKeyFromSeed(seed2)
 	pub2 := priv2.Public().(ed25519.PublicKey)
-	did3 := DeriveNodeDID(pub2)
+	did3 := DeriveBotDID(pub2)
 	if did == did3 {
 		t.Fatalf("different keys must produce different DIDs")
 	}
@@ -42,28 +42,28 @@ func TestDeriveNodeDID(t *testing.T) {
 	t.Logf("DID: %s", did)
 }
 
-func TestDeriveNodeID(t *testing.T) {
+func TestDeriveBotID(t *testing.T) {
 	did := "did:key:z6MkhaXgBZDvotDkL5257faKDeqbSBpiGGfEQnGhKeTLn"
-	nodeID := DeriveNodeID(did)
+	botID := DeriveBotID(did)
 
-	if nodeID != "n1-ba6c9fd35949fa645a1b0dbdca0201e5" {
-		t.Fatalf("unexpected node ID: %s", nodeID)
+	if botID != "n1-ba6c9fd35949fa645a1b0dbdca0201e5" {
+		t.Fatalf("unexpected Bot ID: %s", botID)
 	}
-	if ok, err := regexp.MatchString(`^n1-[a-f0-9]{32}$`, nodeID); err != nil || !ok {
-		t.Fatalf("node ID must be subject-safe lowercase hex, got %s", nodeID)
+	if ok, err := regexp.MatchString(`^n1-[a-f0-9]{32}$`, botID); err != nil || !ok {
+		t.Fatalf("Bot ID must be subject-safe lowercase hex, got %s", botID)
 	}
 }
 
-func TestDeriveNodeIDDeterministic(t *testing.T) {
+func TestDeriveBotIDDeterministic(t *testing.T) {
 	did := "did:key:z6MkhaXgBZDvotDkL5257faKDeqbSBpiGGfEQnGhKeTLn"
-	nodeID1 := DeriveNodeID(did)
-	nodeID2 := DeriveNodeID(did)
-	if nodeID1 != nodeID2 {
-		t.Fatalf("node ID must be deterministic: %s != %s", nodeID1, nodeID2)
+	botID1 := DeriveBotID(did)
+	botID2 := DeriveBotID(did)
+	if botID1 != botID2 {
+		t.Fatalf("Bot ID must be deterministic: %s != %s", botID1, botID2)
 	}
 }
 
-func TestDeriveNodeIDUniqueness(t *testing.T) {
+func TestDeriveBotIDUniqueness(t *testing.T) {
 	seen := make(map[string]bool)
 	for i := 0; i < 1000; i++ {
 		seed := make([]byte, ed25519.SeedSize)
@@ -71,11 +71,11 @@ func TestDeriveNodeIDUniqueness(t *testing.T) {
 		seed[1] = byte(i)
 		priv := ed25519.NewKeyFromSeed(seed)
 		pub := priv.Public().(ed25519.PublicKey)
-		nodeID := DeriveNodeID(DeriveNodeDID(pub))
-		if seen[nodeID] {
-			t.Fatalf("node ID collision at iteration %d: %s", i, nodeID)
+		botID := DeriveBotID(DeriveBotDID(pub))
+		if seen[botID] {
+			t.Fatalf("Bot ID collision at iteration %d: %s", i, botID)
 		}
-		seen[nodeID] = true
+		seen[botID] = true
 	}
 }
 

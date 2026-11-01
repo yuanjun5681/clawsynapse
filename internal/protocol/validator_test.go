@@ -6,9 +6,9 @@ import (
 )
 
 func TestValidateMessageSuccess(t *testing.T) {
-	err := ValidateMessage("clawsynapse.auth.node-beta.challenge.request", ControlMessage{
+	err := ValidateMessage("clawsynapse.auth.bot-beta.challenge.request", ControlMessage{
 		MessageType: "auth.challenge.request",
-		To:          "node-beta",
+		To:          "bot-beta",
 		Ts:          time.Now().UnixMilli(),
 	}, ValidateOptions{})
 	if err != nil {
@@ -17,9 +17,9 @@ func TestValidateMessageSuccess(t *testing.T) {
 }
 
 func TestValidateMessageModuleMismatch(t *testing.T) {
-	err := ValidateMessage("clawsynapse.auth.node-beta.challenge.request", ControlMessage{
+	err := ValidateMessage("clawsynapse.auth.bot-beta.challenge.request", ControlMessage{
 		MessageType: "trust.request",
-		To:          "node-beta",
+		To:          "bot-beta",
 		Ts:          time.Now().UnixMilli(),
 	}, ValidateOptions{})
 	if err == nil {
@@ -31,9 +31,9 @@ func TestValidateMessageModuleMismatch(t *testing.T) {
 }
 
 func TestValidateMessageTargetMismatch(t *testing.T) {
-	err := ValidateMessage("clawsynapse.auth.node-beta.challenge.request", ControlMessage{
+	err := ValidateMessage("clawsynapse.auth.bot-beta.challenge.request", ControlMessage{
 		MessageType: "auth.challenge.request",
-		To:          "node-gamma",
+		To:          "bot-gamma",
 		Ts:          time.Now().UnixMilli(),
 	}, ValidateOptions{})
 	if err == nil {

@@ -21,7 +21,7 @@ func TestPeerAttrsStateRoundTrip(t *testing.T) {
 	}
 
 	st.Peers = map[string]types.PeerLocalAttrs{
-		"node-1": {
+		"bot-1": {
 			Alias:       "现场网关",
 			Description: "上海机房",
 			Labels:      types.Labels{"floor": types.LabelString("3")},
@@ -35,7 +35,7 @@ func TestPeerAttrsStateRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadPeerAttrsState: %v", err)
 	}
-	got := loaded.Peers["node-1"]
+	got := loaded.Peers["bot-1"]
 	if got.Alias != "现场网关" || got.Description != "上海机房" {
 		t.Fatalf("attrs = %#v", got)
 	}
@@ -49,7 +49,7 @@ func TestLoadPeerAttrsStateDropsZeroEntries(t *testing.T) {
 	if err := fs.EnsureLayout(); err != nil {
 		t.Fatalf("EnsureLayout: %v", err)
 	}
-	st := PeerAttrsState{Peers: map[string]types.PeerLocalAttrs{"node-9": {}}}
+	st := PeerAttrsState{Peers: map[string]types.PeerLocalAttrs{"bot-9": {}}}
 	if err := fs.SavePeerAttrsState(st); err != nil {
 		t.Fatalf("SavePeerAttrsState: %v", err)
 	}

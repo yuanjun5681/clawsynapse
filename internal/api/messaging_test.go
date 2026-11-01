@@ -20,13 +20,13 @@ func TestMessagingRejectsMalformedCursorAndUnauthorisedRunPublication(t *testing
 	srv := &Server{}
 	for _, query := range []string{"?after=-1", "?after=wrong", "?after=", "?limit=0", "?limit=1001", "?limit=wrong"} {
 		rec := httptest.NewRecorder()
-		srv.handleMessages(rec, httptest.NewRequest(http.MethodGet, "/v1/messages"+query, nil))
+		srv.handleMessages(rec, httptest.NewRequest(http.MethodGet, "/messages"+query, nil))
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("malformed cursor accepted: %q -> %d", query, rec.Code)
 		}
 	}
 	rec := httptest.NewRecorder()
-	srv.handlePublish(rec, httptest.NewRequest(http.MethodPost, "/v1/publish", strings.NewReader(`{"targetNode":"remote","type":"run.completed","message":"forged"}`)))
+	srv.handlePublish(rec, httptest.NewRequest(http.MethodPost, "/publish", strings.NewReader(`{"targetBot":"remote","type":"run.completed","message":"forged"}`)))
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("caller published execution authority event: %d", rec.Code)
 	}
@@ -34,12 +34,12 @@ func TestMessagingRejectsMalformedCursorAndUnauthorisedRunPublication(t *testing
 
 func TestMessagingConflictAndReconciliationExposeOriginalDurableIntent(t *testing.T) {
 	dir := t.TempDir()
-	id, err := identity.LoadOrCreate(filepath.Join(dir, "identity.key"), filepath.Join(dir, "identity.pub"))
+	id, err := identity.Create(filepath.Join(dir, "identity.key"), filepath.Join(dir, "identity.pub"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	peers := discovery.NewRegistry()
-	peers.Upsert(types.Peer{NodeID: "remote", AuthStatus: types.AuthAuthenticated, TrustStatus: types.TrustTrusted})
+	peers.Upsert(types.Peer{BotID: "remote", AuthStatus: types.AuthAuthenticated, TrustStatus: types.TrustTrusted})
 	svc := messaging.NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), peers, nil, "local", id, "explicit", nil)
 	if err := svc.SetStatePath(filepath.Join(dir, "messages.jsonl")); err != nil {
 		t.Fatal(err)
@@ -48,12 +48,12 @@ func TestMessagingConflictAndReconciliationExposeOriginalDurableIntent(t *testin
 	srv := &Server{messaging: svc}
 	publish := func(body string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
-		srv.handlePublish(rec, httptest.NewRequest(http.MethodPost, "/v1/publish", strings.NewReader(body)))
+		srv.handlePublish(rec, httptest.NewRequest(http.MethodPost, "/publish", strings.NewReader(body)))
 		return rec
 	}
 	// Without a broker the call must not claim durable network acceptance, but
 	// its persistent outbox intent remains reconcilable under the same key.
-	first := publish(`{"targetNode":"remote","message":"first","idempotencyKey":"stable-key"}`)
+	first := publish(`{"targetBot":"remote","message":"first","idempotencyKey":"stable-key"}`)
 	if first.Code == http.StatusOK {
 		t.Fatal("Core/no-broker publication claimed durable acceptance")
 	}
@@ -65,7 +65,7 @@ func TestMessagingConflictAndReconciliationExposeOriginalDurableIntent(t *testin
 	if messageID == "" {
 		t.Fatal("durable pending publication cannot be reconciled")
 	}
-	conflict := publish(`{"targetNode":"remote","message":"different","idempotencyKey":"stable-key"}`)
+	conflict := publish(`{"targetBot":"remote","message":"different","idempotencyKey":"stable-key"}`)
 	if conflict.Code != http.StatusConflict {
 		t.Fatalf("idempotency conflict HTTP status = %d", conflict.Code)
 	}
@@ -75,7 +75,7 @@ func TestMessagingConflictAndReconciliationExposeOriginalDurableIntent(t *testin
 	if result.Code != "msg.idempotency_conflict" {
 		t.Fatalf("conflict code = %q", result.Code)
 	}
-	request := httptest.NewRequest(http.MethodGet, "/v1/requests/"+messageID, nil)
+	request := httptest.NewRequest(http.MethodGet, "/requests/"+messageID, nil)
 	request.SetPathValue("messageId", messageID)
 	rec := httptest.NewRecorder()
 	srv.handleRequest(rec, request)

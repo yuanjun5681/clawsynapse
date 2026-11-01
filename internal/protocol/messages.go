@@ -10,7 +10,7 @@ type DiscoveryAnnounce struct {
 	ProtocolVersion string         `json:"protocolVersion"`
 	MessageID       string         `json:"messageId"`
 	MessageType     string         `json:"messageType"`
-	NodeID          string         `json:"nodeId"`
+	BotID           string         `json:"nodeId"`
 	DID             string         `json:"did,omitempty"`
 	Version         string         `json:"version"`
 	AgentProduct    string         `json:"agentProduct"`
@@ -28,7 +28,7 @@ type DiscoveryDepart struct {
 	ProtocolVersion string `json:"protocolVersion"`
 	MessageID       string `json:"messageId"`
 	MessageType     string `json:"messageType"`
-	NodeID          string `json:"nodeId"`
+	BotID           string `json:"nodeId"`
 	Reason          string `json:"reason,omitempty"`
 	Ts              int64  `json:"ts"`
 	Signature       string `json:"signature,omitempty"`

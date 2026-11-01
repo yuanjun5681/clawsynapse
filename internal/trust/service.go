@@ -27,14 +27,14 @@ type Service struct {
 	peers            *discovery.Registry
 	bus              *natsbus.Client
 	store            *store.FSStore
-	nodeID           string
+	botID            string
 	identity         *identity.Identity
 	trustAutoApprove bool
 	publishJSON      func(string, any) error
 	state            store.TrustState
 }
 
-func NewService(log *slog.Logger, peers *discovery.Registry, bus *natsbus.Client, fs *store.FSStore, nodeID string, id *identity.Identity, trustAutoApprove bool) (*Service, error) {
+func NewService(log *slog.Logger, peers *discovery.Registry, bus *natsbus.Client, fs *store.FSStore, botID string, id *identity.Identity, trustAutoApprove bool) (*Service, error) {
 	st, err := fs.LoadTrustState()
 	if err != nil {
 		return nil, err
@@ -45,7 +45,7 @@ func NewService(log *slog.Logger, peers *discovery.Registry, bus *natsbus.Client
 		peers:            peers,
 		bus:              bus,
 		store:            fs,
-		nodeID:           nodeID,
+		botID:            botID,
 		identity:         id,
 		trustAutoApprove: trustAutoApprove,
 		state:            st,
@@ -63,23 +63,23 @@ func NewService(log *slog.Logger, peers *discovery.Registry, bus *natsbus.Client
 }
 
 func (s *Service) Start() error {
-	if _, err := s.bus.Subscribe("clawsynapse.trust."+s.nodeID+".request", s.handleTrustRequest); err != nil {
+	if _, err := s.bus.Subscribe("clawsynapse.trust."+s.botID+".request", s.handleTrustRequest); err != nil {
 		return err
 	}
-	if _, err := s.bus.Subscribe("clawsynapse.trust."+s.nodeID+".response", s.handleTrustResponse); err != nil {
+	if _, err := s.bus.Subscribe("clawsynapse.trust."+s.botID+".response", s.handleTrustResponse); err != nil {
 		return err
 	}
-	if _, err := s.bus.Subscribe("clawsynapse.trust."+s.nodeID+".revoke", s.handleTrustRevoke); err != nil {
+	if _, err := s.bus.Subscribe("clawsynapse.trust."+s.botID+".revoke", s.handleTrustRevoke); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (s *Service) Request(_ context.Context, targetNode, reason string, capabilities []string) (string, error) {
-	if targetNode == "" {
-		return "", errors.New("targetNode is required")
+func (s *Service) Request(_ context.Context, targetBot, reason string, capabilities []string) (string, error) {
+	if targetBot == "" {
+		return "", errors.New("targetBot is required")
 	}
-	peer, ok := s.peers.Get(targetNode)
+	peer, ok := s.peers.Get(targetBot)
 	if !ok {
 		return "", errors.New("target peer not found")
 	}
@@ -90,7 +90,7 @@ func (s *Service) Request(_ context.Context, targetNode, reason string, capabili
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.hasPendingLocked(targetNode, "outbound") {
+	if s.hasPendingLocked(targetBot, "outbound") {
 		return "", protocol.NewError(protocol.ErrTrustAlreadyPending, "trust request is already pending")
 	}
 	if peer.TrustStatus == types.TrustTrusted {
@@ -102,8 +102,8 @@ func (s *Service) Request(_ context.Context, targetNode, reason string, capabili
 	req := protocol.TrustRequest{
 		MessageID:    randID(),
 		MessageType:  "trust.request",
-		From:         s.nodeID,
-		To:           targetNode,
+		From:         s.botID,
+		To:           targetBot,
 		RequestID:    requestID,
 		Reason:       reason,
 		Capabilities: capabilities,
@@ -111,14 +111,14 @@ func (s *Service) Request(_ context.Context, targetNode, reason string, capabili
 	}
 	req.Signature = s.signTrustRequest(req)
 
-	if err := s.publishJSON("clawsynapse.trust."+targetNode+".request", req); err != nil {
+	if err := s.publishJSON("clawsynapse.trust."+targetBot+".request", req); err != nil {
 		return "", err
 	}
 
 	s.state.Pending = append(s.state.Pending, store.TrustPendingState{
 		RequestID:    requestID,
-		From:         s.nodeID,
-		To:           targetNode,
+		From:         s.botID,
+		To:           targetBot,
 		Direction:    "outbound",
 		Reason:       reason,
 		ReceivedAtMs: now,
@@ -126,7 +126,7 @@ func (s *Service) Request(_ context.Context, targetNode, reason string, capabili
 	if err := s.persistLocked(); err != nil {
 		return "", err
 	}
-	_ = s.peers.SetTrustStatus(targetNode, types.TrustPending)
+	_ = s.peers.SetTrustStatus(targetBot, types.TrustPending)
 	return requestID, nil
 }
 
@@ -146,9 +146,9 @@ func (s *Service) Reject(requestID, reason string) error {
 	return s.respond(requestID, "reject", reason)
 }
 
-func (s *Service) Revoke(targetNode, reason string) error {
-	if targetNode == "" {
-		return errors.New("targetNode is required")
+func (s *Service) Revoke(targetBot, reason string) error {
+	if targetBot == "" {
+		return errors.New("targetBot is required")
 	}
 
 	s.mu.Lock()
@@ -158,24 +158,24 @@ func (s *Service) Revoke(targetNode, reason string) error {
 	rev := protocol.TrustRevoke{
 		MessageID:   randID(),
 		MessageType: "trust.revoke",
-		From:        s.nodeID,
-		To:          targetNode,
+		From:        s.botID,
+		To:          targetBot,
 		Reason:      reason,
 		Ts:          now,
 	}
 	rev.Signature = s.signTrustRevoke(rev)
 
-	if err := s.publishJSON("clawsynapse.trust."+targetNode+".revoke", rev); err != nil {
+	if err := s.publishJSON("clawsynapse.trust."+targetBot+".revoke", rev); err != nil {
 		return err
 	}
 
-	s.removeFromTrustedLocked(targetNode)
-	s.upsertPeerStateLocked(&s.state.Revoked, targetNode, now, reason)
-	s.removePendingByNodeLocked(targetNode)
+	s.removeFromTrustedLocked(targetBot)
+	s.upsertPeerStateLocked(&s.state.Revoked, targetBot, now, reason)
+	s.removePendingByBotLocked(targetBot)
 	if err := s.persistLocked(); err != nil {
 		return err
 	}
-	_ = s.peers.SetTrustStatus(targetNode, types.TrustRevoked)
+	_ = s.peers.SetTrustStatus(targetBot, types.TrustRevoked)
 	return nil
 }
 
@@ -185,7 +185,7 @@ func (s *Service) handleTrustRequest(subject string, data []byte) {
 		s.log.Warn("decode trust request failed", logging.Subject(subject), logging.Error(err))
 		return
 	}
-	if req.To != s.nodeID {
+	if req.To != s.botID {
 		return
 	}
 	if err := protocol.ValidateMessage(subject, protocol.ControlMessage{MessageType: req.MessageType, To: req.To, Ts: req.Ts}, protocol.ValidateOptions{}); err != nil {
@@ -257,7 +257,7 @@ func (s *Service) handleTrustResponse(subject string, data []byte) {
 		s.log.Warn("decode trust response failed", logging.Subject(subject), logging.Error(err))
 		return
 	}
-	if resp.To != s.nodeID {
+	if resp.To != s.botID {
 		return
 	}
 	if err := protocol.ValidateMessage(subject, protocol.ControlMessage{MessageType: resp.MessageType, To: resp.To, Ts: resp.Ts}, protocol.ValidateOptions{}); err != nil {
@@ -315,7 +315,7 @@ func (s *Service) handleTrustRevoke(subject string, data []byte) {
 		s.log.Warn("decode trust revoke failed", logging.Subject(subject), logging.Error(err))
 		return
 	}
-	if rev.To != s.nodeID {
+	if rev.To != s.botID {
 		return
 	}
 	if err := protocol.ValidateMessage(subject, protocol.ControlMessage{MessageType: rev.MessageType, To: rev.To, Ts: rev.Ts}, protocol.ValidateOptions{}); err != nil {
@@ -339,7 +339,7 @@ func (s *Service) handleTrustRevoke(subject string, data []byte) {
 	now := time.Now().UnixMilli()
 	s.removeFromTrustedLocked(rev.From)
 	s.upsertPeerStateLocked(&s.state.Revoked, rev.From, now, rev.Reason)
-	s.removePendingByNodeLocked(rev.From)
+	s.removePendingByBotLocked(rev.From)
 	if err := s.persistLocked(); err != nil {
 		s.log.Warn("persist trust revoke failed", logging.Error(err))
 	}
@@ -387,7 +387,7 @@ func (s *Service) applyTrustDecisionLocked(pending store.TrustPendingState, deci
 	resp := protocol.TrustResponse{
 		MessageID:   randID(),
 		MessageType: "trust.response",
-		From:        s.nodeID,
+		From:        s.botID,
 		To:          pending.From,
 		RequestID:   pending.RequestID,
 		Decision:    decision,
@@ -415,13 +415,13 @@ func (s *Service) applyTrustDecisionLocked(pending store.TrustPendingState, deci
 	return nil
 }
 
-func (s *Service) hasPendingLocked(nodeID, direction string) bool {
+func (s *Service) hasPendingLocked(botID, direction string) bool {
 	for _, p := range s.state.Pending {
 		if p.Direction == direction {
-			if direction == "outbound" && p.To == nodeID {
+			if direction == "outbound" && p.To == botID {
 				return true
 			}
-			if direction == "inbound" && p.From == nodeID {
+			if direction == "inbound" && p.From == botID {
 				return true
 			}
 		}
@@ -458,10 +458,10 @@ func (s *Service) removePendingByRequestIDLocked(requestID string) {
 	s.state.Pending = out
 }
 
-func (s *Service) removePendingByNodeLocked(nodeID string) {
+func (s *Service) removePendingByBotLocked(botID string) {
 	out := make([]store.TrustPendingState, 0, len(s.state.Pending))
 	for _, p := range s.state.Pending {
-		if p.From == nodeID || p.To == nodeID {
+		if p.From == botID || p.To == botID {
 			continue
 		}
 		out = append(out, p)
@@ -469,39 +469,39 @@ func (s *Service) removePendingByNodeLocked(nodeID string) {
 	s.state.Pending = out
 }
 
-func (s *Service) upsertPeerStateLocked(target *[]store.TrustPeerState, nodeID string, at int64, reason string) {
+func (s *Service) upsertPeerStateLocked(target *[]store.TrustPeerState, botID string, at int64, reason string) {
 	out := make([]store.TrustPeerState, 0, len(*target)+1)
 	found := false
 	for _, item := range *target {
-		if item.NodeID == nodeID {
-			out = append(out, store.TrustPeerState{NodeID: nodeID, AtMs: at, Reason: reason})
+		if item.BotID == botID {
+			out = append(out, store.TrustPeerState{BotID: botID, AtMs: at, Reason: reason})
 			found = true
 			continue
 		}
 		out = append(out, item)
 	}
 	if !found {
-		out = append(out, store.TrustPeerState{NodeID: nodeID, AtMs: at, Reason: reason})
+		out = append(out, store.TrustPeerState{BotID: botID, AtMs: at, Reason: reason})
 	}
 	*target = out
 }
 
-func (s *Service) removeFromTrustedLocked(nodeID string) {
-	s.state.Trusted = removePeerState(s.state.Trusted, nodeID)
+func (s *Service) removeFromTrustedLocked(botID string) {
+	s.state.Trusted = removePeerState(s.state.Trusted, botID)
 }
 
-func (s *Service) removeFromRejectedLocked(nodeID string) {
-	s.state.Rejected = removePeerState(s.state.Rejected, nodeID)
+func (s *Service) removeFromRejectedLocked(botID string) {
+	s.state.Rejected = removePeerState(s.state.Rejected, botID)
 }
 
-func (s *Service) removeFromRevokedLocked(nodeID string) {
-	s.state.Revoked = removePeerState(s.state.Revoked, nodeID)
+func (s *Service) removeFromRevokedLocked(botID string) {
+	s.state.Revoked = removePeerState(s.state.Revoked, botID)
 }
 
-func removePeerState(src []store.TrustPeerState, nodeID string) []store.TrustPeerState {
+func removePeerState(src []store.TrustPeerState, botID string) []store.TrustPeerState {
 	out := make([]store.TrustPeerState, 0, len(src))
 	for _, item := range src {
-		if item.NodeID == nodeID {
+		if item.BotID == botID {
 			continue
 		}
 		out = append(out, item)
@@ -517,7 +517,7 @@ func (s *Service) syncPeerTrustStates() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, t := range s.state.Trusted {
-		_ = s.peers.SetTrustStatus(t.NodeID, types.TrustTrusted)
+		_ = s.peers.SetTrustStatus(t.BotID, types.TrustTrusted)
 	}
 	for _, p := range s.state.Pending {
 		if p.Direction == "inbound" {
@@ -527,15 +527,15 @@ func (s *Service) syncPeerTrustStates() {
 		}
 	}
 	for _, r := range s.state.Rejected {
-		_ = s.peers.SetTrustStatus(r.NodeID, types.TrustRejected)
+		_ = s.peers.SetTrustStatus(r.BotID, types.TrustRejected)
 	}
 	for _, r := range s.state.Revoked {
-		_ = s.peers.SetTrustStatus(r.NodeID, types.TrustRevoked)
+		_ = s.peers.SetTrustStatus(r.BotID, types.TrustRevoked)
 	}
 }
 
-func (s *Service) peerPublicKey(peerNode string) (ed25519.PublicKey, error) {
-	peer, ok := s.peers.Get(peerNode)
+func (s *Service) peerPublicKey(peerBot string) (ed25519.PublicKey, error) {
+	peer, ok := s.peers.Get(peerBot)
 	if !ok {
 		return nil, errors.New("peer not found")
 	}

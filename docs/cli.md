@@ -1,461 +1,160 @@
 ---
-summary: "ClawSynapse CLI：本地命令行入口与命令说明"
+summary: "ClawSynapse CLI：daemon 初始化、显式 Bot 管理、迁移与业务操作"
 title: "ClawSynapse CLI"
 ---
 
 # ClawSynapse CLI
 
-最后更新：2026-10-20
+`clawsynapse` 通过本地 daemon HTTP API 管理 Bot 和业务；只有 init、迁移、离线 export/import 与服务/日志管理直接操作本机。仓库内可用 `go run ./cmd/clawsynapse` 替换下列 `clawsynapse`。
 
-`clawsynapse` 是 ClawSynapse 的本地命令行入口。它不直接连接 NATS，而是通过 `clawsynapsed` 暴露的本地 HTTP API 执行查询、消息发送与信任管理操作。
+## 全局参数与凭据
 
-## 使用方式
-
-在仓库根目录直接运行：
+全局参数放在命令前：
 
 ```bash
-go run ./cmd/clawsynapse <command>
+clawsynapse --api-addr 127.0.0.1:18080 --token-file "$HOME/.clawsynapse/admin.token" --json bots
+clawsynapse --bot "$BOT_A" --timeout 10s peers
 ```
 
-如果已经构建成二进制：
+- `--api-addr`：daemon endpoint，默认从本地 daemon 配置读取（默认 127.0.0.1:18080）。
+- `--token-file`：该 endpoint 的私有凭据文件；默认读取本机 daemon 配置中的 adminTokenPath。非默认 endpoint 必须明确提供匹配凭据，不能假设本机 token 授权远端。
+- `--bot`：业务命令必填，本地完整 Bot ID 或无歧义前缀；即便只有一个 Bot 也不默认选择。前缀解析需要 admin 权限调用 bots 列表；使用 Bot scoped token 时必须使用完整 `n1-` + 32 位小写十六进制 ID。
+- `--timeout`：HTTP 请求超时，默认 5s；不是远端模型执行超时。
+- `--json`：输出 APIResult JSON。没有凭据时明确失败，不匿名降级；远端必须是可信 HTTPS，客户端不跟随重定向。
+
+admin token 可管理所有 Bot。`bots/{botId}/credentials/api.token` 只授权该 Bot 的业务和身份查询，不能执行 bots、bot config、生命周期或宿主文件导入。`--bot` 选择本地发起者，`--target` 是远端 Bot ID，二者不能混用。HTTP API 没有 v1 别名或默认 Bot，详见 [api.md](api.md)。
+
+## 初始化 daemon 与两个 Bot
 
 ```bash
-clawsynapse <command>
+clawsynapse init --nats-servers nats://127.0.0.1:4222
+clawsynapsed --config "$HOME/.clawsynapse/config.json"
+# 另一个终端：使用 admin 凭据创建两份独立配置和身份
+clawsynapse --json bot create --name assistant-a --file /absolute/bot-a.json
+clawsynapse --json bot create --name assistant-b --file /absolute/bot-b.json
+clawsynapse --json bots
 ```
 
-默认本地 API 地址为 `127.0.0.1:18080`。
+`init` 只创建 schemaVersion 2 的 daemon `config.json`，不创建默认 Bot、不迁移旧目录、不配置 Harness。终端可交互输入，非交互使用参数：`--config FILE`、`--data-dir ROOT`、`--nats-servers URLS`、`--local-api-addr ADDR`、`--log-level debug|info|warn|error`、`--log-format json|text`、`--overwrite`。已有文件非交互覆盖必须显式 `--overwrite`。不再支持 init 的 `--agent-adapter`、trust、gateway 或身份参数。daemon 配置修改后重启 daemon。
 
-所有 API 路由已启用 Bearer 认证。daemon 首次启动生成 `DataDir/api.token`（0600）；CLI 自动读取本地配置中的 token 路径，或通过 `API_TOKEN_PATH` 指定。缺失文件会明确失败，不会匿名降级。远端 API 必须使用受信任证书的 HTTPS；本地客户端不跟随重定向。
+Bot 创建文件可只提供覆盖字段；例如 bot-a.json：
 
-当前支持的顶层命令：
+```json
+{"displayName":"assistant-a","harness":{"adapter":"opencode","model":"zai-coding-plan/glm-5.3-flash","timeout":"10m"}}
+```
 
-- `version`
-- `init`
-- `service status|start|stop|restart`
-- `dashboard`
-- `logs`
-- `health`
-- `peers`
-- `peer alias|describe|label|unlabel`
-- `messages`
-- `publish`
-- `auth challenge`
-- `trust pending|request|approve|reject|revoke`
-- `transfer send|get|delete|list`
-- `transfers`
-
-## 全局参数
-
-- `--api-addr`：指定本地 API 地址，默认 `127.0.0.1:18080`
-- `--timeout`：指定请求超时，默认 `5s`
-- `--json`：直接输出 API 返回的 JSON，适合脚本调用
-
-示例：
+bot-b.json 使用另一 displayName/model。模型必须在部署机器上真实可用，此示例不是模型验收声明。创建以 defaults 合并，生成独立密钥和 scoped token，返回 `data.bot.botId`；保存为 BOT_A/B。Bot 初始 stopped：
 
 ```bash
-go run ./cmd/clawsynapse --api-addr 127.0.0.1:18080 --timeout 10s --json health
+clawsynapse --bot "$BOT_A" bot start
+clawsynapse --bot "$BOT_B" bot start
+clawsynapse --bot "$BOT_A" bot get
+clawsynapse --bot "$BOT_B" health
 ```
 
-## 当前命令
+start/stop 接纳为 HTTP 202；用 bot get 轮询到 running/stopped/failed，不把 202 当成 ready。`daemon` 查询 daemon 汇总健康；`health` 查询所选 Bot 的 self/nats/adapter，不代表真实模型任务已成功。
 
-### Version
-
-打印当前 CLI 二进制版本：
+## Bot 配置与生命周期
 
 ```bash
-go run ./cmd/clawsynapse version
+clawsynapse bots
+clawsynapse --bot "$BOT_A" --json bot get
+clawsynapse --bot "$BOT_A" --json bot config
+clawsynapse --bot "$BOT_A" bot stop
+# 等待 bot get 显示 stopped，再将 GET 的 data.config 保存/编辑为完整 JSON
+clawsynapse --bot "$BOT_A" bot config --file /absolute/bot-a-updated.json
+clawsynapse --bot "$BOT_A" bot start
+clawsynapse --bot "$BOT_B" bot stop
+# 等待 stopped
+clawsynapse --bot "$BOT_B" bot archive
+clawsynapse --bot "$BOT_B" bot restore
 ```
 
-### Init
+`bot create --name NAME [--file FILE]` 要求显示名；`--name` 覆盖文件显示名。`bot config --file FILE` 不是 patch：提交完整 BotConfig 和当前 revision，成功递增；陈旧 revision 返回 409。Harness 变化自动生成 bindingRevision，切换工作区及会话，不复活旧产品 session。archive 保留数据，restore 回到 stopped，需显式 start。
 
-交互式生成或更新 `~/.clawsynapse/config.yaml`：
+每个 Bot 配置 Harness adapter/model/timeout、信任、标签、执行上限和文件配额；daemon 只存共享资源设置。OpenClaw/Webhook 必须有明确、互不共享的 harness.instance。所有字段见 [operations.md](operations.md)。
+
+## 旧数据显式迁移与私有备份
+
+先停止旧 daemon（包括手工进程），保留旧配置和目录。不要先对旧目录运行 init --overwrite。迁移只接受明确旧配置：
 
 ```bash
-go run ./cmd/clawsynapse init
+clawsynapse service stop
+clawsynapse migrate --legacy-config "$HOME/.clawsynapse/config.yaml" --data-dir "$HOME/.clawsynapse"
+# 输出保留原身份的完整 Bot ID；迁移后初始 stopped
+clawsynapsed --config "$HOME/.clawsynapse/config.json"
+clawsynapse bots
+clawsynapse --bot "$MIGRATED_BOT" bot start
 ```
 
-非交互覆盖写入：
+`--data-dir` 可为原目录或单独空目录；源和目标不可嵌套。迁移持有目录/消息日志独占锁，保留原始字节、路径映射、校验清单与 migration marker；不在线猜测、合并目录或重建身份。原地迁移保留原目录备份；异地迁移保留源目录及备份数据。保留这些私有备份，勿将失败目录/marker 当垃圾删除。自动启动遇到旧布局会拒绝并要求显式迁移。
+
+停止目标 daemon 后可离线导出/导入 Bot：
 
 ```bash
-go run ./cmd/clawsynapse init \
-  --overwrite \
-  --nats-servers nats://127.0.0.1:4222 \
-  --agent-adapter openclaw \
-  --trust-auto-approve=false
+clawsynapse --bot "$BOT_A" bot export --data-dir "$HOME/.clawsynapse" --file /private/backups/bot-a
+clawsynapse bot import --data-dir /private/other-daemon --file /private/backups/bot-a
 ```
 
-常见用途：
+`--file` 是私有 bundle **目录**，不是 JSON 配置或压缩包；export 必须用完整 --bot ID，import 从 bundle 获取身份。导出包含身份私钥、凭据、配置、持久状态和引用内容，按秘密管理。离线操作不使用 HTTP token 绕过目录锁；源/目标 daemon 必须停止。导入保留身份，不是复制成新的 Bot，不要同时启动同一身份的两份副本。
 
-- 首次安装后补全 daemon 配置
-- 修改 NATS 地址或 adapter
-- 生成标准化的 `~/.clawsynapse/config.yaml`
+## 业务命令
 
-说明：
-
-- `nodeId` 不在配置中手工设置
-- daemon 会从本地 Ed25519 公钥自动派生 `did:key` 和 `nodeId`
-- `--trust-auto-approve=true` 会自动批准签名校验通过的 inbound trust request，仅建议在受控网络使用
-
-配置写入后，使用 service 子命令应用变更：
+下列全部显式选择本地 Bot：
 
 ```bash
-go run ./cmd/clawsynapse service restart
+clawsynapse --bot "$BOT_A" health
+clawsynapse --bot "$BOT_A" peers --name gateway --label env=production --label-has caps=chat
+clawsynapse --bot "$BOT_A" peer alias "$PEER" 现场网关
+clawsynapse --bot "$BOT_A" peer describe "$PEER" 上海机房
+clawsynapse --bot "$BOT_A" peer label "$PEER" zone a b
+clawsynapse --bot "$BOT_A" peer unlabel "$PEER" zone
+clawsynapse --bot "$BOT_A" auth challenge --target "$PEER"
+clawsynapse --bot "$BOT_A" trust request --target "$PEER" --reason 协作 --capability chat
+clawsynapse --bot "$BOT_A" trust pending
+clawsynapse --bot "$BOT_A" trust approve --request-id "$REQUEST_ID" --reason 已确认
+clawsynapse --bot "$BOT_A" trust reject --request-id "$REQUEST_ID" --reason 拒绝
+clawsynapse --bot "$BOT_A" trust revoke --target "$PEER" --reason 撤销
+clawsynapse --bot "$BOT_A" publish --target "$PEER" --type chat.message \
+  --message "汇总报告" --session-key report-session --metadata priority=high
+clawsynapse --bot "$BOT_A" --json messages
 ```
 
-### Service
+备注/认证/信任按本地 Bot 隔离，Bot A 的 alias 或信任不影响 B。peer alias/describe 不带值清除；label 一个值为标量，多个值为集合；unlabel 删除键。标量/数组筛选不互换，不以逗号拆分。labels 是自报属性，不是授权。聊天对象是 Bot，不是 Harness 内部 Agent 目录；`publish --agent ID` 只是受接收端 `harness.allowedAgentIds` 限制的可选内部路由，Codex 不支持命名路由。
 
-管理本机上的 `clawsynapsed` 服务：
+CLI publish 是文本快捷入口，只支持 `--target`、`--type`、`--agent`、`--message`、`--session-key`、可重复 `--metadata key=value`。结构化 payload、expiresAt、稳定 idempotencyKey、请求查询和游标回放用 HTTP API；没有 publish 等待模型完成选项。发布成功只是持久接纳，messages 包含关联 run.* 事件；持久恢复边界见 [messaging.md](messaging.md)。
+
+## 文件导入、发送、读取与删除引用
 
 ```bash
-go run ./cmd/clawsynapse service status
-go run ./cmd/clawsynapse service restart
-go run ./cmd/clawsynapse service stop
-go run ./cmd/clawsynapse service start
+# admin 从宿主机导入，只给 BOT_A 建立引用
+clawsynapse --bot "$BOT_A" --json transfer import --file /absolute/host/report.pdf
+# 使用返回 transferId；授权引用转发，无须获知 blob 路径
+clawsynapse --bot "$BOT_A" transfer forward --id "$TRANSFER_ID" --target "$PEER"
+# 或直接发送当前 Bot/绑定 workspace 内的文件
+clawsynapse --bot "$BOT_A" transfer send --target "$PEER" --file report.pdf \
+  --mime-type application/pdf --metadata taskId=task-1
+clawsynapse --bot "$BOT_A" transfers
+clawsynapse --bot "$BOT_A" transfer list
+clawsynapse --bot "$BOT_A" transfer get --id "$TRANSFER_ID"
+clawsynapse --bot "$BOT_A" transfer delete --id "$TRANSFER_ID"
 ```
 
-平台行为：
-
-- Linux: 调用 `sudo systemctl`
-- macOS: 调用 `launchctl`
-
-### Dashboard
-
-启动一个终端监控界面（Config 视图支持编辑配置）：
+transfer send 不能读取任意宿主路径/其他 Bot 文件。scoped token 可发送 workspace 文件、转发和读取自己的引用，但不能 transfer import。CLI 没有文件字节下载子命令；使用 HTTP：
 
 ```bash
-go run ./cmd/clawsynapse dashboard
+curl --fail -H "Authorization: Bearer $(cat "$TOKEN_FILE")" \
+  "http://127.0.0.1:18080/v2/bots/$BOT_A/transfer/$TRANSFER_ID/file" -o report.pdf
 ```
 
-当前提供五个视图：
+删除仅删除所选 Bot 的引用，不删除其他 Bot 的授权内容；共享无引用内容后续由 GC 回收。传输需要 JetStream 与对端认证/信任，配额失败不会旁路。
 
-- `Overview`：NATS 连接、消息计数、peer 数
-- `Peers`：已发现节点列表，每行展示可读名称（本地别名优先于远端 displayName）与身份短指纹（宽度不足时指纹、nodeId 列逐级省略）；选中节点可查看 displayName/alias/description、远端与本地 labels 及完整指纹
-- `Messages`：最近消息快照
-- `Logs`：最近服务日志
-- `Config`：查看并编辑配置，包括 `displayName` 与 `labels`（labels 以 JSON 对象输入，例如 `{"env":"prod","caps":["chat","tools"]}`；非法 JSON 时中止保存并报错）
+## 本机服务与监控
 
-快捷键：
+`version` 输出 CLI 版本，`clawsynapsed --version` 输出 daemon 版本。`service status|start|stop|restart` 管理整个 daemon（macOS launchd / Linux systemd），不是单 Bot 生命周期。`logs [--lines 200] [--follow]` 读取 daemon 日志，默认 `~/.clawsynapse/log/clawsynapsed.log`，兼容平台旧日志回退。
 
-- `q`：退出
-- `tab` / `shift+tab` / `left` / `right`：切换视图
-- `1` / `2` / `3` / `4` / `5`：直接跳到对应视图
-- `r`：立即刷新
-- Peers 视图内 `/`：输入筛选表达式；`key=value` 为 label 字符串精确匹配，`key~=value` 为 label 数组成员匹配，其他输入按名称/别名/nodeId 子串匹配；`Esc` 清除筛选
-- Config 视图内 `enter` 编辑字段，`S` 保存（保存后需重启 daemon 生效）
+`dashboard` 提供终端监控视图；显式 `--bot` 选择业务对象，`--token-file` 匹配 endpoint。使用 scoped token 不会获得 catalog/配置管理权。实际验收已覆盖从运行 Bot A 切换到 stopped 的另一 Bot 时清除原消息/缓存；这不等于所有平台和视图穷举验收，真实模型与第三方 CLI 版本兼容仍按部署组合确认。
 
-### Logs
+### Upgrade
 
-查看最近服务日志：
-
-```bash
-go run ./cmd/clawsynapse logs
-go run ./cmd/clawsynapse logs --lines 200
-go run ./cmd/clawsynapse logs --follow
-```
-
-平台行为：
-
-- Linux: 优先读取 `~/.clawsynapse/log/clawsynapsed.log`，不存在时回退到 `journalctl -u clawsynapsed.service`
-- macOS: 优先读取 `~/.clawsynapse/log/clawsynapsed.log`，兼容回退到旧的 `clawsynapsed.stdout.log` 和 `clawsynapsed.stderr.log`
-
-### Health
-
-检查本地 daemon、NATS 连接状态以及当前 Agent Adapter 健康状态：
-
-```bash
-go run ./cmd/clawsynapse health
-go run ./cmd/clawsynapse --json health
-```
-
-对应 API：
-
-```http
-GET /v1/health
-```
-
-普通输出包含 `nodeId`、`displayName`、`labels`（标量 `k=v`、集合 `k=[a,b]`）、版本、`trustMode`、peer 数，以及 NATS 与 adapter 状态；完整结构请用 `--json`。
-
-### Peers
-
-查看当前已发现 peer：
-
-```bash
-go run ./cmd/clawsynapse peers
-go run ./cmd/clawsynapse peers --name gateway
-go run ./cmd/clawsynapse peers --label env=production
-go run ./cmd/clawsynapse peers --label-has caps=chat
-```
-
-表格列：`NAME`（本地别名优先，其次远端 displayName，否则 `-`）、`NODE`（身份短指纹）、`AUTH`、`TRUST`、`LABELS`（标量渲染为 `k=v`，集合渲染为 `k=[a,b]`）。
-
-筛选参数：
-
-- `--label key=value`：label 字符串精确匹配，可重复
-- `--label-has key=value`：label 数组成员匹配，可重复；与 `--label` 语义不同，不做逗号拆分
-- `--name substr`：对 displayName/本地别名做大小写不敏感的子串匹配
-
-对应 API：
-
-```http
-GET /v1/peers?label=env=production&labelHas=caps=chat&name=gateway
-```
-
-### Peer 本地备注
-
-维护本节点上针对某个 peer 的备注（仅本地可见，不影响身份与信任，持久化于 `peer-attrs.json`）：
-
-```bash
-# 设置/清除别名（不带 alias 参数即清除）
-go run ./cmd/clawsynapse peer alias <nodeID> 现场网关
-go run ./cmd/clawsynapse peer alias <nodeID>
-
-# 设置/清除描述
-go run ./cmd/clawsynapse peer describe <nodeID> 上海机房
-
-# 设置本地 label：一个值为标量，多个值为集合
-go run ./cmd/clawsynapse peer label <nodeID> floor 3
-go run ./cmd/clawsynapse peer label <nodeID> zone a b
-
-# 删除某个本地 label 键
-go run ./cmd/clawsynapse peer unlabel <nodeID> floor
-```
-
-对应 API：
-
-```http
-GET /v1/peers/{nodeID}/attrs
-PUT /v1/peers/{nodeID}/attrs
-DELETE /v1/peers/{nodeID}/attrs
-```
-
-### Messages
-
-查看最近消息记录：
-
-```bash
-go run ./cmd/clawsynapse messages
-```
-
-对应 API：
-
-```http
-GET /v1/messages
-```
-
-### Publish
-
-向目标节点发送消息：
-
-```bash
-go run ./cmd/clawsynapse publish \
-  --target <peer-node-id> \
-  --message "请汇总最新报告"
-```
-
-指定消息类型（默认 `chat.message`）：
-
-```bash
-go run ./cmd/clawsynapse publish \
-  --target <peer-node-id> \
-  --type task.assign \
-  --message "请处理数据清洗任务"
-```
-
-带会话键与元数据：
-
-```bash
-go run ./cmd/clawsynapse publish \
-  --target <peer-node-id> \
-  --message "请汇总最新报告" \
-  --session-key nats:<local-node-id>:<peer-node-id> \
-  --metadata priority=high \
-  --metadata source=cli
-```
-
-对应 API：
-
-```http
-POST /v1/publish
-```
-
-普通输出会单独显示 `targetNode`、`messageId` 和 `sessionKey`；如果需要完整结构，使用 `--json`。
-
-publish 成功不是 Agent 完成。文本会映射为 v2 `payload.text`，结构化任务可通过本地 HTTP API 的 `payload` 提交；`messages --json` 可查看关联的 `run.*` 事件。当前没有持久执行查询、事件补取或 publish 等待完成选项。
-
-可通过 `--agent <id>` 请求命名 Agent，但接收端 OpenClaw/OpenCode 必须先在 `agentAllowedIds` 中授权该名称；默认拒绝命名路由。Codex 不支持此参数，明确返回执行失败，而非静默使用默认 Agent。
-
-### Auth Challenge
-
-对目标节点发起 challenge：
-
-```bash
-go run ./cmd/clawsynapse auth challenge --target n1-11223344556677889900aabbccddeeff
-```
-
-对应 API：
-
-```http
-POST /v1/auth/challenge
-```
-
-### Trust
-
-发起信任请求：
-
-```bash
-go run ./cmd/clawsynapse trust request \
-  --target n1-11223344556677889900aabbccddeeff \
-  --reason "需要建立跨节点协作" \
-  --capability chat \
-  --capability tools
-```
-
-查看待处理请求：
-
-```bash
-go run ./cmd/clawsynapse trust pending
-```
-
-批准请求：
-
-```bash
-go run ./cmd/clawsynapse trust approve \
-  --request-id req_123 \
-  --reason "已人工确认"
-```
-
-拒绝请求：
-
-```bash
-go run ./cmd/clawsynapse trust reject \
-  --request-id req_123 \
-  --reason "来源不明"
-```
-
-撤销信任：
-
-```bash
-go run ./cmd/clawsynapse trust revoke \
-  --target n1-11223344556677889900aabbccddeeff \
-  --reason "密钥已轮换"
-```
-
-对应 API：
-
-```http
-GET  /v1/trust/pending
-POST /v1/trust/request
-POST /v1/trust/approve
-POST /v1/trust/reject
-POST /v1/trust/revoke
-```
-
-`trust request`、`trust approve`、`trust reject`、`trust revoke` 的普通输出会单独显示关键字段，例如 `targetNode`、`requestId` 和 `decision`；如果需要完整结构，使用 `--json`。
-
-### Transfer
-
-通过本地 daemon 调用文件传输接口。文件传输依赖服务端启用 JetStream。
-
-发送文件：
-
-```bash
-go run ./cmd/clawsynapse transfer send \
-  --target n1-11223344556677889900aabbccddeeff \
-  --file /tmp/report.pdf
-```
-
-带 MIME 类型发送：
-
-```bash
-go run ./cmd/clawsynapse transfer send \
-  --target n1-11223344556677889900aabbccddeeff \
-  --file /tmp/report.pdf \
-  --mime-type application/pdf
-```
-
-带业务元数据发送：
-
-```bash
-go run ./cmd/clawsynapse transfer send \
-  --target n1-11223344556677889900aabbccddeeff \
-  --file /tmp/report.pdf \
-  --metadata taskId=task-001 \
-  --metadata todoId=todo-042
-```
-
-获取单个传输详情：
-
-```bash
-go run ./cmd/clawsynapse transfer get --id tf_abc123
-```
-
-删除传输记录：
-
-```bash
-go run ./cmd/clawsynapse transfer delete --id tf_abc123
-```
-
-查看传输列表：
-
-```bash
-go run ./cmd/clawsynapse transfer list
-go run ./cmd/clawsynapse transfers
-```
-
-对应 API：
-
-```http
-POST   /v1/transfer/send
-GET    /v1/transfer/{transferId}
-DELETE /v1/transfer/{transferId}
-GET    /v1/transfers
-```
-
-普通输出行为：
-
-- `transfer send` 会单独输出 `transferId`、`bucket`、`size`、`checksum`
-- `transfer get` 会输出 `data.transfer` 对象的格式化 JSON
-- `transfer list` 和 `transfers` 会先输出 `items: <N>`，再输出列表 JSON
-- `transfer delete` 会单独输出 `transferId`
-
-常见失败场景：
-
-- JetStream 不可用时，daemon 会返回 `transfer.disabled`
-- 目标节点未认证、未受信任、文件不存在或超出大小限制时，daemon 会返回 `transfer.send_failed`
-
-## 命令与 API 对照
-
-| CLI | API |
-|-----|-----|
-| `clawsynapse health` | `GET /v1/health` |
-| `clawsynapse peers` | `GET /v1/peers` |
-| `clawsynapse peer alias <nodeID> [alias]` | `PUT /v1/peers/{nodeID}/attrs` |
-| `clawsynapse peer describe <nodeID> [text]` | `PUT /v1/peers/{nodeID}/attrs` |
-| `clawsynapse peer label <nodeID> <key> <value> [value...]` | `PUT /v1/peers/{nodeID}/attrs` |
-| `clawsynapse peer unlabel <nodeID> <key>` | `PUT /v1/peers/{nodeID}/attrs` |
-| `clawsynapse messages` | `GET /v1/messages` |
-| `clawsynapse publish` | `POST /v1/publish` |
-| `clawsynapse auth challenge` | `POST /v1/auth/challenge` |
-| `clawsynapse trust pending` | `GET /v1/trust/pending` |
-| `clawsynapse trust request` | `POST /v1/trust/request` |
-| `clawsynapse trust approve` | `POST /v1/trust/approve` |
-| `clawsynapse trust reject` | `POST /v1/trust/reject` |
-| `clawsynapse trust revoke` | `POST /v1/trust/revoke` |
-| `clawsynapse transfer send` | `POST /v1/transfer/send` |
-| `clawsynapse transfer get --id <transferId>` | `GET /v1/transfer/{transferId}` |
-| `clawsynapse transfer delete --id <transferId>` | `DELETE /v1/transfer/{transferId}` |
-| `clawsynapse transfer list` | `GET /v1/transfers` |
-| `clawsynapse transfers` | `GET /v1/transfers` |
-
-## 当前边界
-
-当前 CLI 只覆盖已经在 `clawsynapsed` 中实现的本地 API。
-
-尚未纳入 CLI 的能力包括：
-
-- 直接指定任意 `subject` 的发布
-- 守护进程启动参数管理
-- 守护进程配置编辑的 CLI 命令（`dashboard` 的 Config 视图可直接编辑配置；CLI 命令本身没有独立入口）
-- 更细粒度的批量传输管理能力
-
-这些能力以实际后端实现为准，补齐后再扩展 CLI 命令集。
+`clawsynapse upgrade check [--json]` 查询安装状态和最新 release；`clawsynapse upgrade [--cli|--daemon|--all] [--version TAG] [--repo OWNER/REPO] [--yes]` 调用安装器升级选定组件。三个组件选择参数互斥，省略时根据已安装组件选择；版本默认 latest，默认要求交互确认，自动化才显式 --yes。它不代替旧布局停机迁移，也不应覆盖 Bot 配置/身份。

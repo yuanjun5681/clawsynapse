@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>单 Daemon 多 Bot 设计 · clawsynapse 设计方案</title>
+<style data-enhancement="notation">
+:root {
+  --notation-color: currentColor;
+  --notation-highlight: rgba(127, 127, 127, .2);
+  --notation-highlight-ink: inherit;
+}
+[data-notation] {
+  text-decoration: underline;
+  text-decoration-color: var(--notation-color);
+  text-decoration-thickness: 3px;
+  text-underline-offset: .18em;
+}
+[data-notation="highlight"] {
+  color: var(--notation-highlight-ink);
+  background: var(--notation-highlight);
+  text-decoration: none;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+@media screen {
+  [data-notation].notation-ready { text-decoration: none; background: transparent; }
+}
+@media print {
+  .rough-annotation { display: none !important; }
+  [data-notation] { text-decoration-color: currentColor; }
+  [data-notation="highlight"] {
+    color: inherit;
+    background: transparent;
+    text-decoration: underline;
+  }
+}
+</style>
+<style>
+
+:root{
+  --paper:#f5f6f2; --panel:#fbfcfa; --ink:#1d2b36; --muted:#5c6b78;
+  --blue:#1e5fa8; --blue-deep:#143f6d; --line:#b7c5d4; --line-soft:#d9e1ea;
+  --accent:#c2410c; --accent-ink:#8a3410; --accent-soft:#fdf2e7; --marker:#f3d26a;
+  --code-bg:#e9eef5; --ok:#1c7a43; --grid:rgba(30,95,168,.05);
+  --serif:"Songti SC","STSong",SimSun,serif;
+  --sans:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
+  --fang:"Fangsong SC","STFangsong","FangSong",serif;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --notation-color:#c2410c; --notation-highlight:#f3d26a; --notation-highlight-ink:#4a3208;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;color:var(--ink);font:400 16.5px/1.85 var(--serif);
+  background:linear-gradient(var(--grid) 1px,transparent 1px) 0 0/28px 28px,
+  linear-gradient(90deg,var(--grid) 1px,transparent 1px) 0 0/28px 28px,var(--paper)}
+::selection{background:#bcd7f2}
+a{color:var(--blue);text-decoration-color:rgba(30,95,168,.45);text-underline-offset:.16em}
+a:hover{color:var(--blue-deep)}
+a:focus-visible,button:focus-visible,summary:focus-visible,[tabindex]:focus-visible{outline:2.5px solid var(--accent);outline-offset:2px;border-radius:2px}
+.sheet{max-width:1240px;margin:20px auto 48px;border:1.5px solid rgba(30,95,168,.5)}
+.masthead{display:flex;gap:32px;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;padding:26px 34px 22px;border-bottom:1.5px solid rgba(30,95,168,.5)}
+.kicker{margin:0 0 12px;font:600 12px/1 var(--mono);letter-spacing:.18em;color:var(--blue)}
+.kicker .st{color:var(--accent)}
+h1{margin:0 0 10px;font:700 30px/1.3 var(--sans);letter-spacing:.01em}
+.subtitle{margin:0 0 10px;font:400 16px/1.75 var(--fang);color:#41556a;max-width:58ch}
+.updated{margin:0;font:400 12.5px/1.6 var(--mono);color:var(--muted)}
+.tblock{position:relative;width:256px;flex:none;border:1.5px solid var(--blue);background:var(--panel);padding:10px 14px 8px}
+.tblock .row{display:flex;justify-content:space-between;gap:12px;padding:5px 0;border-bottom:1px dashed var(--line-soft)}
+.tblock .row:last-of-type{border-bottom:0}
+.tblock dt{font:400 12px/1.6 var(--fang);color:var(--muted);margin:0}
+.tblock dd{font:500 12.5px/1.6 var(--mono);margin:0;text-align:right;overflow-wrap:anywhere}
+.tblock-cap{margin:7px 0 0;text-align:right;font:400 11px/1.4 var(--fang);color:var(--muted)}
+.stamp{position:absolute;top:-14px;right:-12px;transform:rotate(4deg);border:2px dashed var(--accent);color:var(--accent);background:var(--accent-soft);font:700 13px/1 var(--sans);letter-spacing:.28em;padding:8px 8px 8px 12px;border-radius:3px}
+.layout{display:grid;grid-template-columns:236px minmax(0,1fr);gap:38px;padding:26px 34px 40px}
+.toc{align-self:start}
+.toc-details{border:1.5px solid var(--line);background:rgba(251,252,250,.92)}
+.toc-details summary{cursor:pointer;padding:10px 14px;font:600 14px/1.4 var(--sans);color:var(--blue-deep);list-style:none}
+.toc-details summary::-webkit-details-marker{display:none}
+.toc-details summary::after{content:"展开 ▾";float:right;font-weight:400;color:var(--muted);font-size:12.5px}
+.toc-details[open] summary::after{content:"收起 ▴"}
+.toc-details[open] summary{border-bottom:1px dashed var(--line)}
+.toc ol{list-style:none;margin:0;padding:6px 0}
+.toc li a{display:flex;gap:9px;padding:5.5px 14px;font:400 13.5px/1.55 var(--sans);color:var(--ink);text-decoration:none}
+.toc li a:hover{background:#e8eef6;color:var(--blue-deep)}
+.toc li a.cur{background:#e8eef6;color:var(--blue-deep);box-shadow:inset 3px 0 0 var(--blue);font-weight:600}
+.toc li a.cur .n{color:var(--accent)}
+.toc .n{font:500 12px/1.7 var(--mono);color:var(--blue);min-width:22px}
+.docsec{margin:0 0 60px}
+.docsec:last-child{margin-bottom:8px}
+h2{margin:0 0 18px;padding-bottom:10px;border-bottom:2px solid var(--blue);font:700 22px/1.45 var(--sans);color:var(--blue-deep);scroll-margin-top:16px}
+h2::before{content:"";display:inline-block;width:11px;height:11px;background:var(--blue);margin-right:11px}
+h3{margin:32px 0 12px;font:600 17.5px/1.55 var(--sans);scroll-margin-top:16px}
+h3::before{content:"§";color:var(--blue);margin-right:8px;font-weight:700}
+p{margin:12px 0}
+blockquote{margin:26px 0;padding:16px 22px;background:var(--accent-soft);border-left:4px solid var(--accent);font:400 17.5px/1.9 var(--fang);color:#4a3a28}
+ul,ol{margin:12px 0;padding-left:1.6em}
+li{margin:7px 0}
+p,li,blockquote,td{text-wrap:pretty}
+li::marker{color:var(--blue)}
+ol.decisions{list-style:none;padding-left:0;counter-reset:dec}
+ol.decisions>li{counter-increment:dec;position:relative;padding-left:44px;margin:13px 0}
+ol.decisions>li::before{content:counter(dec,decimal-leading-zero);position:absolute;left:0;top:4px;width:30px;height:30px;border:1.5px solid var(--blue);color:var(--blue-deep);background:#e8eef6;font:600 12.5px/27px var(--mono);text-align:center}
+ol.acceptance{columns:2;column-gap:44px;padding-left:1.5em}
+ol.acceptance li{break-inside:avoid}
+.tscroll{overflow-x:auto;margin:20px 0;border:1px solid var(--line);background:var(--panel)}
+table{border-collapse:collapse;width:100%;min-width:560px}
+th{font:600 14px/1.6 var(--sans);color:var(--blue-deep);text-align:left;background:#e7eef6;border-bottom:2px solid var(--blue);white-space:nowrap}
+th,td{padding:9px 13px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+td{font:400 15px/1.75 var(--serif)}
+tbody tr:last-child td{border-bottom:0}
+p code,li code,td code,blockquote code{font:500 13.2px/1.5 var(--mono);background:var(--code-bg);padding:1px 5px;border-radius:3px;color:#17456e}
+.codeblock{margin:22px 0}
+.codebar{display:flex;align-items:center;gap:10px;padding:6px 10px;background:#e3ebf4;border:1px solid var(--line);border-bottom:0}
+.codebar .lang{font:500 11px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.copy-status{font:400 12.5px/1.2 var(--fang);color:var(--muted);flex:1;text-align:right;min-height:1.2em}
+.copy-status.ok{color:var(--ok)}
+.copy-status.err{color:var(--accent)}
+.copybtn{font:500 12.5px/1.4 var(--sans);color:var(--blue-deep);background:var(--panel);border:1px solid var(--blue);border-radius:3px;padding:3px 12px;cursor:pointer}
+.copybtn:hover{background:var(--blue);color:#fff}
+pre{margin:0;padding:14px 16px;background:#f0f4f9;border:1px solid var(--line);overflow-x:auto}
+pre code{font:400 13.5px/1.65 var(--mono);color:var(--ink)}
+figure.fig{margin:26px 0 30px}
+.figwrap{overflow-x:auto;border:1px dashed var(--line);background:rgba(251,252,250,.72);padding:8px}
+.fig svg{display:block;width:100%;height:auto}
+figcaption{margin-top:8px;font:400 12.5px/1.6 var(--fang);color:var(--muted)}
+.phases{margin:20px 0 30px}
+.phase-flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:10px}
+.ph{display:flex;flex-direction:column;justify-content:center;gap:2px;border:1.5px solid var(--blue);background:#e9f0f8;padding:9px 16px;font:400 13.5px/1.5 var(--sans)}
+.ph b{font:600 11px/1.4 var(--mono);letter-spacing:.14em;color:var(--blue)}
+.ph-arrow{align-self:center;color:var(--muted);font-size:18px}
+.dg{font-family:var(--sans)}
+.dg-frame{fill:none;stroke:#7fa3cc;stroke-width:1.5;stroke-dasharray:7 5}
+.dg-box{fill:var(--panel);stroke:var(--blue);stroke-width:1.5}
+.dg-sharedbox{fill:#e9f0f8}
+.dg-runtime{fill:#fdfdfd}
+.dg-ext{fill:#f7f8fa;stroke:#75879c;stroke-width:1.3;stroke-dasharray:5 3}
+.dg-name{font-size:14.5px;font-weight:600;fill:var(--blue-deep)}
+.dg-sub{font-size:11.5px;fill:var(--muted)}
+.dg-item{font-size:12px;fill:#243240}
+.dg-note{font-family:var(--fang);font-size:11.5px;fill:var(--muted)}
+.dg-notewide{font-size:12.5px}
+.dg-chip{fill:#fde8d8;stroke:var(--accent)}
+.dg-chiptext{font-size:11px;font-weight:600;fill:var(--accent-ink)}
+.dg-edge{stroke:#5f7183;stroke-width:1.4;fill:none}
+.dg-arrowhead{fill:#5f7183}
+.dg-dashed{stroke-dasharray:5 4}
+.dg-sq-shared{fill:#dbe7f5;stroke:var(--blue)}
+.dg-sq-ex{fill:#fde8d8;stroke:var(--accent)}
+.dg-state{fill:#e9f0f8;stroke:var(--blue);stroke-width:1.5}
+.dg-stname{font-family:var(--mono);font-size:14px;font-weight:600;fill:var(--blue-deep)}
+.dg-stsub{font-size:10.8px;fill:var(--muted)}
+.dg-failed{fill:#fdf1e7;stroke:var(--accent)}
+.dg-failedtext{fill:var(--accent-ink)}
+.dg-archived{fill:none;stroke:#75879c;stroke-dasharray:5 3}
+.dg-bracket{fill:none;stroke:#8fa2b5;stroke-width:1.2}
+.dg-mono-note{font-family:var(--mono);font-size:12.5px;fill:#41556a}
+.colophon{border-top:1.5px solid rgba(30,95,168,.5);padding:14px 34px;font:400 12.5px/1.7 var(--fang);color:var(--muted)}
+@media (min-width:1081px){
+  .toc{position:sticky;top:18px}
+  .toc-details{border:0;background:transparent}
+  .toc-details summary{display:none}
+}
+@media (max-width:1080px){
+  .layout{display:block;padding:18px 20px 32px}
+  .toc{margin-bottom:16px}
+}
+@media (max-width:760px){
+  .masthead{padding:20px 20px 16px;gap:18px}
+  h1{font-size:24px}
+  .tblock{width:100%;padding-top:32px}
+  .stamp{top:-12px;right:6px}
+  .colophon{padding:12px 20px}
+  ol.acceptance{columns:1}
+}
+@media print{
+  body{background:#fff;font-size:12.5pt}
+  .sheet{border:0;margin:0;max-width:none}
+  .toc,.codebar,.stamp,.colophon{display:none}
+  .layout{display:block;padding:0}
+  .tscroll{overflow:visible;border-color:#999}
+  table{min-width:0}
+  .figwrap{overflow:visible;border:0;padding:0}
+  .fig svg{min-width:0!important}
+  pre{white-space:pre-wrap;overflow:visible}
+  .docsec{margin-bottom:34px}
+  a{color:var(--blue-deep)}
+}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<div class="sheet">
+<header class="masthead" data-enhancement="titleblock">
+  <div>
+    <p class="kicker">CLAWSYNAPSE · 设计方案 · <span class="st">待实现</span></p>
+    <h1>单 Daemon 多 Bot 设计</h1>
+    <p class="subtitle">单 daemon 托管多个独立 Bot：身份、Harness 绑定、生命周期、访问隔离与迁移设计</p>
+    <p class="updated">最后更新：2026-10-26</p>
+  </div>
+  <div class="tblock">
+    <span class="stamp">待实现设计</span>
+    <div class="row"><dt>文档类别</dt><dd>设计方案</dd></div>
+    <div class="row"><dt>适用对象</dt><dd>clawsynapsed</dd></div>
+    <div class="row"><dt>最后更新</dt><dd>2026-10-26</dd></div>
+    <div class="row"><dt>原文</dt><dd>docs/multi-bot-daemon.md</dd></div>
+    <p class="tblock-cap">图签 · 示意（信息取自原文）</p>
+  </div>
+</header>
+<div class="layout">
+<aside class="toc" data-enhancement="toc" aria-label="目录">
+  <details class="toc-details" open>
+    <summary>目录</summary>
+    <ol>
+<li><a href="#sec-s1"><span class="n">1</span>状态与结论</a></li><li><a href="#sec-s2"><span class="n">2</span>当前实现与改造依据</a></li><li><a href="#sec-s3"><span class="n">3</span>术语与身份不变量</a></li><li><a href="#sec-s4"><span class="n">4</span>运行架构与 Interface</a></li><li><a href="#sec-s5"><span class="n">5</span>配置与持久化</a></li><li><a href="#sec-s6"><span class="n">6</span>Bot 生命周期</a></li><li><a href="#sec-s7"><span class="n">7</span>消息、信任与 Harness 隔离</a></li><li><a href="#sec-s8"><span class="n">8</span>本地管理与访问权限</a></li><li><a href="#sec-s9"><span class="n">9</span>命名、协议与现有文档</a></li><li><a href="#sec-s10"><span class="n">10</span>单 Bot 安装迁移</a></li><li><a href="#sec-s11"><span class="n">11</span>实施顺序与验收</a></li>
+    </ol>
+  </details>
+</aside>
+<main id="content">
+<section class="docsec" id="sec-s1">
+
+<h2 id="s1">1. 状态与结论</h2>
+<p><span data-notation="highlight">本文是<strong>待实现的设计方案</span></strong>，<span data-notation="underline">不代表当前程序已经支持多 Bot</span>。本文的配置结构、管理端点与命令均为建议；当前稳定契约仍以 <a href="./protocol.md">协议</a>、<a href="./api.md">本地 API</a> 和 <a href="./cli.md">CLI</a> 文档为准。</p>
+<p>指导思想：</p>
+<blockquote>Bot 是对外的协作身份，Harness 是背后的执行引擎。一个 daemon 可以托管多个 Bot，每个 Bot 绑定一个 Harness 接入。</blockquote>
+<p>主要决策：</p>
+<ol class="decisions"><li><code><span data-notation="underline">clawsynapsed</code> 是本地宿主进程，不是聊天身份</span>，也不拥有代替所有 Bot 的公共网络身份。</li><li><span data-notation="underline">每个 Bot 独立持有身份密钥、DID、信任关系、消息状态、执行会话与本地备注</span>。</li><li>外部通过稳定 Bot 身份寻址；<code>displayName</code> 是公开名称，<code>localAlias</code> 是某个本地 Bot 对远端 Bot 的备注。</li><li>Harness 内部的 Agent、执行配置与 Session 不成为聊天联系人。ClawSynapse 不定义具体 Harness 产品的内部模型。</li><li><span data-notation="underline">每个 Bot 只有一个生效的 Harness 接入</span>。多个 Bot 可以使用相同或不同产品；共享产品实例必须显式配置并满足隔离要求。</li><li><span data-notation="highlight">共享进程不等于共享信任</span>。一个 Bot 的批准、撤销或执行故障，不应改变另一个 Bot 的业务状态。</li><li>首次实现采用每 Bot 独立 NATS 连接和运行上下文；共享管理入口，不先合并各 Bot 的发现、认证和消息状态。</li><li>文件实体由 daemon 的不可变内容存储按摘要去重；每 Bot 独立持有传输记录、文件引用与授权，执行时按需生成工作副本。</li></ol>
+</section>
+<section class="docsec" id="sec-s2">
+
+<h2 id="s2">2. 当前实现与改造依据</h2>
+<div class="tscroll"><table><thead><tr><th scope="col">当前事实</th><th scope="col">证据</th><th scope="col">多 Bot 所需变化</th></tr></thead><tbody><tr><td>一份 <code>App</code> 加载一套身份并创建一个 Registry</td><td><code>internal/app/app.go:46-83</code></td><td>daemon 管理多份独立 Bot Runtime</td></tr><tr><td>单个 <code>AgentAdapter</code> 配置选择一个执行接入</td><td><code>internal/app/app.go:160-173,243-275</code></td><td>每 Bot 分别配置并实例化 Adapter</td></tr><tr><td>HTTP Server 直接保存单份身份和各领域对象</td><td><code>internal/api/server.go:25-52</code></td><td>管理入口先解析本地 Bot，再调用该 Bot 的 Interface</td></tr><tr><td>本地接口使用一个 bearer token</td><td><code>internal/api/security.go:79-92</code></td><td>区分 daemon 管理凭据与 Bot 作用域凭据</td></tr><tr><td>信任、重放、备注与会话使用一个数据根目录</td><td><code>internal/store/fsstore.go:47-84</code>、<code>internal/store/session_state.go:23-35</code></td><td>数据目录按本地 Bot 隔离</td></tr><tr><td>消息 journal 独占打开；关闭时保留 broker durable consumer</td><td><code>internal/messaging/service.go:91-103,164-174</code></td><td>每 Bot 单独 journal，停止一个 Bot 不停止其他消费者</td></tr><tr><td>JetStream stream 共享，consumer 按 Bot 身份派生并精确过滤 inbox</td><td><code>internal/natsbus/messaging.go:14-62</code></td><td>保留共享 stream，每个 Bot 继续拥有独立 consumer</td></tr><tr><td>原生执行会话按发送方、Agent 提示和会话键派生</td><td><code>internal/messaging/handler.go:83-92</code></td><td>通过 Bot 数据根目录和 Adapter 实例补足接收方隔离</td></tr><tr><td>接收文件按传输 ID 写入 <code>transferDir</code>，没有内容去重</td><td><code>internal/transfer/service.go:345-379</code></td><td>实体进入共享内容存储，传输记录与文件访问权按 Bot 隔离</td></tr></tbody></table></div>
+<p><span data-notation="underline">当前消息实现已经包含持久 journal、outbox 与 JetStream durable consumer</span>，<span data-notation="underline">不能按旧版文档的“纯内存收件箱”设计迁移</span>。实现阶段需同步纠正 <a href="./messaging.md">Messaging</a> 中与当前代码不一致的恢复说明。</p>
+</section>
+<section class="docsec" id="sec-s3">
+
+<h2 id="s3">3. 术语与身份不变量</h2>
+<div class="tscroll"><table><thead><tr><th scope="col">术语</th><th scope="col">定义</th></tr></thead><tbody><tr><td>Daemon</td><td>托管多个 Bot 的本地进程，负责管理入口、配置与生命周期</td></tr><tr><td>Bot</td><td>可被外部寻址、认证并建立信任的长期协作身份，不等同于机器或进程</td></tr><tr><td>Harness</td><td>接收任务并执行工作的引擎；其内部组织方式不由 ClawSynapse 定义</td></tr><tr><td>Harness Binding</td><td>一个 Bot 到一个本地执行接入的配置关系，不是聊天身份</td></tr><tr><td>Adapter</td><td>在执行 seam 上把统一投递转换为具体引擎调用的实现</td></tr><tr><td>Peer</td><td>相对于当前本地 Bot 的已发现对端 Bot，不是另一个身份层级</td></tr><tr><td>Conversation</td><td>产品层的交流上下文，可映射到执行 Session，但本身不是联系人</td></tr><tr><td>Harness Session</td><td>执行引擎内部的上下文，不能作为 Bot 身份</td></tr><tr><td>Blob</td><td>按内容摘要标识的不可变文件实体；摘要不是访问凭据</td></tr><tr><td>文件引用</td><td>某个 Bot 对文件实体的持久关联，保存来源、文件名与访问授权；不是其他 Bot 的隐式授权</td></tr></tbody></table></div>
+<h3 id="h3-1">3.1 Bot 身份</h3>
+<p>沿用现有派生规则：<span data-notation="highlight">Ed25519 公钥 → <code>did:key</code> → <code>n1-&lt;hash&gt;</span></code>。产品与新本地管理模型称该标识为 <code>botId</code>；<span data-notation="underline">其值与既有 <code>nodeId</code> 完全一致，不修改前缀或重新生成身份</span>。</p>
+<p>以下操作不得改变 Bot ID、DID 或已有信任关系：</p>
+<ul><li>修改公开名称、标签或本地备注。</li><li>停止、启动 Bot，或重启 daemon。</li><li>更换 Harness 接入或模型，重建执行 Session。</li><li>将完整 Bot 数据迁移到另一台设备。</li></ul>
+<p><span data-notation="underline">新建 Bot 必须生成新密钥</span>。复制配置不能复制身份；恢复原 Bot 必须显式导入其完整身份与状态。<span data-notation="highlight">禁止在运行中同时启动同一身份的两个副本</span>。</p>
+<p>已有 Bot 的密钥缺失、损坏或公私钥不匹配时，<span data-notation="underline">启动失败，不自动生成替代密钥</span>。生成密钥只允许发生在创建新 Bot 的事务中。</p>
+<h3 id="h3-2">3.2 公开名称和本地备注</h3>
+<ul><li><code>displayName</code> 来自 Bot 自身，通过签名发现消息公开；<span data-notation="underline">允许重名，不用于授权或路由</span>。</li><li><code>localAlias</code> 归属于 <code>(本地 botId, 远端 botId)</code>，<span data-notation="underline">不在 Bot 之间自动共享，不向网络广播</span>。</li><li>列表优先显示本地备注，其次公开名称，最后短身份标识；详情分别展示公开名称、备注和完整身份。</li><li>创建界面要求填写公开名称；导入的旧 Bot 可以暂时保留空名称并使用身份回退，不为补名字而生成新身份。</li><li>本地 Bot 选择只接受完整 ID，或由管理工具无歧义解析的 ID 前缀；名称检索不能隐式决定操作对象。</li></ul>
+<p>发现目录仍是运行态目录。已过期 Peer 的移除不代表用户删除了联系人；持久联系人簿是独立产品需求，不在本次托管改造中新增。</p>
+</section>
+<section class="docsec" id="sec-s4">
+
+<h2 id="s4">4. 运行架构与 Interface</h2>
+<figure class="fig" data-enhancement="diagram">
+  <div class="figwrap" tabindex="0" role="group" aria-label="运行架构示意图，宽图可横向滚动">
+  <svg viewBox="0 0 960 600" role="img" aria-labelledby="dg1-t dg1-d" class="dg" style="min-width:860px">
+    <title id="dg1-t">运行架构示意：daemon 托管多个 Bot Runtime</title>
+    <desc id="dg1-d">clawsynapsed 宿主进程包含管理入口、Bot Manager 与 daemon 共享资源；每个 Bot Runtime 独占身份、信任、消息状态、NATS 连接与 Adapter，并各自绑定一个 Harness 接入；所有 Bot 通过独立连接访问共享的 NATS stream，与远端 Bot 按各自信任通信。</desc>
+    <defs>
+      <marker id="dg1-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="dg-arrowhead"/>
+      </marker>
+    </defs>
+
+    <!-- daemon 宿主边界 -->
+    <rect x="24" y="64" width="600" height="512" class="dg-frame"/>
+    <text x="32" y="48" class="dg-title">clawsynapsed — 本地宿主进程（共同故障域）</text>
+
+    <!-- 管理入口 -->
+    <rect x="48" y="92" width="236" height="56" rx="6" class="dg-box"/>
+    <text x="166" y="116" text-anchor="middle" class="dg-name">本地 HTTP / CLI / TUI</text>
+    <text x="166" y="136" text-anchor="middle" class="dg-sub">管理凭据 · 显式选择 Bot</text>
+
+    <!-- Bot Manager -->
+    <rect x="48" y="196" width="236" height="72" rx="6" class="dg-box"/>
+    <text x="166" y="220" text-anchor="middle" class="dg-name">Bot Manager</text>
+    <text x="166" y="240" text-anchor="middle" class="dg-sub">管理目录 · 生命周期串行化</text>
+    <text x="166" y="257" text-anchor="middle" class="dg-sub">状态聚合 · 分发本地请求</text>
+
+    <!-- daemon 共享资源 -->
+    <rect x="48" y="308" width="236" height="168" rx="6" class="dg-box dg-sharedbox"/>
+    <text x="60" y="332" class="dg-name">共享资源</text>
+    <text x="60" y="356" class="dg-item">HTTP listener · 管理身份校验</text>
+    <text x="60" y="378" class="dg-item">Bot 管理目录 bots.json</text>
+    <text x="60" y="400" class="dg-item">内容存储 blobs/（摘要去重）</text>
+    <text x="60" y="422" class="dg-item">NATS 地址 · TLS 默认配置</text>
+    <text x="60" y="444" class="dg-item">日志输出 · 进程资源预算</text>
+
+    <!-- 图例 -->
+    <rect x="48" y="488" width="12" height="12" class="dg-sq-shared"/>
+    <text x="66" y="498" class="dg-note">daemon 共享 / 内部</text>
+    <rect x="200" y="488" width="12" height="12" class="dg-sq-ex"/>
+    <text x="218" y="498" class="dg-note">每 Bot 独占</text>
+    <text x="48" y="540" class="dg-note">单个 Bot 初始化失败只使其进入 failed；管理入口与其他 Bot 继续运行</text>
+
+    <!-- Bot Runtime A -->
+    <rect x="348" y="92" width="232" height="170" rx="6" class="dg-box dg-runtime"/>
+    <text x="364" y="116" class="dg-name">Bot Runtime A</text>
+    <rect x="452" y="100" width="116" height="20" rx="10" class="dg-chip"/>
+    <text x="510" y="114" text-anchor="middle" class="dg-chiptext">每 Bot 独占</text>
+    <text x="364" y="142" class="dg-item">身份密钥 · DID · 信任状态</text>
+    <text x="364" y="166" class="dg-item">消息 journal · consumer</text>
+    <text x="364" y="190" class="dg-item">NATS 连接 A（独立凭据）</text>
+    <text x="364" y="214" class="dg-item">Adapter A</text>
+    <text x="364" y="238" class="dg-item">工作副本 workspace/A</text>
+
+    <!-- Bot Runtime B -->
+    <rect x="348" y="340" width="232" height="170" rx="6" class="dg-box dg-runtime"/>
+    <text x="364" y="364" class="dg-name">Bot Runtime B</text>
+    <rect x="452" y="348" width="116" height="20" rx="10" class="dg-chip"/>
+    <text x="510" y="362" text-anchor="middle" class="dg-chiptext">每 Bot 独占</text>
+    <text x="364" y="390" class="dg-item">身份密钥 · DID · 信任状态</text>
+    <text x="364" y="414" class="dg-item">消息 journal · consumer</text>
+    <text x="364" y="438" class="dg-item">NATS 连接 B（独立凭据）</text>
+    <text x="364" y="462" class="dg-item">Adapter B</text>
+    <text x="364" y="486" class="dg-item">工作副本 workspace/B</text>
+
+    <!-- 管理关系 -->
+    <line x1="284" y1="222" x2="348" y2="177" class="dg-edge" marker-end="url(#dg1-ah)"/>
+    <text x="286" y="200" class="dg-note">创建 · 装配</text>
+    <line x1="284" y1="252" x2="348" y2="424" class="dg-edge" marker-end="url(#dg1-ah)"/>
+    <text x="286" y="330" class="dg-note">启停 · 配置</text>
+
+    <!-- NATS -->
+    <rect x="700" y="92" width="236" height="116" rx="6" class="dg-ext"/>
+    <text x="818" y="120" text-anchor="middle" class="dg-name">NATS Broker</text>
+    <text x="818" y="144" text-anchor="middle" class="dg-sub">共享 stream</text>
+    <text x="818" y="164" text-anchor="middle" class="dg-sub">durable consumer 按 Bot 身份</text>
+    <text x="818" y="184" text-anchor="middle" class="dg-sub">连接凭据按 Bot 配置</text>
+
+    <line x1="580" y1="150" x2="700" y2="150" class="dg-edge" marker-end="url(#dg1-ah)"/>
+    <text x="588" y="140" class="dg-note">独立连接 · 独立凭据</text>
+    <line x1="580" y1="410" x2="700" y2="196" class="dg-edge" marker-end="url(#dg1-ah)"/>
+
+    <!-- 远端 Peer -->
+    <rect x="700" y="248" width="236" height="64" rx="6" class="dg-ext"/>
+    <text x="818" y="272" text-anchor="middle" class="dg-name">远端 Bot R（Peer）</text>
+    <text x="818" y="292" text-anchor="middle" class="dg-sub">认证 · 信任 · 消息按 Bot 独立</text>
+    <line x1="818" y1="208" x2="818" y2="248" class="dg-edge" marker-end="url(#dg1-ah)" marker-start="url(#dg1-ah)"/>
+    <text x="826" y="232" class="dg-note">签名消息（wire v2）</text>
+
+    <!-- Harness -->
+    <rect x="700" y="356" width="236" height="60" rx="6" class="dg-ext"/>
+    <text x="818" y="380" text-anchor="middle" class="dg-name">Harness 接入 A</text>
+    <text x="818" y="400" text-anchor="middle" class="dg-sub">投递 · 状态 · 取消 · 会话映射</text>
+    <line x1="580" y1="240" x2="700" y2="386" class="dg-edge" marker-end="url(#dg1-ah)"/>
+    <text x="592" y="308" class="dg-note">唯一 Binding</text>
+
+    <rect x="700" y="444" width="236" height="60" rx="6" class="dg-ext"/>
+    <text x="818" y="468" text-anchor="middle" class="dg-name">Harness 接入 B</text>
+    <text x="818" y="488" text-anchor="middle" class="dg-sub">投递 · 状态 · 取消 · 会话映射</text>
+    <line x1="580" y1="486" x2="700" y2="474" class="dg-edge" marker-end="url(#dg1-ah)"/>
+
+    <text x="700" y="540" class="dg-note">多个 Bot 可显式共享同一 Harness 实例，</text>
+    <text x="700" y="558" class="dg-note">须满足隔离校验，不构成独立沙箱</text>
+  </svg>
+  </div>
+  <figcaption>生成示意 — 依据 §4.1 模块职责与 §4.2 共享/独占资源表绘制；未按进程内存布局呈现。</figcaption>
+</figure>
+
+<h3 id="h3-3">4.1 模块职责</h3>
+<div class="tscroll"><table><thead><tr><th scope="col">模块</th><th scope="col">职责</th><th scope="col">不承担的职责</th></tr></thead><tbody><tr><td>Daemon / Bot Manager</td><td>管理目录、创建和加载 Bot、串行化生命周期、分发本地请求、聚合状态</td><td>代替 Bot 签名或共享所有 Bot 的信任判断</td></tr><tr><td>本地内容存储</td><td>校验、发布和读取不可变实体，去重、使用期保护及回收</td><td>按摘要自动授予访问权或暴露全局文件清单</td></tr><tr><td>Bot Runtime</td><td>身份、发现、认证、信任、消息、文件传输和该 Bot 的执行上下文</td><td>管理其他 Bot 或编排多个 Harness</td></tr><tr><td>Harness Adapter</td><td>投递、状态检查、取消、会话映射、归一化执行结果</td><td>创建外部联系人或决定网络信任</td></tr><tr><td>本地 HTTP / CLI / TUI</td><td>显式选择 Bot，检查凭据作用域，调用运行 Interface</td><td>保存第二份身份或授权真源</td></tr></tbody></table></div>
+<p>在现有 <code>internal/app</code> 中拆分 daemon 宿主与单 Bot Runtime；不按每个领域再复制一层转发包装。复用现有 auth、trust、messaging、transfer 与 discovery 实现，向它们注入 Bot 专属依赖。</p>
+<p>Bot Manager 的管理 Interface 围绕 <code>Create</code>、<code>List</code>、<code>Update</code>、<code>Start</code>、<code>Stop</code>、<code>Archive</code>、<code>Restore</code> 展开。业务入口通过已授权的 Bot 引用访问运行对象，不向调用方暴露可任意选择身份私钥的接口。</p>
+<p>每次启动创建一份新 Runtime；停止后不复用已经关闭的 context、journal 或 Adapter。管理锁只保护状态和引用，不在全局锁内进行网络连接、执行探测或等待退出。<span data-notation="underline">同一 Bot 的生命周期操作串行，互不相同 Bot 的操作可以并发</span>。</p>
+<h3 id="h3-4">4.2 共享和独占资源</h3>
+<div class="tscroll"><table><thead><tr><th scope="col">daemon 共享</th><th scope="col">每 Bot 独占</th></tr></thead><tbody><tr><td>HTTP listener、管理身份校验、日志输出设施</td><td>密钥、身份、运行 context、NATS 连接</td></tr><tr><td>Bot 管理目录、配置校验逻辑</td><td>Registry、认证状态、信任和重放状态</td></tr><tr><td>NATS 地址与 TLS 默认配置</td><td>消息 journal、outbox、cursor、consumer</td></tr><tr><td>管理界面、进程资源预算、不可变文件内容存储</td><td>Adapter、执行队列、Session 映射、工作目录、传输记录与文件引用</td></tr></tbody></table></div>
+<p>每 Bot 独立连接的理由：现有运行对象拥有连接关闭行为；连接还绑定 NATS 凭据。<span data-notation="underline">先保持隔离可以直接停止单个 Bot</span>，避免一个 Bot 关闭共享连接或扩大另一个 Bot 的传输权限。</p>
+<p>所有 Bot 可以使用同一服务器、同一共享消息 stream；连接凭据按 Bot 配置，<span data-notation="underline">不能因为同进程就自动获得其他 Bot 的 subject 权限</span>。相同默认凭据只有在部署者明确允许时使用。共享 stream 的创建权限与运行期权限继续遵循 broker 部署约束，不能给每个 Bot 无限制管理权限。</p>
+<p>全局配置故障、根目录锁冲突或管理 listener 失败使 daemon 启动失败。单个 Bot 的密钥、状态或连接初始化失败只使该 Bot 进入 <code>failed</code>，管理入口和其他 Bot 继续运行。</p>
+<p>同一进程是共同故障域：进程崩溃、资源耗尽和同 OS 用户文件访问不提供强隔离。<span data-notation="highlight">多 Bot 不是多租户安全沙箱</span>。</p>
+</section>
+<section class="docsec" id="sec-s5">
+
+<h2 id="s5">5. 配置与持久化</h2>
+<h3 id="h3-5">5.1 配置分层</h3>
+<ul><li><strong>daemon 配置</strong>：HTTP listener、TLS、管理凭据路径、数据根目录、日志、NATS 默认连接参数、全局资源预算及内容存储容量/回收策略。</li><li><strong>Bot 配置</strong>：公开名、标签、信任策略、一个 Harness Binding、执行超时、消息类型、文件限制、Bot 专属 NATS 凭据。</li><li><strong>Bot 管理目录</strong>：已注册身份、期望状态、当前配置修订号与归档状态；不保存运行时对象。</li></ul>
+<p><code><span data-notation="underline">botId</code> 从公钥派生，不是用户可编辑字段</span>。目录名由派生 ID 决定，不接受公开名称或请求提供的任意路径。Webhook 等接入密钥使用受限凭据文件，不放进可回显的配置正文。</p>
+<p>每个 Harness Binding 保留明确的 Adapter 类型和该类型所需参数，不引入与本项目无关的产品概念。相同产品类型可出现多次；不因此合并 Session 或工作目录。</p>
+<figure class="fig" data-enhancement="diagram">
+  <div class="figwrap" tabindex="0" role="group" aria-label="配置分层示意图，宽图可横向滚动">
+  <svg viewBox="0 0 960 272" role="img" aria-labelledby="dg3-t dg3-d" class="dg" style="min-width:800px">
+    <title id="dg3-t">配置分层示意：daemon 配置、Bot 配置与 Bot 管理目录</title>
+    <desc id="dg3-d">daemon 配置承载监听、TLS、管理凭据路径、数据根目录、NATS 默认参数、全局预算与内容存储策略；每个 Bot 一份配置，含公开名、信任策略、唯一 Harness Binding 与专属 NATS 凭据；Bot 管理目录只记录身份、期望状态、修订号与归档状态，不保存运行时对象。</desc>
+    <rect x="24" y="48" width="288" height="176" rx="6" class="dg-box dg-sharedbox"/>
+    <text x="40" y="74" class="dg-name">daemon 配置</text>
+    <text x="40" y="100" class="dg-item">HTTP listener · TLS</text>
+    <text x="40" y="121" class="dg-item">管理凭据路径</text>
+    <text x="40" y="142" class="dg-item">数据根目录 · 日志</text>
+    <text x="40" y="163" class="dg-item">NATS 默认连接参数</text>
+    <text x="40" y="184" class="dg-item">全局资源预算</text>
+    <text x="40" y="205" class="dg-item">内容存储容量与回收策略</text>
+
+    <rect x="336" y="48" width="288" height="176" rx="6" class="dg-box dg-runtime"/>
+    <text x="352" y="74" class="dg-name">Bot 配置（每 Bot 一份）</text>
+    <text x="352" y="100" class="dg-item">公开名 · 标签</text>
+    <text x="352" y="121" class="dg-item">信任策略</text>
+    <text x="352" y="142" class="dg-item">Harness Binding × 1</text>
+    <text x="352" y="163" class="dg-item">执行超时 · 消息类型</text>
+    <text x="352" y="184" class="dg-item">文件限制</text>
+    <text x="352" y="205" class="dg-item">Bot 专属 NATS 凭据</text>
+
+    <rect x="648" y="48" width="288" height="176" rx="6" class="dg-box"/>
+    <text x="664" y="74" class="dg-name">Bot 管理目录 bots.json</text>
+    <text x="664" y="100" class="dg-item">已注册身份</text>
+    <text x="664" y="121" class="dg-item">期望状态 running / stopped</text>
+    <text x="664" y="142" class="dg-item">当前配置修订号</text>
+    <text x="664" y="163" class="dg-item">归档状态</text>
+    <text x="664" y="184" class="dg-item">—— 不保存运行时对象</text>
+
+    <text x="24" y="28" class="dg-note dg-notewide">botId 由公钥派生，不可编辑；接入密钥存放于受限凭据文件，不进配置正文</text>
+
+    <path d="M480 236 L480 244 L792 244 L792 236" class="dg-bracket"/>
+    <text x="636" y="264" text-anchor="middle" class="dg-mono-note">bots/&lt;botId&gt;/ — 每本地 Bot 一份</text>
+  </svg>
+  </div>
+  <figcaption>生成示意 — 依据 §5.1 配置分层与 §5.2 目录约定绘制。</figcaption>
+</figure>
+
+<h3 id="h3-6">5.2 建议目录</h3>
+<div class="codeblock"><div class="codebar" data-enhancement="ui"><span class="lang">text</span><span class="copy-status" role="status"></span><button type="button" class="copybtn" data-copy="cb-1">复制</button></div><pre id="cb-1"><code>~/.clawsynapse/
+  config.json                  daemon 配置
+  admin.token                  daemon 管理凭据
+  bots.json                    持久 Bot 管理目录
+  daemon.lock                  宿主独占锁
+  blobs/
+    tmp/                       在途下载与发布暂存，不对 Harness 开放
+    sha256/
+      &lt;摘要前两位&gt;/
+        &lt;完整摘要&gt;             校验后发布的不可变文件实体
+  bots/
+    &lt;botId&gt;/
+      config.json              Bot 配置与修订号
+      credentials/             身份密钥、Bot 本地访问凭据及接入密钥
+      trust.json
+      replay-cache.json
+      peer-attrs.json
+      peers/
+      state/messages.jsonl
+      sessions/
+      transfers/               持久传输记录、文件引用及授权，不存接收实体
+      workspace/               按执行需要创建的可写工作副本</code></pre></div>
+<p>目录使用 <code>0700</code>，私钥、token 和状态文件保持现有受限权限及原子写入规范。日志带 <code>botId</code>，不输出 token、私钥或默认输出消息正文。不得通过符号链接或路径穿越把一个 Bot 的可写目录指向另一个 Bot。</p>
+<p>Bot 创建流程：在临时目录生成身份并写入完整配置，派生 ID 并检测冲突，原子发布 Bot 目录，最后持久注册到管理目录。成功响应前完成所需文件及目录同步。崩溃留下的未注册目录不自动运行，也不覆盖；管理入口报告可恢复的未完成创建。</p>
+<p>配置更新以修订号执行比较更新；冲突返回 <code>409</code>。单 Bot 配置是配置内容真源，管理目录只记录引用和期望状态，不复制整份配置。损坏或无法解析的持久文件应显式报错，不静默回退为空信任集或空消息库。</p>
+<h3 id="h3-7">5.3 运行时配置变更</h3>
+<p>为避免半更新配置，<span data-notation="underline">运行中的 Bot 不允许直接修改执行、网络和信任配置，返回 <code>409 bot.must_stop</span></code>。停止后更新，下一次启动校验并完整装配。修改公开名同样遵循这条规则；后续若需要热更新，另行定义原子应用契约。</p>
+<p>更换 Harness 不迁移或自动重放原引擎任务；旧 Session 保留为历史但不得直接交给新引擎恢复。Binding 有独立的本地修订标识，Session 存储作用域至少包含 Bot、Binding 和原有会话作用域。切回旧接入是否恢复旧 Session 必须显式选择，不能因产品名称相同就复用。</p>
+<h3 id="h3-8">5.4 共享内容存储与文件授权</h3>
+<p><strong><span data-notation="highlight">建立信任不会同步文件，也不会创建副本</span>。</strong> 只有实际接收、导入或显式共享文件时，才建立该 Bot 的文件引用。同一内容被多个本地 Bot 接收时，共用一个不可变实体，但保留各自独立的来源、原文件名、传输 ID、接收时间和授权记录。</p>
+<p>#### 接收与去重</p>
+<ol><li>先按目标 Bot 验证传输权限及文件限制，将数据流写入 daemon 管理的暂存文件；不直接采用发送方的文件名或摘要作为本地路径。</li><li>下载时计算 SHA-256 和实际大小，校验传输完整性与大小上限。发送方声明的摘要不能代替本地内容校验。</li><li>由内容存储串行化同摘要的发布与回收。实体不存在时完成文件同步并原子发布；已存在时验证其完整性后复用，不覆盖不可变实体，也不暴露未完成下载。</li><li>实体安全发布后，再原子持久化目标 Bot 的传输记录与授权引用；同一传输的重投不能重复生成引用或重复通知执行引擎。成功记录提交后才发送接收完成通知。</li></ol>
+<p>发布实体与 Bot 引用不依赖跨目录原子事务。崩溃可能留下无引用实体，由回收处理；<span data-notation="underline">不能留下已经宣告成功、却找不到实体的引用</span>。实体缺失或损坏时显式报错，不把其他 Bot 的可写工作文件当成恢复来源。</p>
+<p>去重只处理 daemon 本地物理存储，不改变 wire v2、按目标 Bot 的 Object Store bucket 或发送权限。分别发送给多个 Bot 仍可能产生多次上传和多份 broker 对象，不能宣称已经实现网络或 broker 去重。broker TTL 不自动撤销本地文件引用，也不清理工作副本。</p>
+<p>#### 访问与 Harness 工作副本</p>
+<ul><li>内容存储只通过已授权的 <code>(botId, transferId)</code> 解析实体，<span data-notation="underline">不提供“知道摘要就能下载”的公共 Interface</span>；也不允许通过枚举摘要或查询去重命中情况观察其他 Bot 的文件。</li><li>接收或管理员显式授权共享才可创建引用。仅因两个 Bot 互信，或实体已经存在，不得给另一 Bot 增加文件访问权。</li><li>每次通过本地 Interface 读取或转发文件，都检查 Bot 作用域凭据及有效引用；已授权的转发仍须通过正常网络传输和接收方授权流程。</li><li>Harness 不直接获得全局 <code>blobs/</code> 路径或可写句柄。需要文件路径时，Adapter 在该 Bot 的 <code>workspace/</code> 中生成独立副本，并以该路径作为接收通知的 <code>localPath</code>；仅需数据流的接入可使用受 Bot 授权的读取入口，不必生成副本。</li><li>可写工作副本只在执行需要时创建，<span data-notation="highlight">不能使用指向共享实体的可写硬链接或符号链接</span>。修改只影响工作副本；重新发送时按实际修改后内容处理。</li></ul>
+<p>因此，多个 Bot 接收同一文件不会各存一份接收实体，但它们同时需要可写路径时，仍可能各有工作副本。这是可变执行数据的隔离成本，不在去重保证内。管理 Interface 的文件引用隔离不改变同 OS 用户和同进程缺少强安全隔离的事实。</p>
+<p>#### 删除、回收与配额</p>
+<ul><li>删除某个 Bot 的传输记录，只解除该记录的授权引用，并按明确清理策略处理其工作副本；不能删除其他 Bot 的引用或直接移除共享实体。已复制到 Harness 的内容不能靠撤销引用追回。</li><li>只有持久引用为零、没有在途下载/发布、读取或工作副本生成占用的实体才可回收。归档 Bot 的引用仍有效；停止或归档不是释放文件的操作。</li><li>持久引用是真源，不以容易失配的内存引用计数决定删除。回收扫描必须覆盖停止和归档 Bot，与引用新增和在途占用互斥；记录损坏或恢复未完成时暂停相关回收，宁可保留多余实体也不误删。</li><li>进程恢复时先恢复注册 Bot 的引用和在途状态，再开始回收。备份及单 Bot 导出必须包含其引用指向的实体；仅复制 <code>bots/&lt;botId&gt;/</code> 不构成完整备份。</li><li>Bot 配额按该 Bot 引用的不同实体大小计费，同一实体在多个 Bot 中分别占各自逻辑配额；重复传输记录不重复计入同一 Bot 的实体大小。工作副本和暂存有独立容量预算。daemon 同时限制去重后实体、暂存和工作副本的实际总占用，<span data-notation="underline">不能因为命中去重就绕过 Bot 配额</span>。</li></ul>
+</section>
+<section class="docsec" id="sec-s6">
+
+<h2 id="s6">6. Bot 生命周期</h2>
+<figure class="fig" data-enhancement="diagram">
+  <div class="figwrap" tabindex="0" role="group" aria-label="生命周期状态图，宽图可横向滚动">
+  <svg viewBox="0 0 960 400" role="img" aria-labelledby="dg2-t dg2-d" class="dg" style="min-width:840px">
+    <title id="dg2-t">Bot 生命周期状态转换示意</title>
+    <desc id="dg2-d">stopped 经 starting 到 running；running 经 stopping 回到 stopped；starting 或 running 失败进入 failed，failed 可由管理员显式重试回到 starting；stopped 可归档为 archived，恢复后默认停止。生命周期调用先持久化期望状态再返回 202。</desc>
+    <defs>
+      <marker id="dg2-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="dg-arrowhead"/>
+      </marker>
+    </defs>
+
+    <text x="48" y="28" class="dg-note dg-notewide">生命周期调用先持久化期望状态，返回 202；相反过渡在转换中返回 409 bot.transition_conflict</text>
+    <text x="48" y="50" class="dg-note dg-notewide">崩溃后按期望状态恢复；重复 start / stop 幂等；单 Bot 失败不影响其他 Bot 的运行与管理访问</text>
+
+    <!-- 状态节点 -->
+    <rect x="48" y="180" width="170" height="56" rx="8" class="dg-state"/>
+    <text x="133" y="204" text-anchor="middle" class="dg-stname">stopped</text>
+    <text x="133" y="222" text-anchor="middle" class="dg-stsub">无订阅与执行</text>
+
+    <rect x="330" y="72" width="170" height="56" rx="8" class="dg-state"/>
+    <text x="415" y="96" text-anchor="middle" class="dg-stname">starting</text>
+    <text x="415" y="114" text-anchor="middle" class="dg-stsub">校验 · 装配 · 连接</text>
+
+    <rect x="620" y="72" width="170" height="56" rx="8" class="dg-state"/>
+    <text x="705" y="96" text-anchor="middle" class="dg-stname">running</text>
+    <text x="705" y="114" text-anchor="middle" class="dg-stsub">网络就绪 · Harness 单独报告</text>
+
+    <rect x="330" y="260" width="170" height="56" rx="8" class="dg-state dg-failed"/>
+    <text x="415" y="284" text-anchor="middle" class="dg-stname dg-failedtext">failed</text>
+    <text x="415" y="302" text-anchor="middle" class="dg-stsub dg-failedtext">保留错误阶段与身份</text>
+
+    <rect x="620" y="260" width="170" height="56" rx="8" class="dg-state"/>
+    <text x="705" y="284" text-anchor="middle" class="dg-stname">stopping</text>
+    <text x="705" y="302" text-anchor="middle" class="dg-stsub">取消 · 落盘 · 释放</text>
+
+    <rect x="48" y="320" width="170" height="52" rx="8" class="dg-state dg-archived"/>
+    <text x="133" y="344" text-anchor="middle" class="dg-stname">archived</text>
+    <text x="133" y="361" text-anchor="middle" class="dg-stsub">管理属性 · 数据保留</text>
+
+    <!-- 转换 -->
+    <line x1="218" y1="208" x2="330" y2="112" class="dg-edge" marker-end="url(#dg2-ah)"/>
+    <text x="238" y="146" class="dg-note">start</text>
+    <text x="238" y="163" class="dg-note">校验身份与独占权</text>
+
+    <line x1="500" y1="100" x2="620" y2="100" class="dg-edge" marker-end="url(#dg2-ah)"/>
+    <text x="514" y="92" class="dg-note">就绪 · 宣告可用</text>
+
+    <line x1="705" y1="128" x2="705" y2="260" class="dg-edge" marker-end="url(#dg2-ah)"/>
+    <text x="713" y="190" class="dg-note">stop</text>
+
+    <line x1="620" y1="288" x2="218" y2="212" class="dg-edge" marker-end="url(#dg2-ah)"/>
+    <text x="356" y="238" class="dg-note">关闭连接 · 释放 journal</text>
+
+    <line x1="415" y1="128" x2="415" y2="260" class="dg-edge" marker-end="url(#dg2-ah)"/>
+    <text x="423" y="190" class="dg-note">初始化失败</text>
+
+    <line x1="620" y1="120" x2="502" y2="278" class="dg-edge" marker-end="url(#dg2-ah)"/>
+    <text x="548" y="186" class="dg-note">运行失败 · 健康独立报告</text>
+
+    <line x1="445" y1="260" x2="445" y2="128" class="dg-edge dg-dashed" marker-end="url(#dg2-ah)"/>
+    <text x="453" y="228" class="dg-note">管理员显式重试</text>
+
+    <line x1="133" y1="236" x2="133" y2="320" class="dg-edge" marker-end="url(#dg2-ah)"/>
+    <text x="141" y="276" class="dg-note">archive（先停止）</text>
+
+    <line x1="165" y1="320" x2="165" y2="236" class="dg-edge dg-dashed" marker-end="url(#dg2-ah)"/>
+    <text x="173" y="304" class="dg-note">restore · 默认停止</text>
+  </svg>
+  </div>
+  <figcaption>生成示意 — 依据 §6 状态定义、启动/停止顺序与转换规则绘制；归档为管理属性，不是运行状态。</figcaption>
+</figure>
+
+<p>持久期望状态是 <code>running</code> 或 <code>stopped</code>；<code>archived</code> 另作为管理属性。运行状态如下：</p>
+<div class="tscroll"><table><thead><tr><th scope="col">状态</th><th scope="col">含义</th></tr></thead><tbody><tr><td><code>stopped</code></td><td>身份与数据存在，无运行中的订阅和执行</td></tr><tr><td><code>starting</code></td><td>正在校验配置、加载状态、连接并建立订阅</td></tr><tr><td><code>running</code></td><td>网络接入已就绪；Harness 健康度单独报告</td></tr><tr><td><code>stopping</code></td><td>拒绝新业务操作，正在取消、落盘并释放资源</td></tr><tr><td><code>failed</code></td><td>本次启动或运行失败，保留错误阶段和身份数据</td></tr><tr><td><code>archived</code></td><td>停止且从活动列表移除，数据和身份保留</td></tr></tbody></table></div>
+<p>启动顺序：验证身份和独占权 → 打开 Bot 状态 → 创建 Adapter 与连接 → 准备认证、信任和消息入口 → 启动传输及发现 → 宣告可用。启动失败释放所有已创建资源，不保留半运行的 Runtime。</p>
+<p>停止顺序：持久期望停止 → 阻止新本地业务请求及新执行接纳 → 在连接可用时尽力发送 depart → 暂停接收并取消执行 → 持久化终态或不确定状态 → 等待工作退出并关闭 journal → 关闭该 Bot 的连接并释放引用。</p>
+<p><span data-notation="highlight">停止不得删除 durable consumer 或共享 stream</span>，也不得清空未消费消息。已开始执行但无法确认完成的任务保留不确定语义；<span data-notation="underline">不能因重启或更换 Harness 自动执行第二次</span>。Bot 停止期间 broker 是否保留消息仍受现有 stream 保留期约束，不承诺无限离线缓存。</p>
+<p><span data-notation="underline">生命周期调用先持久化期望状态，再返回 <code>202</span></code>；响应包含 Bot ID、期望状态和观察到的状态，调用方查询最终结果。重复 start/stop 为幂等；相反的过渡操作在正在转换时返回 <code>409 bot.transition_conflict</code>。崩溃后按期望状态恢复，不把中间运行状态当成已完成事实。</p>
+<p>启动后的网络断开、Harness 不健康通过独立健康字段报告，不创建新身份、不自动切换引擎。失败状态允许管理员显式重试；daemon 重启可以重新尝试期望运行的 Bot，但不得盲目重试已接纳任务。</p>
+<p>归档必须先停止，旧 Bot ID 不再对外运行；恢复后仍使用原身份。<span data-notation="highlight">归档不是密钥销毁，也不是向所有对端自动撤销信任</span>。永久擦除数据不包含在此管理 Interface 中，必须单独设计带显式确认的操作。</p>
+<p>关闭 daemon 时先停止接收管理写操作，再按相同规则并发停止各 Bot，设置总体退出时限。超时退出后的任务通过现有 admitted 恢复规则标记不确定，不宣称已经安全取消外部副作用。</p>
+</section>
+<section class="docsec" id="sec-s7">
+
+<h2 id="s7">7. 消息、信任与 Harness 隔离</h2>
+<h3 id="h3-9">7.1 每个 Bot 都是完整网络参与者</h3>
+<ul><li>Bot A 对远端 R 的信任，不授予 Bot B 对 R 的信任；认证、待审批和撤销也分别维护。</li><li>发送身份来自请求路径所选且已授权的 Bot，<span data-notation="underline">正文不得覆盖发送者</span>。</li><li>接收必须验证精确目标身份、subject、完整签名、时效和本 Bot 的信任状态。</li><li>同一 daemon 内 A 向 B 通信仍走正常签名、传输和授权路径，<span data-notation="underline">不引入绕过协议的内存捷径，也不默认互信</span>。</li><li>本地观察到另一个 Bot 的存在不代表可以读取它的消息、文件或 Session。</li></ul>
+<h3 id="h3-10">7.2 执行绑定</h3>
+<p>外部发送给 Bot；Bot 使用唯一配置的 Binding 投递，不按公开名、远端任意 metadata 或消息正文选择另一个 Harness。</p>
+<p>保留通用 Adapter 已有的可选 <code>agentId</code> 提示及本地允许列表语义，不把它复用为 Bot ID 或 Harness 选择器，也不把允许列表发布成联系人目录。本次不扩展 Agent 级网络身份或授权。</p>
+<p>外部对话关联键与 Harness 原生 Session 分开。Session 隔离至少包含接收 Bot、Binding、发送 Bot 和外部会话作用域；<span data-notation="highlight">不同 Bot 接收同一发送方的同名会话键不能碰撞</span>。Webhook 共享实例必须可靠区分接收 Bot，并自行落实执行权限和上下文隔离。</p>
+<p>多个 Bot 指向同一个 Harness 实例属于显式共享执行环境，不构成独立沙箱。Adapter 必须能隔离或验证 Session、工作目录与身份上下文；无法保证时，<span data-notation="underline">管理校验拒绝共享绑定</span>，而不是声称按配置名称就已隔离。</p>
+<h3 id="h3-11">7.3 资源控制与状态</h3>
+<p>每 Bot 配置有界并发、排队和文件逻辑配额，daemon 再施加全局执行预算、文件物理容量预算及有界公平调度；文件计费和回收遵循第 5.4 节。等待全局配额的任务仍可取消并再次检查时效。单 Bot 队列不能无限占用全局执行槽或内存。</p>
+<p>Bot 网络在线和 Harness 可执行分别报告。单个 Harness 探测失败不停止其他 Bot；执行请求按既有结构化错误返回，不静默投递给其他后端。</p>
+</section>
+<section class="docsec" id="sec-s8">
+
+<h2 id="s8">8. 本地管理与访问权限</h2>
+<h3 id="h3-12">8.1 两类凭据</h3>
+<div class="tscroll"><table><thead><tr><th scope="col">凭据</th><th scope="col">权限</th></tr></thead><tbody><tr><td>daemon 管理凭据</td><td>创建、列出、配置和管理所有本地 Bot；可明确选择 Bot 进行管理操作</td></tr><tr><td>Bot 作用域凭据</td><td>只访问一个指定 Bot 的身份、对端、消息、请求、信任和传输操作；不能管理其他 Bot 或改变绑定</td></tr></tbody></table></div>
+<p><span data-notation="highlight">每个凭据在服务器端绑定权限与 Bot ID，不能由请求正文自报作用域</span>。<span data-notation="underline">现有全局管理 token 不分发给 Harness</span>。Bot 凭据轮换只改变本地访问权限，不改变 Ed25519 身份。</p>
+<p>HTTP listener 继续遵守默认 loopback、远程显式开启、TLS 和请求大小限制。配置读取须去除密钥与 token。日志中不能记录 Authorization。</p>
+<p>同 OS 用户能够读取同一进程拥有的凭据文件，因此此处提供的是管理 Interface 的最小权限，不是对恶意同用户进程的安全隔离。</p>
+<h3 id="h3-13">8.2 建议 HTTP Interface</h3>
+<p>新增本地 <code>/v2</code> 管理 Interface，保持现有 <code>types.APIResult</code> 的封装、稳定 code 与 <code>ts</code> 约定。</p>
+<div class="tscroll"><table><thead><tr><th scope="col">端点</th><th scope="col">作用</th></tr></thead><tbody><tr><td><code>GET /v2/health</code></td><td>daemon 状态与活动/失败 Bot 数量；不代替逐 Bot 健康</td></tr><tr><td><code>GET /v2/bots</code></td><td>管理员列出本地 Bot</td></tr><tr><td><code>POST /v2/bots</code></td><td>创建 Bot，默认停止；返回 <code>201</code> 与派生身份</td></tr><tr><td><code>GET /v2/bots/{botId}</code></td><td>查看身份、期望/运行状态和接入健康摘要</td></tr><tr><td><code>PUT /v2/bots/{botId}/config</code></td><td>停止状态下按修订号替换配置，成功 <code>200</code></td></tr><tr><td><code>POST /v2/bots/{botId}/start</code>、<code>stop</code></td><td>管理生命周期，返回 <code>202</code></td></tr><tr><td><code>POST /v2/bots/{botId}/archive</code>、<code>restore</code></td><td>归档/恢复，恢复后默认停止</td></tr><tr><td><code>/v2/bots/{botId}/peers</code></td><td>查询该 Bot 视角的远端目录和本地备注</td></tr><tr><td><code>/v2/bots/{botId}/auth/...</code>、<code>trust/...</code></td><td>该 Bot 的认证与信任操作</td></tr><tr><td><code>/v2/bots/{botId}/publish</code></td><td>以该 Bot 身份发布消息</td></tr><tr><td><code>/v2/bots/{botId}/messages</code>、<code>requests/{messageId}</code></td><td>查询该 Bot 的消息游标和请求状态</td></tr><tr><td><code>/v2/bots/{botId}/transfer/...</code>、<code>transfers</code></td><td>该 Bot 的传输记录、授权文件读取、发送及引用删除操作；不暴露全局实体路径</td></tr></tbody></table></div>
+<p>原单 Bot 业务端点迁到显式 Bot 路径，完整保留原操作集合，不只实现表中示例。对端本地视图使用 <code>botId</code>，发送目标使用 <code>targetBot</code>；不同时接受新旧字段别名。未知 Bot 返回 <code>404</code>；合法凭据访问其他 Bot 返回 <code>403</code>；停止状态的运行操作返回 <code>409</code>；参数错误返回 <code>400</code>。停止 Bot 的已落盘消息和信任查询仍可用，但新发送、审批等运行状态变更必须先启动。</p>
+<p>归档返回 <code>200</code> 前已持久化且确认无活跃 Runtime；转换尚未结束返回 <code>409</code>。本地请求进入 Bot Runtime 前获取生命周期引用，停止须等待引用释放，避免请求与资源关闭竞争。</p>
+<h3 id="h3-14">8.3 CLI 与 TUI</h3>
+<p>建议新增 <code>clawsynapse bots</code> 和 <code>clawsynapse bot create|start|stop|archive|restore</code>。业务命令统一显式指定 <code>--bot &lt;botId&gt;</code>，例如：</p>
+<div class="codeblock"><div class="codebar" data-enhancement="ui"><span class="lang">text</span><span class="copy-status" role="status"></span><button type="button" class="copybtn" data-copy="cb-2">复制</button></div><pre id="cb-2"><code>clawsynapse --bot &lt;local-bot-id&gt; peers
+clawsynapse --bot &lt;local-bot-id&gt; publish --target &lt;remote-bot-id&gt; --message "hello"</code></pre></div>
+<p><span data-notation="underline">不得在缺少选择时自动使用“第一个 Bot”</span>；即使当前只有一个 Bot，也使用同样规则。Bot 作用域凭据可以绑定本地选择，显式指定不同 Bot 时直接拒绝。</p>
+<p>TUI 区分本地 Bot 列表和当前 Bot 的远端 Peers；页面持续显示当前身份。切换 Bot 时清空或按 Bot 隔离缓存、分页游标、详情、过滤与异步请求结果，防止旧响应覆盖新页面或将操作发给错误身份。</p>
+</section>
+<section class="docsec" id="sec-s9">
+
+<h2 id="s9">9. 命名、协议与现有文档</h2>
+<p>产品层将 Node 称为 Bot；daemon 不再被当作单个 Bot。<code>Peer</code> 仍可作为对端关系术语保留。</p>
+<p><strong><span data-notation="highlight">本次设计不修改现有网络 v2 字段名称或身份算法</span>。</strong> 网络中的 <code>nodeId</code>、subject、签名编码、消息 <code>from/to</code>、durable consumer 名称继续使用既有契约。新本地模型的 <code>botId</code> 在协议编码 seam 映射到已有字段，<span data-notation="underline">不增加第二套可独立赋值的身份</span>，也不在同一网络消息中重复发送 <code>botId</code> 和 <code>nodeId</code>。</p>
+<p>原因：单 daemon 多身份不要求全网同时升级；仅为产品改名而重写签名结构和 consumer 标识会引入无关迁移风险。若未来要求网络字段也全面改名，应单独升级协议版本并协调所有调用方，不能通过严格 v2 解码的隐式兼容实现。</p>
+<p>正式落地时需要同步更新：</p>
+<ul><li><a href="./overview.md">总览</a>、<a href="./concepts.md">概念</a>：从单 daemon 单身份改成宿主与 Bot 分层。</li><li><a href="./integration.md">集成</a>：每 Bot 一个 Harness 接入、Bot 作用域凭据和调用路径。</li><li><a href="./api.md">API</a>、<a href="./cli.md">CLI</a>、<a href="./operations.md">运维</a>：新配置、显式选择与生命周期。</li><li><a href="./protocol.md">协议</a>、<a href="./trust.md">信任</a>：说明 Bot 与既有 wire node 身份的关系及信任作用域。</li><li><a href="./agent-internet.md">Agent Internet</a>：内部 Agent 不与对外 Bot 身份混用。</li><li><a href="./mobile-nats-access.md">移动接入规划</a>：替换“一个 Node 承载多个逻辑 Bot”的旧定义。移动设备的用户凭据仍不等于 Bot 身份或本地管理权限。</li></ul>
+<p>本文先记录方案，不提前把上述稳定文档改写为已实现状态。</p>
+</section>
+<section class="docsec" id="sec-s10">
+
+<h2 id="s10">10. 单 Bot 安装迁移</h2>
+<p>采用显式、停机、可回滚的格式迁移，<span data-notation="underline">不在正常启动时猜测旧目录并自动创建新身份</span>。</p>
+<ol><li>停止旧 daemon，取得旧数据根目录独占权，检查迁移空间与文件权限，记录配置版本和迁移清单。</li><li>验证原公私钥，计算原身份；密钥不可用时终止，不生成替代身份。</li><li>将旧全局配置拆为 daemon 配置和一个 Bot 配置。保留原身份、公开名、信任策略及 Adapter 绑定。</li><li>在暂存布局完整迁移信任、待审批、重放、备注、消息 journal/outbox、游标、执行 Session 和传输状态。接收文件经实际内容校验后导入共享内容存储，重复内容只导入一次，并为原 Bot 持久建立各自传输记录和授权引用。现有传输索引仅在内存中，迁移工具需结合可用记录、文件名与持久通知重建；无法确定的来源标为未知，不伪造授权历史，也不丢弃未能关联的文件。自定义目录与密钥路径必须纳入清单，不只迁移默认目录。检查持久绝对路径并明确重写映射；需维持 Harness 路径的文件转为该 Bot 的独立工作副本，不指向全局实体。单独迁移/导出 Bot 时，打包所有被引用实体并在目标端校验后重建引用。</li><li>原子发布新布局及管理目录，以迁移完成标记作为提交点。原数据备份不删除；提交前崩溃可重试，未提交的新目录不得启动。</li><li>生成新的管理员/Bot 作用域凭据，<span data-notation="underline">旧单 Bot token 不自动升级为新的全局管理权限</span>。更新 Harness、CLI、TUI 与其他本地调用方的路径及凭据。</li><li>新 daemon 启动原 Bot，继续使用相同网络 ID、inbox 和 durable consumer。已接纳未完成任务遵循当前不确定恢复语义，不自动重做。</li></ol>
+<p>本地 <code>/v1</code> 单 Bot 业务入口在切换时移除，不保留默认 Bot 转发兼容层；新旧配置不能混用。此次是本地管理契约切换，不要求远端 Bot 同时升级网络协议。</p>
+<p>只有在新布局尚未接收消息或执行任务前，才可直接恢复备份回滚。产生新状态后不能直接覆盖旧备份，必须停止并显式迁回新数据；<span data-notation="highlight">任何时候不得同时启动新旧身份副本</span>。</p>
+</section>
+<section class="docsec" id="sec-s11">
+
+<h2 id="s11">11. 实施顺序与验收</h2>
+<figure class="phases" data-enhancement="diagram">
+  <div class="phase-flow" role="img" aria-label="实施顺序：阶段一提取单 Bot Runtime；阶段二多 Bot 管理与隔离；阶段三工具与迁移切换">
+    <span class="ph"><b>阶段一</b>提取单 Bot Runtime</span>
+    <span class="ph-arrow" aria-hidden="true">→</span>
+    <span class="ph"><b>阶段二</b>多 Bot 管理与隔离</span>
+    <span class="ph-arrow" aria-hidden="true">→</span>
+    <span class="ph"><b>阶段三</b>工具与迁移切换</span>
+  </div>
+  <figcaption>生成示意 — §11 实施顺序；每阶段完成后才进入下一阶段。</figcaption>
+</figure>
+
+<h3 id="h3-15">阶段一：提取单 Bot Runtime</h3>
+<p>从当前 <code>App</code> 中分离宿主管理和 Bot 运行，保留单个 Bot 的行为；引入可等待的停止、每 Bot 状态根目录和独占校验。移除领域模块对 daemon 全局配置与全局连接的隐式依赖。</p>
+<h3 id="h3-16">阶段二：多 Bot 管理与隔离</h3>
+<p>实现管理目录、创建/配置/启动/停止/归档/恢复、每 Bot 连接和资源控制；交付共享不可变内容存储、持久文件引用、授权读取、工作副本与安全回收。接入管理员及 Bot 作用域凭据，再开放显式 Bot 路径，<span data-notation="underline">避免出现“已有多 Bot，但授权仍全局共享”的中间交付</span>。</p>
+<h3 id="h3-17">阶段三：工具与迁移切换</h3>
+<p>更新全部本地调用方、TUI、配置与运维说明，交付完整迁移工具；删除旧单 Bot 路由与隐式选择。协调本地契约升级，不改变 wire v2。</p>
+<h3 id="h3-18">必须通过的行为验收</h3>
+<ol class="acceptance"><li>一个 daemon 创建并同时运行 A、B；外部观察到不同 DID/ID，分别向其发送消息，只到达各自绑定的 Harness。</li><li>A 信任 R、B 不信任 R：R 只能按各自信任状态通信；撤销 A↔R 不改变 B。</li><li>相同发送方、消息 ID、外部会话键到达 A/B，消息去重、cursor、幂等键、执行 Session、文件引用和工作副本均不串用；共享实体不构成共享访问权。</li><li>同一个远端在 A/B 中可以具有不同 <code>localAlias</code>，心跳不覆盖备注，备注不广播。</li><li>停止、启动、归档或破坏 A 的配置，不中断 B 的连接、工作和管理访问；相同身份不能被重复加载。</li><li>A 的作用域凭据不能发布为 B、读取 B 消息、修改 B 信任或调用 daemon 管理操作；正文伪造身份无效。</li><li>daemon 崩溃后恢复所有期望运行的 Bot；未终结 admitted 执行不盲目重跑，broker consumer 和本地 cursor 连续。</li><li>Bot 名称重复或修改不改变路由；遗漏本地 Bot 选择不执行任何操作。</li><li>更换 Harness 后不错误恢复原引擎 Session；未确认完成的旧任务不会在新引擎重放。</li><li>缺失/损坏身份、目录锁冲突、创建事务中断和配置修订冲突均显式失败，不能静默生成身份或覆盖数据。</li><li>旧安装迁移后 ID、信任、备注、消息及传输状态保持；旧远端无需升级即可继续通信。</li><li>实际启动单 daemon、两个不同执行接入与一个外部 Bot，观察上述收发、停止隔离与重启恢复；<span data-notation="underline">不能仅用 mock Adapter 测试代替端到端验收</span>。</li><li>同一内容分别发送给 A/B，本地只有一个不可变接收实体，但各有独立记录与授权；仅建立信任不增加文件引用。不同目标的 broker 副本不在本地去重保证内。</li><li>无引用的 Bot 即使知道内容摘要也无法读取、转发或查询其他 Bot 的文件存在性；删除 A 的引用不影响 B，归档 B 仍保留其引用。</li><li>A/B 的工作副本可独立修改，原实体和另一 Bot 的内容保持不变；Adapter 不向 Harness 提供全局实体路径或可写硬链接。</li><li>并发接收相同内容、下载中断、实体发布后引用提交前崩溃、读取与回收竞争均不产生可见半文件或误删；损坏引用阻止不安全回收。</li><li>验证每 Bot 逻辑配额、工作副本/暂存预算和全局物理容量；去重命中不能绕过授权或配额。单 Bot 导出恢复后所有引用可解析，旧文件迁移不丢失无法重建来源的实体。</li></ol>
+<p>永久测试优先覆盖身份隔离、权限、状态转换和崩溃恢复等可见行为；同时执行真实 daemon/CLI 场景。本文件仅是设计，<span data-notation="underline">本次文档提交不声称上述能力已验证或实现</span>。</p>
+</section>
+</main>
+</div>
+<footer class="colophon" data-enhancement="colophon">本页由 docs/multi-bot-daemon.md 转换生成：正文完整保留原文；目录、图签、三张示意图、阶段流程与复制按钮为生成增强，已与原文标注区分。</footer>
+</div>
+<!-- Rough Notation 0.5.1 — MIT License
+MIT License
+
+Copyright (c) 2020 Preet Shihn
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+ -->
+<script data-enhancement="notation">
+var RoughNotation=function(t){"use strict";const e="http://www.w3.org/2000/svg";class s{constructor(t){this.seed=t}next(){return this.seed?(2**31-1&(this.seed=Math.imul(48271,this.seed)))/2**31:Math.random()}}function i(t,e,s,i,n){return{type:"path",ops:u(t,e,s,i,n)}}function n(t,e,s){const n=(t||[]).length;if(n>2){const i=[];for(let e=0;e<n-1;e++)i.push(...u(t[e][0],t[e][1],t[e+1][0],t[e+1][1],s));return e&&i.push(...u(t[n-1][0],t[n-1][1],t[0][0],t[0][1],s)),{type:"path",ops:i}}return 2===n?i(t[0][0],t[0][1],t[1][0],t[1][1],s):{type:"path",ops:[]}}function o(t,e,s,i,o){return function(t,e){return n(t,!0,e)}([[t,e],[t+s,e],[t+s,e+i],[t,e+i]],o)}function r(t,e,s,i,n){return function(t,e,s,i){const[n,o]=g(i.increment,t,e,i.rx,i.ry,1,i.increment*a(.1,a(.4,1,s),s),s);let r=l(n,null,s);if(!s.disableMultiStroke){const[n]=g(i.increment,t,e,i.rx,i.ry,1.5,0,s),o=l(n,null,s);r=r.concat(o)}return{estimatedPoints:o,opset:{type:"path",ops:r}}}(t,e,n,function(t,e,s){const i=Math.sqrt(2*Math.PI*Math.sqrt((Math.pow(t/2,2)+Math.pow(e/2,2))/2)),n=Math.max(s.curveStepCount,s.curveStepCount/Math.sqrt(200)*i),o=2*Math.PI/n;let r=Math.abs(t/2),h=Math.abs(e/2);const a=1-s.curveFitting;return r+=c(r*a,s),h+=c(h*a,s),{increment:o,rx:r,ry:h}}(s,i,n)).opset}function h(t){return t.randomizer||(t.randomizer=new s(t.seed||0)),t.randomizer.next()}function a(t,e,s,i=1){return s.roughness*i*(h(s)*(e-t)+t)}function c(t,e,s=1){return a(-t,t,e,s)}function u(t,e,s,i,n,o=!1){const r=o?n.disableMultiStrokeFill:n.disableMultiStroke,h=f(t,e,s,i,n,!0,!1);if(r)return h;const a=f(t,e,s,i,n,!0,!0);return h.concat(a)}function f(t,e,s,i,n,o,r){const a=Math.pow(t-s,2)+Math.pow(e-i,2),u=Math.sqrt(a);let f=1;f=u<200?1:u>500?.4:-.0016668*u+1.233334;let l=n.maxRandomnessOffset||0;l*l*100>a&&(l=u/10);const g=l/2,d=.2+.2*h(n);let p=n.bowing*n.maxRandomnessOffset*(i-e)/200,_=n.bowing*n.maxRandomnessOffset*(t-s)/200;p=c(p,n,f),_=c(_,n,f);const m=[],w=()=>c(g,n,f),v=()=>c(l,n,f);return o&&(r?m.push({op:"move",data:[t+w(),e+w()]}):m.push({op:"move",data:[t+c(l,n,f),e+c(l,n,f)]})),r?m.push({op:"bcurveTo",data:[p+t+(s-t)*d+w(),_+e+(i-e)*d+w(),p+t+2*(s-t)*d+w(),_+e+2*(i-e)*d+w(),s+w(),i+w()]}):m.push({op:"bcurveTo",data:[p+t+(s-t)*d+v(),_+e+(i-e)*d+v(),p+t+2*(s-t)*d+v(),_+e+2*(i-e)*d+v(),s+v(),i+v()]}),m}function l(t,e,s){const i=t.length,n=[];if(i>3){const o=[],r=1-s.curveTightness;n.push({op:"move",data:[t[1][0],t[1][1]]});for(let e=1;e+2<i;e++){const s=t[e];o[0]=[s[0],s[1]],o[1]=[s[0]+(r*t[e+1][0]-r*t[e-1][0])/6,s[1]+(r*t[e+1][1]-r*t[e-1][1])/6],o[2]=[t[e+1][0]+(r*t[e][0]-r*t[e+2][0])/6,t[e+1][1]+(r*t[e][1]-r*t[e+2][1])/6],o[3]=[t[e+1][0],t[e+1][1]],n.push({op:"bcurveTo",data:[o[1][0],o[1][1],o[2][0],o[2][1],o[3][0],o[3][1]]})}if(e&&2===e.length){const t=s.maxRandomnessOffset;n.push({op:"lineTo",data:[e[0]+c(t,s),e[1]+c(t,s)]})}}else 3===i?(n.push({op:"move",data:[t[1][0],t[1][1]]}),n.push({op:"bcurveTo",data:[t[1][0],t[1][1],t[2][0],t[2][1],t[2][0],t[2][1]]})):2===i&&n.push(...u(t[0][0],t[0][1],t[1][0],t[1][1],s));return n}function g(t,e,s,i,n,o,r,h){const a=[],u=[],f=c(.5,h)-Math.PI/2;u.push([c(o,h)+e+.9*i*Math.cos(f-t),c(o,h)+s+.9*n*Math.sin(f-t)]);for(let r=f;r<2*Math.PI+f-.01;r+=t){const t=[c(o,h)+e+i*Math.cos(r),c(o,h)+s+n*Math.sin(r)];a.push(t),u.push(t)}return u.push([c(o,h)+e+i*Math.cos(f+2*Math.PI+.5*r),c(o,h)+s+n*Math.sin(f+2*Math.PI+.5*r)]),u.push([c(o,h)+e+.98*i*Math.cos(f+r),c(o,h)+s+.98*n*Math.sin(f+r)]),u.push([c(o,h)+e+.9*i*Math.cos(f+.5*r),c(o,h)+s+.9*n*Math.sin(f+.5*r)]),[u,a]}function d(t,e){return{maxRandomnessOffset:2,roughness:"highlight"===t?3:1.5,bowing:1,stroke:"#000",strokeWidth:1.5,curveTightness:0,curveFitting:.95,curveStepCount:9,fillStyle:"hachure",fillWeight:-1,hachureAngle:-41,hachureGap:-1,dashOffset:-1,dashGap:-1,zigzagOffset:-1,combineNestedSvgPaths:!1,disableMultiStroke:"double"!==t,disableMultiStrokeFill:!1,seed:e}}function p(t,s,h,a,c,u){const f=[];let l=h.strokeWidth||2;const g=function(t){const e=t.padding;if(e||0===e){if("number"==typeof e)return[e,e,e,e];if(Array.isArray(e)){const t=e;if(t.length)switch(t.length){case 4:return[...t];case 1:return[t[0],t[0],t[0],t[0]];case 2:return[...t,...t];case 3:return[...t,t[1]];default:return[t[0],t[1],t[2],t[3]]}}}return[5,5,5,5]}(h),p=void 0===h.animate||!!h.animate,_=h.iterations||2,m=h.rtl?1:0,w=d("single",u);switch(h.type){case"underline":{const t=s.y+s.h+g[2];for(let e=m;e<_+m;e++)e%2?f.push(i(s.x+s.w,t,s.x,t,w)):f.push(i(s.x,t,s.x+s.w,t,w));break}case"strike-through":{const t=s.y+s.h/2;for(let e=m;e<_+m;e++)e%2?f.push(i(s.x+s.w,t,s.x,t,w)):f.push(i(s.x,t,s.x+s.w,t,w));break}case"box":{const t=s.x-g[3],e=s.y-g[0],i=s.w+(g[1]+g[3]),n=s.h+(g[0]+g[2]);for(let s=0;s<_;s++)f.push(o(t,e,i,n,w));break}case"bracket":{const t=Array.isArray(h.brackets)?h.brackets:h.brackets?[h.brackets]:["right"],e=s.x-2*g[3],i=s.x+s.w+2*g[1],o=s.y-2*g[0],r=s.y+s.h+2*g[2];for(const h of t){let t;switch(h){case"bottom":t=[[e,s.y+s.h],[e,r],[i,r],[i,s.y+s.h]];break;case"top":t=[[e,s.y],[e,o],[i,o],[i,s.y]];break;case"left":t=[[s.x,o],[e,o],[e,r],[s.x,r]];break;case"right":t=[[s.x+s.w,o],[i,o],[i,r],[s.x+s.w,r]]}t&&f.push(n(t,!1,w))}break}case"crossed-off":{const t=s.x,e=s.y,n=t+s.w,o=e+s.h;for(let s=m;s<_+m;s++)s%2?f.push(i(n,o,t,e,w)):f.push(i(t,e,n,o,w));for(let s=m;s<_+m;s++)s%2?f.push(i(t,o,n,e,w)):f.push(i(n,e,t,o,w));break}case"circle":{const t=d("double",u),e=s.w+(g[1]+g[3]),i=s.h+(g[0]+g[2]),n=s.x-g[3]+e/2,o=s.y-g[0]+i/2,h=Math.floor(_/2),a=_-2*h;for(let s=0;s<h;s++)f.push(r(n,o,e,i,t));for(let t=0;t<a;t++)f.push(r(n,o,e,i,w));break}case"highlight":{const t=d("highlight",u);l=.95*s.h;const e=s.y+s.h/2;for(let n=m;n<_+m;n++)n%2?f.push(i(s.x+s.w,e,s.x,e,t)):f.push(i(s.x,e,s.x+s.w,e,t));break}}if(f.length){const s=function(t){const e=[];for(const s of t){let t="";for(const i of s.ops){const s=i.data;switch(i.op){case"move":t.trim()&&e.push(t.trim()),t=`M${s[0]} ${s[1]} `;break;case"bcurveTo":t+=`C${s[0]} ${s[1]}, ${s[2]} ${s[3]}, ${s[4]} ${s[5]} `;break;case"lineTo":t+=`L${s[0]} ${s[1]} `}}t.trim()&&e.push(t.trim())}return e}(f),i=[],n=[];let o=0;const r=(t,e,s)=>t.setAttribute(e,s);for(const a of s){const s=document.createElementNS(e,"path");if(r(s,"d",a),r(s,"fill","none"),r(s,"stroke",h.color||"currentColor"),r(s,"stroke-width",""+l),p){const t=s.getTotalLength();i.push(t),o+=t}t.appendChild(s),n.push(s)}if(p){let t=0;for(let e=0;e<n.length;e++){const s=n[e],r=i[e],h=o?c*(r/o):0,u=a+t,f=s.style;f.strokeDashoffset=""+r,f.strokeDasharray=""+r,f.animation=`rough-notation-dash ${h}ms ease-out ${u}ms forwards`,t+=h}}}}class _{constructor(t,e){this._state="unattached",this._resizing=!1,this._seed=Math.floor(Math.random()*2**31),this._lastSizes=[],this._animationDelay=0,this._resizeListener=()=>{this._resizing||(this._resizing=!0,setTimeout(()=>{this._resizing=!1,"showing"===this._state&&this.haveRectsChanged()&&this.show()},400))},this._e=t,this._config=JSON.parse(JSON.stringify(e)),this.attach()}get animate(){return this._config.animate}set animate(t){this._config.animate=t}get animationDuration(){return this._config.animationDuration}set animationDuration(t){this._config.animationDuration=t}get iterations(){return this._config.iterations}set iterations(t){this._config.iterations=t}get color(){return this._config.color}set color(t){this._config.color!==t&&(this._config.color=t,this.refresh())}get strokeWidth(){return this._config.strokeWidth}set strokeWidth(t){this._config.strokeWidth!==t&&(this._config.strokeWidth=t,this.refresh())}get padding(){return this._config.padding}set padding(t){this._config.padding!==t&&(this._config.padding=t,this.refresh())}attach(){if("unattached"===this._state&&this._e.parentElement){!function(){if(!window.__rno_kf_s){const t=window.__rno_kf_s=document.createElement("style");t.textContent="@keyframes rough-notation-dash { to { stroke-dashoffset: 0; } }",document.head.appendChild(t)}}();const t=this._svg=document.createElementNS(e,"svg");t.setAttribute("class","rough-annotation");const s=t.style;s.position="absolute",s.top="0",s.left="0",s.overflow="visible",s.pointerEvents="none",s.width="100px",s.height="100px";const i="highlight"===this._config.type;if(this._e.insertAdjacentElement(i?"beforebegin":"afterend",t),this._state="not-showing",i){const t=window.getComputedStyle(this._e).position;(!t||"static"===t)&&(this._e.style.position="relative")}this.attachListeners()}}detachListeners(){window.removeEventListener("resize",this._resizeListener),this._ro&&this._ro.unobserve(this._e)}attachListeners(){this.detachListeners(),window.addEventListener("resize",this._resizeListener,{passive:!0}),!this._ro&&"ResizeObserver"in window&&(this._ro=new window.ResizeObserver(t=>{for(const e of t)e.contentRect&&this._resizeListener()})),this._ro&&this._ro.observe(this._e)}haveRectsChanged(){if(this._lastSizes.length){const t=this.rects();if(t.length!==this._lastSizes.length)return!0;for(let e=0;e<t.length;e++)if(!this.isSameRect(t[e],this._lastSizes[e]))return!0}return!1}isSameRect(t,e){const s=(t,e)=>Math.round(t)===Math.round(e);return s(t.x,e.x)&&s(t.y,e.y)&&s(t.w,e.w)&&s(t.h,e.h)}isShowing(){return"not-showing"!==this._state}refresh(){this.isShowing()&&!this.pendingRefresh&&(this.pendingRefresh=Promise.resolve().then(()=>{this.isShowing()&&this.show(),delete this.pendingRefresh}))}show(){switch(this._state){case"unattached":break;case"showing":this.hide(),this._svg&&this.render(this._svg,!0);break;case"not-showing":this.attach(),this._svg&&this.render(this._svg,!1)}}hide(){if(this._svg)for(;this._svg.lastChild;)this._svg.removeChild(this._svg.lastChild);this._state="not-showing"}remove(){this._svg&&this._svg.parentElement&&this._svg.parentElement.removeChild(this._svg),this._svg=void 0,this._state="unattached",this.detachListeners()}render(t,e){let s=this._config;e&&(s=JSON.parse(JSON.stringify(this._config)),s.animate=!1);const i=this.rects();let n=0;i.forEach(t=>n+=t.w);const o=s.animationDuration||800;let r=0;for(let e=0;e<i.length;e++){const h=o*(i[e].w/n);p(t,i[e],s,r+this._animationDelay,h,this._seed),r+=h}this._lastSizes=i,this._state="showing"}rects(){const t=[];if(this._svg)if(this._config.multiline){const e=this._e.getClientRects();for(let s=0;s<e.length;s++)t.push(this.svgRect(this._svg,e[s]))}else t.push(this.svgRect(this._svg,this._e.getBoundingClientRect()));return t}svgRect(t,e){const s=t.getBoundingClientRect(),i=e;return{x:(i.x||i.left)-(s.x||s.left),y:(i.y||i.top)-(s.y||s.top),w:i.width,h:i.height}}}return t.annotate=function(t,e){return new _(t,e)},t.annotationGroup=function(t){let e=0;for(const s of t){const t=s;t._animationDelay=e;e+=0===t.animationDuration?0:t.animationDuration||800}const s=[...t];return{show(){for(const t of s)t.show()},hide(){for(const t of s)t.hide()}}},Object.defineProperty(t,"__esModule",{value:!0}),t}({});
+</script>
+<script data-enhancement="notation">
+(() => {
+  const entries = [];
+  let frame;
+  function draw() {
+    for (const entry of entries) {
+      const { element } = entry;
+      if (!element.getClientRects().length || !element.getBoundingClientRect().width) continue;
+      try {
+        const requested = element.dataset.notation;
+        const type = requested === 'circle' && element.getClientRects().length > 1
+          ? 'underline' : requested;
+        const computed = getComputedStyle(element);
+        const color = type === 'highlight'
+          ? computed.getPropertyValue('--notation-highlight').trim() || 'rgba(127,127,127,.2)'
+          : computed.getPropertyValue('--notation-color').trim();
+        const stroke = !color || color === 'currentColor' ? computed.color : color;
+        if (entry.type !== type) {
+          entry.annotation?.remove();
+          entry.annotation = RoughNotation.annotate(element, {
+            type, animate: false, multiline: true, iterations: 1,
+            color: stroke,
+            padding: type === 'circle' ? 3 : 1, strokeWidth: type === 'circle' ? 2.5 : 3
+          });
+          entry.svg = type === 'highlight' ? element.previousElementSibling : element.nextElementSibling;
+          entry.svg.dataset.enhancement = 'notation';
+          entry.svg.setAttribute('aria-hidden', 'true');
+          entry.type = type;
+        }
+        entry.annotation.color = stroke;
+        entry.annotation.show();
+        element.classList.add('notation-ready');
+      } catch (error) {
+        entry.annotation?.remove();
+        entry.type = undefined;
+        element.classList.remove('notation-ready');
+        console.error('Notation failed:', error);
+      }
+    }
+  }
+  function refresh() {
+    cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(draw);
+  }
+  async function start() {
+    await document.fonts.ready;
+    document.querySelectorAll('[data-notation]').forEach(element => {
+      if (['underline', 'highlight', 'circle'].includes(element.dataset.notation)) entries.push({ element });
+    });
+    refresh();
+    // The library observes size changes; these events also cover position-only changes.
+    document.addEventListener('load', refresh, true);
+    document.addEventListener('toggle', refresh, true);
+    document.addEventListener('papyra:refresh-annotations', refresh);
+    window.addEventListener('resize', refresh, { passive: true });
+  }
+  start().catch(error => console.error('Notation initialization failed:', error));
+})();
+</script>
+<script>
+
+(function(){
+  var d=document, dt=d.querySelector('.toc-details');
+  function tocMode(){ if(!dt) return; if(window.innerWidth<=1080){ dt.removeAttribute('open'); } else { dt.setAttribute('open',''); } }
+  tocMode(); window.addEventListener('resize', tocMode);
+  // 目录滚动定位：高亮当前章节
+  var links=[].slice.call(d.querySelectorAll('.toc ol a'));
+  var byId={}; links.forEach(function(a){ byId[a.getAttribute('href').slice(1)]=a; });
+  var secs=[].slice.call(d.querySelectorAll('main .docsec'));
+  var cur=-2;
+  function spy(){
+    var i=secs.length-1;
+    while(i>=0 && secs[i].getBoundingClientRect().top>140) i--;
+    if(i!==cur){
+      cur=i;
+      links.forEach(function(a){ a.classList.remove('cur'); });
+      if(i>=0 && byId[secs[i].id]) byId[secs[i].id].classList.add('cur');
+    }
+  }
+  var tick=false;
+  window.addEventListener('scroll', function(){ if(!tick){ tick=true; requestAnimationFrame(function(){ tick=false; spy(); }); } }, {passive:true});
+  window.addEventListener('resize', spy);
+  spy();
+  d.querySelectorAll('.copybtn').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var pre=d.getElementById(btn.getAttribute('data-copy'));
+      var st=btn.parentElement.querySelector('.copy-status');
+      function say(t,ok){ st.textContent=t; st.classList.toggle('ok',!!ok); st.classList.toggle('err',!ok);
+        clearTimeout(say._t); say._t=setTimeout(function(){ st.textContent=''; },2400); }
+      if(!pre){ say('复制失败',false); return; }
+      var txt=pre.textContent;
+      function fallback(){
+        try{
+          var ta=d.createElement('textarea'); ta.value=txt; ta.setAttribute('readonly','');
+          ta.style.position='fixed'; ta.style.opacity='0'; d.body.appendChild(ta);
+          ta.select(); var ok=document.execCommand('copy'); d.body.removeChild(ta);
+          say(ok?'已复制':'复制失败',ok);
+        }catch(e){ say('复制失败',false); }
+      }
+      if(navigator.clipboard&&navigator.clipboard.writeText){
+        navigator.clipboard.writeText(txt).then(function(){ say('已复制',true); },fallback);
+      } else fallback();
+    });
+  });
+})();
+</script>
+</body>
+</html>

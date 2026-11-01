@@ -96,10 +96,14 @@ trap 'rm -f "$TMP_FILE"' EXIT
 	echo '```bash'
 	echo "clawsynapse version"
 	echo "clawsynapsed --version"
-	echo "clawsynapse init"
-	echo "clawsynapse service restart"
-	echo "clawsynapse health"
+	echo "clawsynapse service status"
+	echo "clawsynapse daemon"
+	echo "clawsynapse bots"
 	echo '```'
+	echo
+	echo "The installer creates a schemaVersion 2 daemon config.json, not a Bot or identity."
+	echo "Create Bots explicitly with \`clawsynapse bot create --file bot.json\`; use \`--bot <bot-id>\` for Bot-scoped commands."
+	echo "Legacy single-Bot installs must stop the old daemon, back up their state, and run \`clawsynapse migrate --legacy-config /path/to/config.yaml --data-dir /path/to/daemon-root\` before installing the daemon service."
 	echo
 	echo "## Assets"
 	echo

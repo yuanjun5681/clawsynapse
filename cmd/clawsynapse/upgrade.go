@@ -97,7 +97,7 @@ type installState struct {
 	components    []string
 }
 
-func runUpgrade(args []string, stdin io.Reader, stdout, stderr io.Writer, apiAddr string) error {
+func runUpgrade(args []string, stdin io.Reader, stdout, stderr io.Writer, apiAddr, tokenFile string) error {
 	deps := upgradeDeps{
 		runner:     execUpgradeRunner{},
 		httpClient: upgradeDefaultClient,
@@ -105,8 +105,10 @@ func runUpgrade(args []string, stdin io.Reader, stdout, stderr io.Writer, apiAdd
 		executable: upgradeExecutable,
 		lookPath:   upgradeLookPath,
 		apiAddr:    apiAddr,
-		localCheck: fetchLocalDaemonVersion,
-		now:        time.Now,
+		localCheck: func(ctx context.Context, addr string) (string, error) {
+			return fetchLocalDaemonVersionWithToken(ctx, addr, tokenFile)
+		},
+		now: time.Now,
 	}
 	return runUpgradeWithDeps(args, stdin, stdout, stderr, deps)
 }
@@ -280,20 +282,21 @@ func inspectInstallState(ctx context.Context, deps upgradeDeps, requestedRepo st
 }
 
 func fetchLocalDaemonVersion(ctx context.Context, apiAddr string) (string, error) {
+	return fetchLocalDaemonVersionWithToken(ctx, apiAddr, "")
+}
+
+func fetchLocalDaemonVersionWithToken(ctx context.Context, apiAddr, tokenFile string) (string, error) {
 	addr := strings.TrimSpace(apiAddr)
-	if addr == "" {
-		addr = strings.TrimSpace(os.Getenv("LOCAL_API_ADDR"))
+	options := []internalapi.ClientOption{}
+	if tokenFile != "" {
+		options = append(options, internalapi.WithTokenFile(tokenFile))
 	}
-	client := internalapi.NewClient(addr, 2*time.Second)
-	result, err := client.Get(ctx, "/v1/health")
+	client := internalapi.NewClient(addr, 2*time.Second, options...)
+	result, err := client.Get(ctx, "/v2/health")
 	if err != nil {
 		return "", err
 	}
-	selfData, ok := result.Data["self"].(map[string]any)
-	if !ok {
-		return "", errors.New("health response missing self data")
-	}
-	versionValue, _ := selfData["version"].(string)
+	versionValue, _ := result.Data["version"].(string)
 	versionValue = strings.TrimSpace(versionValue)
 	if versionValue == "" {
 		return "", errors.New("health response missing daemon version")

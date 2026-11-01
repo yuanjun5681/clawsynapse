@@ -67,6 +67,8 @@ type LogProvider interface {
 
 type Options struct {
 	APIAddr   string
+	BotID     string
+	TokenFile string
 	Timeout   time.Duration
 	Version   string
 	LogSource string
@@ -76,8 +78,10 @@ type Options struct {
 }
 
 type config struct {
-	APIAddr string
-	Timeout time.Duration
+	APIAddr   string
+	BotID     string
+	TokenFile string
+	Timeout   time.Duration
 }
 
 type snapshot struct {
@@ -132,20 +136,21 @@ type configField struct {
 }
 
 type configEditState struct {
-	fields     []configField
-	editing    bool
-	editIdx    int
-	dirty      bool
-	statusMsg  string
-	statusAt   time.Time
-	configPath string
+	fields    []configField
+	editing   bool
+	editIdx   int
+	dirty     bool
+	statusMsg string
+	statusAt  time.Time
 }
 
 type configSaveMsg struct {
-	err error
+	scope uint64
+	err   error
 }
 
 type refreshMsg struct {
+	scope    uint64
 	snapshot snapshot
 	err      error
 }
@@ -180,7 +185,7 @@ type parsedLogEntry struct {
 	Time    string
 	Level   string
 	Msg     string
-	NodeID  string
+	BotID   string
 	Service string
 	Comp    string
 	Event   string
@@ -205,6 +210,11 @@ type peerFilterState struct {
 }
 
 type model struct {
+	botID          string
+	scope          uint64
+	bots           []botInfo
+	botCursor      int
+	selectingBot   bool
 	client         Client
 	logs           LogProvider
 	apiAddr        string

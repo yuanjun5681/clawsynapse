@@ -15,7 +15,7 @@ const messagesStream = "CLAWSYNAPSE_MESSAGES"
 const messagesSubject = "clawsynapse.msg.*.inbox"
 
 // EnsureMessagingStream never rewrites an existing stream's subjects or purges
-// another node's messages. Messaging requires durable broker acceptance.
+// another Bot's messages. Messaging requires durable broker acceptance.
 func (c *Client) EnsureMessagingStream() error {
 	js := c.JetStream()
 	if js == nil {
@@ -25,7 +25,7 @@ func (c *Client) EnsureMessagingStream() error {
 	if errors.Is(err, nats.ErrStreamNotFound) {
 		info, err = js.AddStream(&nats.StreamConfig{Name: messagesStream, Subjects: []string{messagesSubject}, Retention: nats.LimitsPolicy, Storage: nats.FileStorage, MaxAge: 7 * 24 * time.Hour, Duplicates: 24 * time.Hour})
 		if err != nil {
-			// Concurrent nodes may race to create the same shared stream.
+			// Concurrent Bots may race to create the same shared stream.
 			info, err = js.StreamInfo(messagesStream)
 		}
 	}
@@ -51,13 +51,13 @@ func (c *Client) PublishMessage(ctx context.Context, subject string, data []byte
 	return err
 }
 
-func (c *Client) MessagingInbox(nodeID string) (*nats.Subscription, error) {
+func (c *Client) MessagingInbox(botID string) (*nats.Subscription, error) {
 	if err := c.EnsureMessagingStream(); err != nil {
 		return nil, err
 	}
-	digest := sha256.Sum256([]byte(nodeID))
+	digest := sha256.Sum256([]byte(botID))
 	durable := "node_" + hex.EncodeToString(digest[:16])
-	return c.JetStream().PullSubscribe("clawsynapse.msg."+nodeID+".inbox", durable,
+	return c.JetStream().PullSubscribe("clawsynapse.msg."+botID+".inbox", durable,
 		nats.BindStream(messagesStream), nats.ManualAck(), nats.AckExplicit(),
 		nats.AckWait(30*time.Second), nats.MaxAckPending(128), nats.DeliverAll())
 }

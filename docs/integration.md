@@ -5,7 +5,7 @@ title: "ClawSynapse Integration"
 
 # ClawSynapse Integration
 
-最后更新：2026-10-20
+最后更新：2026-10-31
 
 本文档介绍如何通过 Agent Adapter 适配层将不同 Agent 产品接入 ClawSynapse。
 
@@ -13,7 +13,7 @@ title: "ClawSynapse Integration"
 
 ## Agent Adapter
 
-当守护进程收到发往本节点的消息时，通过 `AgentAdapter` 接口投递给本地 Agent。不同 Agent 产品实现该接口即可接入。
+daemon 为每个本地 Bot 独立构造 Harness 绑定和 `AgentAdapter`，收到发往该 Bot 的消息后只投递给它自己的执行入口。Bot 是通信联系人/身份，Harness 是本地执行实现；不同 Agent 产品实现该接口即可接入，不能把“共用同一产品”当作执行上下文可共享。
 
 ```go
 type AgentAdapter interface {
@@ -29,12 +29,12 @@ type AgentAdapter interface {
 | `MessageID` | string | 当前消息 ID |
 | `RequestID` / `RunID` / `Seq` | string / string / uint64 | 执行事件关联字段 |
 | `Type` | string | 消息类型（如 `chat.message`, `task.assign`） |
-| `AgentID` | string | 接收节点本地授权列表内的目标 Agent；不支持时明确拒绝 |
+| `AgentID` | string | 接收 Bot 本地授权列表内的目标 Agent；不支持时明确拒绝 |
 | `SessionKey` | string | LLM 调用已按发送方和 Agent 隔离的会话键；Webhook 保留原键 |
 | `Message` | string | 文本快捷输入；结构化任务以 Payload 为准 |
 | `Payload` | protocol.MessagePayload | text、instruction/input 或执行反馈 |
 | `Emit` | func(OutputEvent) error | 同步背压的答案增量回调；错误须停止执行 |
-| `From` | string | 发送方节点 ID |
+| `From` | string | 发送方 Bot ID |
 | `Metadata` | map[string]any | 附加元数据 |
 
 ### DeliverMessageResult
@@ -57,7 +57,7 @@ type AgentAdapter interface {
 
 ### 系统消息投递
 
-除了由 `DELIVERABLE_PREFIXES` 控制的用户消息外，部分系统消息会**直接投递**给 Adapter，不受前缀过滤限制：
+除了由每 Bot `deliverablePrefixes` 控制的用户消息外，部分系统消息会**直接投递**给 Adapter，不受前缀过滤限制：
 
 | 消息类型 | 触发时机 | 说明 |
 |----------|----------|------|
@@ -65,7 +65,7 @@ type AgentAdapter interface {
 
 #### `transfer.received` 消息
 
-当远端节点向本节点发送文件，文件下载并保存到本地后，守护进程自动通过 Adapter 投递一条 `transfer.received` 消息。
+当远端 Bot 向本 Bot 发送文件，文件下载并保存到本地后，守护进程自动通过 Adapter 投递一条 `transfer.received` 消息。
 
 `Payload.Input` 为结构化 JSON，包含传输固有信息：
 
@@ -74,18 +74,18 @@ type AgentAdapter interface {
 | `transferId` | string | 传输 ID |
 | `fileName` | string | 文件名 |
 | `fileSize` | int64 | 文件大小（字节） |
-| `localPath` | string | 本地文件路径 |
+| `localPath` | string | 仅该 Bot 当前绑定 workspace 内的物化副本路径；不是共享 blob 路径或跨 Bot 授权 |
 | `mimeType` | string | 文件 MIME 类型 |
 
-聊天参与者是节点，`targetNode` 是唯一路由身份；DSH 集成不应发送 `agentId`。每个节点只有一个 DSH 产品，节点收到消息后交给本机 DSH，DSH 内部的 Agent/preset 选择不对外暴露。`agentId` 仅保留为通用 CLI/Webhook 适配器的可选内部提示；`agentAllowedIds` 只用于这些适配器的本地校验，不是聊天目录。`run.*`、`*.response`、`*.error` 反馈携带原始执行方身份；`chat.context` 与 `transfer.received` 是观察/系统通知，不触发模型执行。
+聊天参与者是 Bot，本地发送 API 的 `targetBot` 是唯一路由身份。Bot 收到消息后，通过自己的 Adapter 投递给本地执行引擎；引擎内部执行对象不作为聊天联系人暴露。`agentId` 是通用 CLI/Webhook 适配器的可选内部路由提示；`harness.allowedAgentIds` 只用于这些适配器的本地校验，不是聊天目录。`run.*`、`*.response`、`*.error` 反馈携带原始执行方身份；`chat.context` 与 `transfer.received` 是观察/系统通知，不触发模型执行。网络签名封套仍是 wire v2，`from`/`to` 不改名。
 
-`Metadata` 字段为发送方附带的业务扩展元数据（如 `taskId`、`todoId`），与 `POST /v1/publish` 中 `metadata` 的语义一致。
+`Metadata` 为发送方附带的业务扩展元数据（如 taskId、todoId），与 `POST /v2/bots/{botId}/publish` 中 metadata 的语义一致。每个本地 Bot 的 HTTP、Webhook 和原生 CLI JSON 身份使用 `botId`；不再使用本地 nodeId/targetNode 别名。
 
 CLI Adapter 将请求编码为 JSON prompt，不再拼接未转义的 `key=value` header。Webhook 同样接收结构化 payload，例如：
 
 ```json
 {
-  "nodeId": "n1-local",
+  "botId": "n1-local",
   "messageId": "transfer.received:tf_abc123",
   "type": "transfer.received",
   "from": "n1-sender",
@@ -95,7 +95,7 @@ CLI Adapter 将请求编码为 JSON prompt，不再拼接未转义的 `key=value
       "transferId": "tf_abc123",
       "fileName": "report.pdf",
       "fileSize": 24576,
-      "localPath": "/data/transfers/tf_abc123-report.pdf",
+      "localPath": "/data/bots/n1-local/workspace/binding-a/transfers/report.pdf",
       "mimeType": "application/pdf"
     }
   },
@@ -105,20 +105,27 @@ CLI Adapter 将请求编码为 JSON prompt，不再拼接未转义的 `key=value
 
 ### 已实现的适配器
 
-| 适配器 | `AGENT_ADAPTER` 值 | 说明 |
-|--------|---------------------|------|
+| 适配器 | `harness.adapter` 值 | 说明 |
+|--------|-------------------------|------|
 | `DefaultAdapter` | `default` | 内置默认，echo 回显，用于调试和测试 |
 | `OpenClawAdapter` | `openclaw` | 调用本地 OpenClaw CLI 投递消息 |
 | `OpenCodeAdapter` | `opencode` | 通过原生 JSONL 事件增量投递答案 |
 | `CodexAdapter` | `codex` | stdin prompt、原生 JSONL、明确 turn.completed 终态 |
 | `WebhookAdapter` | `webhook` | 通过 HTTP POST 将消息 JSON 转发到外部 URL |
 
-通过环境变量 `AGENT_ADAPTER` 或命令行 `--agent-adapter` 选择适配器。
-消息投递超时默认是 10 分钟，可通过 `AGENT_ADAPTER_TIMEOUT`、`--agent-adapter-timeout` 或 YAML 中的 `agentAdapterTimeout` 覆盖。
+通过 admin API/CLI 配置每 Bot `harness.adapter`、`harness.timeout`（默认 10m）及可选 `harness.model`，不使用 daemon 环境变量/旧 YAML 的全局 adapter。Bot 配置变更必须先停止并以当前 revision CAS 更新，再显式启动。daemon 的 listener/NATS 默认值与资源预算在 schemaVersion 2 的 config.json，Bot 配置在 bots/{botId}/config.json，详见 operations。
+
+### 真实原生执行绑定
+
+- 每 Bot 的身份、credentials、状态及 workspace 独立。原生 CLI 实际 cwd 为 `bots/{botId}/workspace/{bindingRevision}`；不是仅给 prompt 添加 Bot 名称。
+- 产品会话按 Bot ID、bindingRevision、产品，再结合发送方/Agent/会话键隔离，原生产品 session ID 持久映射。Harness 变更由服务器生成新 bindingRevision，旧会话不自动接回。失效会话明确失败，不新建并重跑。
+- OpenCode/Codex 的 `harness.model` 传给原生命令 `--model`。OpenCode 使用原生 `run --format json --standalone`；Codex 使用 `exec --json`。OpenClaw 不支持每调用 model override，配置非空 model 会被拒绝。
+- OpenClaw/Webhook 需要明确 `harness.instance`，同 adapter 的未归档 Bot 不允许复用 instance。Webhook 发送 botId、bindingRevision、instance 以及对应身份 headers，接收端也必须按绑定隔离状态和权限。instance 标识不是自动创建远端隔离实例的承诺。
+- workspace 不等于 OS 沙箱。原生产品账号、工具权限、文件访问和外部副作用仍需部署策略控制；daemon scoped token 不能取代产品凭据隔离。
 
 ### CLI 可靠性契约
 
-- Codex/OpenCode 增量读取原生事件；只发布答案，不转发 thinking、reasoning 或工具事件。Codex 必须出现 `turn.completed`；OpenCode 要求成功 `step_finish`，`tool-calls` 不是最终完成。
+- Codex/OpenCode 增量读取原生事件，只发布答案，不转发 thinking、reasoning 或工具事件。Codex 要求 turn.completed；OpenCode 接受成功 step_finish（tool-calls 不是终态）。没有 step_finish 的 OpenCode 版本只能通过只读 `session export --standalone --sanitize` 核验：session ID 匹配、整体 succeeded、末条 idle/succeeded，最近 assistant 必须是本次流中精确 messageID、finish=stop 且有 completed 时间。旧回合、仅有答案或进程 exit 0 都不能代替完成；查询失败/缺少权威证据明确 indeterminate，不重新执行任务。
 - OpenClaw 保留 Gateway-backed `agent --json` 调用，以明确成功 status/result 判定；一次性 JSON 响应不宣称原生流式。
 - 未知输出、登录提示、仅启动事件、非零退出或中断不报完成；会话失效不自动新建重跑。
 - 单原生事件或一次性 JSON 响应最多 256 KiB，累计输出最多 4 MiB，stderr 最多 8 KiB；prompt 最多 32 KiB，argv prompt 最多 16 KiB。超限明确失败，不静默截断成功。
@@ -126,7 +133,7 @@ CLI Adapter 将请求编码为 JSON prompt，不再拼接未转义的 `key=value
 - Unix 使用独立进程组，Windows 使用 Job Object 管理进程树；超时、取消与 WaitDelay 有界。Windows 已交叉编译，实际运行仍需目标 OS 验收。
 - 产品会话读写失败显式报错。仅受当前原生事件契约支持的 CLI 可用；help/auth/health 探针只验证非交互能力，不替代真实模型任务验收。
 - 有 Emit 时结果不再重复返回完整 Reply；失败使用 ExecutionError 的 code、stage 和 indeterminate，不泄露原生 stdout/stderr。
-- DSH 集成只需节点显示名与 `labels`；不要为聊天配置 Agent 名称或 Agent 目录。通用 CLI 适配器仍可使用 `--agent-allowed-ids` 约束本地目标。
+- DSH 集成只需 Bot 显示名与 labels；不要为聊天配置 Agent 名称或 Agent 目录。通用 CLI 适配器可使用 `harness.allowedAgentIds` 约束本地目标。真实模型任务与第三方 CLI 终态兼容必须单独验收，不能从 health/仅答案输出推断完整 acceptance 通过。
 
 
 ---
@@ -139,11 +146,11 @@ CLI Adapter 将请求编码为 JSON prompt，不再拼接未转义的 `key=value
 
 投递时把来源、消息关联、会话、payload 和 metadata 编码为 JSON prompt，字段值不再解释为可拼接的 header。JSON 结构不能消除提示词注入；授权和工具限制必须由本地策略落实。
 
-只有配置在 `agentAllowedIds`／`AGENT_ALLOWED_IDS`／`--agent-allowed-ids` 中的命名 AgentID 才会转换为 `--agent`。保留 ID `default` 使用产品原生默认 Agent，不传 `--agent default`；未配置列表时只允许该默认目标。该列表只影响本地 CLI 路由，不进入节点发现或聊天参与者目录。
+只有配置在每 Bot `harness.allowedAgentIds` 中的命名 AgentID 才会转换为 `--agent`。保留 ID `default` 使用产品原生默认 Agent，不传 `--agent default`；未配置列表时只允许该默认目标。该列表只影响本地 CLI 路由，不进入发现或聊天参与者目录。
 
 ### 会话映射
 
-- 正常消息的产品会话由发送方、目标 Agent 与 sessionKey 的作用域摘要确定。
+- 正常消息的产品会话由本地 Bot、bindingRevision、产品、发送方、目标 Agent 与 sessionKey 的作用域摘要确定。
 - 缺少会话键时使用独立消息关联；已失效会话明确失败，由调用方显式创建新会话。
 
 ### 网关通信验证
@@ -211,29 +218,19 @@ ws.onmessage = (event) => {
 
 ### 配置
 
-环境变量：
+在该 Bot 的 `harness` 对象中设置：
 
-```bash
-AGENT_ADAPTER=webhook
-WEBHOOK_URL=https://example.com/hooks/clawsynapse
-WEBHOOK_AUTH_TOKEN='<random-secret>'
+```json
+{
+  "adapter": "webhook",
+  "timeout": "10m",
+  "instance": "dedicated-receiver-a",
+  "webhookUrl": "https://example.com/hooks/clawsynapse/a",
+  "credentialsFile": "/private/clawsynapse/webhook-a.token"
+}
 ```
 
-命令行：
-
-```bash
-clawsynapsed --agent-adapter webhook --webhook-url https://example.com/hooks/clawsynapse
-```
-
-YAML 配置文件（`~/.clawsynapse/config.yaml`）：
-
-```yaml
-agentAdapter: webhook
-agentAdapterTimeout: 10m
-webhookUrl: https://example.com/hooks/clawsynapse
-```
-
-`WEBHOOK_AUTH_TOKEN` 是敏感值，可从 `clawsynapsed` 进程的 OS 环境或项目根目录 `.env` 读取，不支持 YAML 或命令行参数，也不会出现在配置 API 和 `--check-config` 输出中。未设置或为空时不发送认证头，以兼容现有 webhook；生产环境建议始终设置随机 token。
+`credentialsFile` 是部署方准备的私有 0600 文件，内容作为 Bearer token；不把明文放进 Bot JSON。不再从全局 `WEBHOOK_AUTH_TOKEN` / `.env` 获取各 Bot 的凭据。未配置 token 时不发送 Authorization，生产部署应为每个绑定提供专用凭据和接收入口。先停止 Bot，再通过 admin CAS 更新完整 config，并重新启动。
 
 ### Webhook Payload
 
@@ -241,7 +238,9 @@ webhookUrl: https://example.com/hooks/clawsynapse
 
 ```json
 {
-  "nodeId": "n1-2f4c6e8a0b1d3f557799aabbccddeeff",
+  "botId": "n1-2f4c6e8a0b1d3f557799aabbccddeeff",
+  "bindingRevision": "binding-a",
+  "instance": "dedicated-receiver-a",
   "messageId": "m1-01hzy8example",
   "type": "chat.message",
   "from": "n1-11223344556677889900aabbccddeeff",
@@ -256,17 +255,18 @@ webhookUrl: https://example.com/hooks/clawsynapse
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `nodeId` | string | 本地节点 ID，由本地 DID 自动派生 |
+| `botId` | string | 本地接收 Bot ID，由其 DID 自动派生 |
+| `bindingRevision` / `instance` | string / string | 当前不可混用的执行绑定与专用接收实例 |
 | `messageId` | string | ClawSynapse 原始消息 ID，可用于幂等去重、审计和关联回复 |
-| `requestId` / `runId` / `seq` | string / string / uint64 | run 事件的原请求、节点执行 ID 和序号 |
+| `requestId` / `runId` / `seq` | string / string / uint64 | run 事件的原请求、Bot 执行 ID 和序号 |
 | `type` | string | 消息类型（如 `chat.message`, `task.assign`） |
-| `from` | string | 发送方节点 ID |
+| `from` | string | 发送方 Bot ID |
 | `sessionKey` | string | 会话标识，可能为空 |
 | `message` | string | 消息正文 |
 | `payload` | object | 结构化请求或执行事件；不能只消费 message |
 | `metadata` | object | 附加元数据，可能为空 |
 
-设置 `WEBHOOK_AUTH_TOKEN` 后，POST 投递和 GET 健康检查都会携带：
+配置 `harness.credentialsFile` 后，POST 投递和 GET 健康检查都会携带：
 
 ```http
 Authorization: Bearer <token>
@@ -282,7 +282,7 @@ token 不会写入请求 URL、日志或错误正文。
 - 非流式小响应仍限制 4 KiB，超限或读取失败会报错，不以截断正文判成功；完整长答案使用下述 NDJSON。
 - **非 2xx**：视为投递失败，仅返回状态码，不把响应正文泄露到错误中。
 
-推荐 Node webhook 直接返回结构化 JSON，例如：
+推荐 Webhook 接收端直接返回结构化 JSON，例如：
 
 ```json
 {
@@ -308,7 +308,9 @@ POST 请求发送 `Accept: application/x-ndjson, application/json`。支持流�
 
 EOF、超限、无效 JSON/未知 frame、或建立连接后的传输中断均表示结果 indeterminate；已收到的 partial output 保留，不能当作 completed 或安全自动重跑。只有 dial 根本未建立才可按相同 messageId 重试。集成必须持久去重 queued/admitted/completed 命令：相同 messageId 不得重复启动模型或外部动作；已完成可返回持久结果，无法确认的 admitted 状态必须显式 failed/indeterminate，不能伪造成功。
 
-普通命令包含 requestId=messageId、daemon 持久 runId 和当前 seq，反馈保持其原有关联字段。run.*、chat.context 反馈与 transfer.received 是非唤醒数据，不应按用户命令路由；chat.context 只持久投递给 Webhook，由集成保存授权历史，不产生 run 反馈；transfer.received 目前是文件落盘后的本地回调，不是持久消息收件箱中的执行命令。外部副作用不提供 exactly-once 保证。
+普通命令包含 requestId=messageId、Bot 持久 runId 和当前 seq，反馈保持原有关联字段。run.*、chat.context 反馈与 transfer.received 是非唤醒数据，不应按用户命令路由；chat.context 持久投递给 Webhook，由集成保存授权历史，不产生 run 反馈。文件通知在引用持久提交并物化到接收 Bot workspace 后投递；不能借其 localPath 授权其他 Bot。消息日志持久 queued/admitted/done 与 outbox；重启将崩溃前 admitted 的执行报告为 execution.interrupted/indeterminate，而不是重新运行。外部副作用不提供 exactly-once 保证，通知恢复也不能据此推断模型执行完成。
+
+文件通知另有持久 admission：引用先提交，pending 通知只在绑定 callback 后物化 workspace 副本；callback 前持久写入 admitted。崩溃后的 admitted 通知不自动回调重放，其效果仍可能不确定；不要把持久引用存在等同于通知已被外部产品处理。读取/转发依然可按 Bot 引用查询。
 
 
 ### 健康检查

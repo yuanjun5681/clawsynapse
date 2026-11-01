@@ -1,11 +1,10 @@
 package types
 
-// Peer is the API-facing view of a known node. DisplayName and Labels are
-// self-reported by the remote node over signed discovery announcements.
-// Local* fields are local remarks maintained on this node; they are never
-// overwritten by remote heartbeats and never leave this node.
+// Peer is the local view of a discovered remote Bot. Public names and labels
+// arrive through signed discovery. Local remarks belong to the receiving Bot
+// and are never overwritten by remote heartbeats or broadcast.
 type Peer struct {
-	NodeID           string         `json:"nodeId"`
+	BotID            string         `json:"botId"`
 	DID              string         `json:"did,omitempty"`
 	AgentProduct     string         `json:"agentProduct,omitempty"`
 	Version          string         `json:"version,omitempty"`
@@ -22,7 +21,7 @@ type Peer struct {
 }
 
 // PeerLocalAttrs are locally maintained remarks about a peer, persisted in
-// peer-attrs.json and keyed by NodeID. They survive restarts and peer
+// peer-attrs.json and keyed by BotID. They survive restarts and peer
 // rediscovery, and changing them never affects identity or trust.
 type PeerLocalAttrs struct {
 	Alias       string `json:"alias,omitempty"`

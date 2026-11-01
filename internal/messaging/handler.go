@@ -47,6 +47,7 @@ type AdapterMessageHandler struct {
 	adapter        adapter.AgentAdapter
 	timeout        time.Duration
 	acceptFeedback bool
+	limiter        *adapter.BotLimiter
 }
 
 type HandlerOption func(*AdapterMessageHandler)
@@ -54,6 +55,25 @@ type HandlerOption func(*AdapterMessageHandler)
 // WithFeedbackDelivery is only for non-LLM consumers such as webhook.
 func WithFeedbackDelivery() HandlerOption {
 	return func(h *AdapterMessageHandler) { h.acceptFeedback = true }
+}
+
+// WithExecutionLimiter also protects direct deliveries outside the inbox worker.
+// The worker marks its acquired context so the same limiter is not acquired twice.
+func WithExecutionLimiter(limiter *adapter.BotLimiter) HandlerOption {
+	return func(h *AdapterMessageHandler) { h.limiter = limiter }
+}
+
+type executionContextKey struct{}
+
+func acquireExecution(ctx context.Context, limiter *adapter.BotLimiter) (context.Context, func(), error) {
+	if limiter == nil || ctx.Value(executionContextKey{}) == limiter {
+		return ctx, func() {}, nil
+	}
+	ctx, release, err := limiter.Acquire(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	return context.WithValue(ctx, executionContextKey{}, limiter), release, nil
 }
 
 func NewAdapterMessageHandler(agentAdapter adapter.AgentAdapter, timeout time.Duration, opts ...HandlerOption) *AdapterMessageHandler {
@@ -80,6 +100,11 @@ func (h *AdapterMessageHandler) HandleMessage(msg IncomingMessage) (HandlerResul
 	}
 	ctx, cancel := context.WithTimeout(parent, h.timeout)
 	defer cancel()
+	ctx, release, err := acquireExecution(ctx, h.limiter)
+	if err != nil {
+		return HandlerResult{}, err
+	}
+	defer release()
 	sessionKey := msg.SessionKey
 	if !h.acceptFeedback {
 		if sessionKey == "" {

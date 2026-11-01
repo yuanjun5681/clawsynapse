@@ -23,18 +23,18 @@ import (
 func durableIdentity(t *testing.T, peers *discovery.Registry) (string, *identity.Identity) {
 	t.Helper()
 	dir := t.TempDir()
-	id, err := identity.LoadOrCreate(filepath.Join(dir, "identity.key"), filepath.Join(dir, "identity.pub"))
+	id, err := identity.Create(filepath.Join(dir, "identity.key"), filepath.Join(dir, "identity.pub"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	node := identity.DeriveNodeID(identity.DeriveNodeDID(id.PublicKey))
-	peers.Upsert(types.Peer{NodeID: node, AuthStatus: types.AuthAuthenticated, TrustStatus: types.TrustTrusted, Metadata: map[string]any{"publicKey": base64.RawURLEncoding.EncodeToString(id.PublicKey)}})
-	return node, id
+	bot := identity.DeriveBotID(identity.DeriveBotDID(id.PublicKey))
+	peers.Upsert(types.Peer{BotID: bot, AuthStatus: types.AuthAuthenticated, TrustStatus: types.TrustTrusted, Metadata: map[string]any{"publicKey": base64.RawURLEncoding.EncodeToString(id.PublicKey)}})
+	return bot, id
 }
 
-func durableNode(t *testing.T, bus *natsbus.Client, peers *discovery.Registry, node string, id *identity.Identity, path string) *Service {
+func durableBot(t *testing.T, bus *natsbus.Client, peers *discovery.Registry, bot string, id *identity.Identity, path string) *Service {
 	t.Helper()
-	svc := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), peers, bus, node, id, "explicit", nil)
+	svc := NewService(slog.New(slog.NewTextHandler(io.Discard, nil)), peers, bus, bot, id, "explicit", nil)
 	if err := svc.SetStatePath(path); err != nil {
 		t.Fatal(err)
 	}
@@ -57,13 +57,13 @@ func awaitDurable(t *testing.T, predicate func() bool) {
 func TestDurableIdempotencyCursorAndConflictAcrossRestart(t *testing.T) {
 	bus := startMessagingBus(t)
 	peers := discovery.NewRegistry()
-	node, id := durableIdentity(t, peers)
+	bot, id := durableIdentity(t, peers)
 	path := filepath.Join(t.TempDir(), "messages.jsonl")
-	svc := durableNode(t, bus, peers, node, id, path)
+	svc := durableBot(t, bus, peers, bot, id, path)
 	if err := svc.Start(); err != nil {
 		t.Fatal(err)
 	}
-	request := PublishRequest{TargetNode: node, Type: "event.forward", AgentID: "default", Payload: protocol.MessagePayload{Input: []byte(`{"b":2,"a":1}`)}, Metadata: map[string]any{"nested": map[string]any{"value": "original"}}, IdempotencyKey: "persisted-request"}
+	request := PublishRequest{TargetBot: bot, Type: "event.forward", AgentID: "default", Payload: protocol.MessagePayload{Input: []byte(`{"b":2,"a":1}`)}, Metadata: map[string]any{"nested": map[string]any{"value": "original"}}, IdempotencyKey: "persisted-request"}
 	first, err := svc.Publish(request)
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +74,7 @@ func TestDurableIdempotencyCursorAndConflictAcrossRestart(t *testing.T) {
 		t.Fatalf("canonical replay = %#v / %v, want %#v", duplicate, err, first)
 	}
 	for _, key := range []string{"second", "third"} {
-		if _, err := svc.Publish(PublishRequest{TargetNode: node, Type: "event.forward", Message: key, IdempotencyKey: key}); err != nil {
+		if _, err := svc.Publish(PublishRequest{TargetBot: bot, Type: "event.forward", Message: key, IdempotencyKey: key}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -86,7 +86,7 @@ func TestDurableIdempotencyCursorAndConflictAcrossRestart(t *testing.T) {
 	page.Items[0].Metadata["nested"].(map[string]any)["value"] = "mutated"
 	svc.Close()
 
-	restarted := durableNode(t, bus, peers, node, id, path)
+	restarted := durableBot(t, bus, peers, bot, id, path)
 	if err := restarted.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -114,19 +114,19 @@ func TestDurableIdempotencyCursorAndConflictAcrossRestart(t *testing.T) {
 func TestOfflineInboxRecoversAdmittedCrashAsIndeterminateWithoutRerun(t *testing.T) {
 	bus := startMessagingBus(t)
 	peers := discovery.NewRegistry()
-	senderNode, senderID := durableIdentity(t, peers)
-	receiverNode, receiverID := durableIdentity(t, peers)
-	sender := durableNode(t, bus, peers, senderNode, senderID, filepath.Join(t.TempDir(), "sender.jsonl"))
+	senderBot, senderID := durableIdentity(t, peers)
+	receiverBot, receiverID := durableIdentity(t, peers)
+	sender := durableBot(t, bus, peers, senderBot, senderID, filepath.Join(t.TempDir(), "sender.jsonl"))
 	if err := sender.Start(); err != nil {
 		t.Fatal(err)
 	}
 	// No receiver process or consumer exists yet. Success must still be durable.
-	published, err := sender.Publish(PublishRequest{TargetNode: receiverNode, Type: "task.request", AgentID: "agent-a", Message: "one external action", SessionKey: "chat-session", IdempotencyKey: "offline-command", Metadata: map[string]any{"dsynapseChat": map[string]any{"chatId": "chat", "messageId": "input"}}})
+	published, err := sender.Publish(PublishRequest{TargetBot: receiverBot, Type: "task.request", AgentID: "agent-a", Message: "one external action", SessionKey: "chat-session", IdempotencyKey: "offline-command", Metadata: map[string]any{"dsynapseChat": map[string]any{"chatId": "chat", "messageId": "input"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "receiver.jsonl")
-	receiver := durableNode(t, bus, peers, receiverNode, receiverID, path)
+	receiver := durableBot(t, bus, peers, receiverBot, receiverID, path)
 	entered := make(chan struct{}, 1)
 	var executions atomic.Int32
 	receiver.SetMessageHandler(MessageHandlerFunc(func(msg IncomingMessage) (HandlerResult, error) {
@@ -147,7 +147,7 @@ func TestOfflineInboxRecoversAdmittedCrashAsIndeterminateWithoutRerun(t *testing
 		t.Fatal("offline inbox was lost")
 	}
 	receiver.Close() // interruption after admission must not replay the action
-	restarted := durableNode(t, bus, peers, receiverNode, receiverID, path)
+	restarted := durableBot(t, bus, peers, receiverBot, receiverID, path)
 	restarted.SetMessageHandler(MessageHandlerFunc(func(IncomingMessage) (HandlerResult, error) { executions.Add(1); return HandlerResult{}, nil }))
 	if err := restarted.Start(); err != nil {
 		t.Fatal(err)
@@ -171,21 +171,21 @@ func TestOfflineInboxRecoversAdmittedCrashAsIndeterminateWithoutRerun(t *testing
 
 func TestDurableInboxWaitsForDiscoveryAndRechecksTrustBeforeExecution(t *testing.T) {
 	peers := discovery.NewRegistry()
-	node, id := durableIdentity(t, peers)
+	bot, id := durableIdentity(t, peers)
 	remotePeers := discovery.NewRegistry()
 	remote, remoteID := durableIdentity(t, remotePeers)
-	svc := durableNode(t, nil, peers, node, id, filepath.Join(t.TempDir(), "messages.jsonl"))
+	svc := durableBot(t, nil, peers, bot, id, filepath.Join(t.TempDir(), "messages.jsonl"))
 	now := time.Now().UnixMilli()
-	env := protocol.MessageEnvelope{ID: "signed-command", Type: "task.request", From: remote, To: node, AgentID: "default", Ts: now, ExpiresAt: now + 60000, ProtocolVersion: protocol.WireVersion}
-	data, _ := protocol.SignedBytes(inboxSubject(node), env)
+	env := protocol.MessageEnvelope{ID: "signed-command", Type: "task.request", From: remote, To: bot, AgentID: "default", Ts: now, ExpiresAt: now + 60000, ProtocolVersion: protocol.WireVersion}
+	data, _ := protocol.SignedBytes(inboxSubject(bot), env)
 	env.Sig = identity.Sign(remoteID.PrivateKey, data)
 	encoded, _ := json.Marshal(env)
-	if svc.handleInbox(inboxSubject(node), encoded) {
+	if svc.handleInbox(inboxSubject(bot), encoded) {
 		t.Fatal("undiscovered sender discarded instead of deferred")
 	}
 	peer, _ := remotePeers.Get(remote)
 	peers.Upsert(peer)
-	if !svc.handleInbox(inboxSubject(node), encoded) {
+	if !svc.handleInbox(inboxSubject(bot), encoded) {
 		t.Fatal("trusted message not persisted")
 	}
 	peers.SetTrustStatus(remote, types.TrustRevoked)

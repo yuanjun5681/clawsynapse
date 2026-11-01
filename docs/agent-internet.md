@@ -1,23 +1,24 @@
 ---
-summary: "Agent Internet 愿景：以 DeepSeek Harness 为 Agent Runtime 的跨节点网络协作形态"
+summary: "Agent Internet 愿景：独立 Bot 通过 ClawSynapse 互联，由 Harness 执行任务"
 title: "Agent Internet"
 ---
 
 # Agent Internet：面向 Agent 的网络协作形态
 
-最后更新：2026-08-31
+最后更新：2026-10-31
 
 ## 文档定位
 
-本文是一份产品与架构愿景文档，用于描述 ClawSynapse 与 Agent Runtime 结合后可能形成的网络协作形态。文中以 DeepSeek Harness 作为 Agent Runtime 的产品示例，但所述模型同样适用于 OpenClaw、OpenCode、自研 Agent Runtime 及其他能够接收任务、维护会话和调用工具的 Agent 产品。
+本文是一份产品与架构愿景文档，用于描述 ClawSynapse 与执行引擎（Harness）结合后可能形成的网络协作形态。文中以 DeepSeek Harness 为产品示例，也适用于 OpenClaw、OpenCode、Codex 和自研 Harness。对外协作身份称为 Bot；Harness 内部 Agent、subagent 与 Session 不自动成为网络联系人。
 
 本文包含当前能力、近期可实现方向和远期设想。各能力的当前状态以下表为准：
 
 | 能力 | 状态 | 说明 |
 |------|------|------|
-| 节点身份、认证、信任审批 | ✅ 已实现 | 见 [trust.md](./trust.md) |
-| 节点发现、心跳、Peer 目录 | ✅ 已实现 | 含 agentProduct 上报 |
+| Bot 身份、认证、信任审批 | ✅ 已实现 | 见 [trust.md](./trust.md) |
+| Bot 发现、心跳、Peer 目录 | ✅ 已实现 | 含 agentProduct 上报 |
 | 消息路由、发布/订阅、文件传输 | ✅ 已实现 | 见 [messaging.md](./messaging.md)、[api.md](./api.md) |
+| 单 daemon 托管多个独立 Bot | ✅ 已实现，核心端到端验证通过 | macOS / Docker NATS / 两个 OpenCode Binding 已验证身份、权限、执行、文件及恢复隔离；自动化检查通过，环境和边界详见 [多 Bot 设计状态](./multi-bot-daemon.md) |
 | 远端任务状态机（accepted/running/blocked 等） | ❌ 未实现 | 阶段 3 |
 | AgentCard / CapabilityManifest | ❌ 未实现 | 阶段 4，当前仅有 agentProduct 字段 |
 | 细粒度授权 CapabilityGrant | ❌ 未实现 | 阶段 5 |
@@ -32,11 +33,11 @@ title: "Agent Internet"
 DeepSeek Harness 和 ClawSynapse 解决的是两个不同层次的问题：
 
 - DeepSeek Harness 解决一个 Agent 如何运行：模型调用、Agent Loop、工具执行、会话、工作区、权限和 subagent。
-- ClawSynapse 解决多个 Agent 如何互联：节点发现、身份认证、信任授权、消息路由、异步协作和文件传输。
+- ClawSynapse 解决多个 Bot 如何互联：发现、身份认证、信任授权、消息路由、异步协作和文件传输；各 Bot 通过自己的 Binding 使用 Harness。
 
 两者结合后，最大的可能性不只是“给 Harness 增加一个发送消息的插件”，而是：
 
-> 让每个 Agent Runtime 成为网络中可寻址、可认证、可授权、可委派任务的智能节点；让 ClawSynapse 成为这些节点之间的身份层、信任层、路由层和协作协议层。
+> 让每个 Bot 成为网络中可寻址、可认证、可授权、可委派任务的协作主体，由其绑定的 Harness 执行工作；让 ClawSynapse 成为 Bot 之间的身份层、信任层、路由层和协作协议层。
 
 本文将这种产品形态称为 **Agent Internet**。
 
@@ -45,7 +46,7 @@ DeepSeek Harness 和 ClawSynapse 解决的是两个不同层次的问题：
 Agent Internet 不是让 Agent 互相发送自然语言消息这么简单。一个完整的 Agent 网络需要表达：
 
 - 谁在发起请求。
-- 请求应该交给哪个节点、Agent 或会话。
+- 请求应该交给哪个 Bot，以及其绑定 Harness 内获准使用的 Agent 或会话。
 - 对方具备什么能力。
 - 对方是否被授权执行这项操作。
 - 任务处于什么状态。
@@ -76,13 +77,13 @@ Human / Enterprise Application / Automation
        routing / messaging / events / file transfer
                      │
                      ▼
-               Agent Runtime Nodes
+             Bots with Harness Bindings
  DeepSeek Harness / OpenClaw / OpenCode / custom runtime
 ```
 
 ## 以 DeepSeek Harness 为 Agent Runtime
 
-DeepSeek Harness 可以作为 Agent Internet 中的一类标准执行节点。它在单个节点内部负责：
+DeepSeek Harness 可以作为 Bot 的一种执行引擎。它在自身运行边界内负责：
 
 - 创建、恢复和销毁 Agent。
 - 维护 Session 和上下文。
@@ -93,16 +94,16 @@ DeepSeek Harness 可以作为 Agent Internet 中的一类标准执行节点。�
 - 执行权限检查和人工审批。
 - 将执行过程记录为可观察的事件。
 
-ClawSynapse 在节点边界外负责：
+ClawSynapse 在 Harness 执行边界外负责：
 
-- 为运行节点提供长期网络身份。
-- 发现其他节点并维护 Peer 目录。
+- 为每个 Bot 提供长期网络身份，而不是给 daemon 或每个内部 Agent 创建联系人身份。
+- 按本地 Bot 视角发现对端并维护 Peer 目录。
 - 完成 challenge-response 身份认证。
 - 管理信任请求、批准、拒绝和撤销。
-- 将消息路由到目标节点。
+- 将消息路由到目标 Bot。
 - 在不同 Runtime 产品之间转换投递方式。
 - 传输任务制品和文件。
-- 为跨节点审计提供稳定的消息与身份边界。
+- 为跨 Bot 审计提供稳定的消息与身份边界。
 
 两者结合后的推荐边界是 Sidecar + Plugin：
 
@@ -124,32 +125,34 @@ ClawSynapse 在节点边界外负责：
                   ▼
         ┌─────────────────────────┐
         │ clawsynapsed            │
+        │ Bot runtimes:           │
         │ identity / trust / NATS │
-        │ signing / discovery     │
         │ messaging / transfer    │
         └────────────┬────────────┘
                      │
                      ▼
-             Other Agent Nodes
+             Other Bots
 ```
 
-`clawsynapsed` 应继续作为独立 Sidecar 运行。Harness 插件只通过本地 API 使用网络能力，不应复制私钥管理、NATS 连接、认证和信任状态机。这可以避免每种 Agent Runtime 重复实现安全敏感的网络协议。
+`clawsynapsed` 应继续作为独立 Sidecar 宿主运行，可以托管多个 Bot。Harness 插件只通过 `/v2/bots/{botId}/...` 和该 Bot 的作用域凭据使用网络能力，不应复制私钥管理、NATS 连接、认证和信任状态机，也不应持有 daemon 管理 token。
 
 ## Agent Internet 的核心实体
 
-### Node
+### Daemon 与 Bot（wire Node）
 
-Node 表示一个运行 ClawSynapse 的网络节点，拥有稳定 DID、`nodeId`、公钥、在线状态和网络入口。一个 Node 可以承载一个或多个 Agent Runtime。
+Daemon 是本地宿主进程，不是网络联系人。Bot 是长期对外协作身份，独立拥有 Ed25519 密钥、DID、信任、消息和文件引用；一个 daemon 可以托管多个 Bot，每个 Bot 只有一个生效的 Harness Binding。
 
-### Agent
+`botId` 沿用 `did:key` 派生算法：`"n1-" + hex(sha256(did)[:16])`。它与 wire v2 的 `nodeId` 是同一个值，协议 seam 保留 `nodeId/from/to`、subject、签名和 durable consumer 契约。名称、模型、Binding、启停及完整迁移不改变身份。
 
-Agent 是能够接收任务并执行工作的逻辑主体。一个 Node 可以运行多个 Agent，例如 `security-reviewer`、`backend-engineer` 和 `release-manager`。
+### Harness 与内部 Agent
 
-Node 身份回答“请求来自哪台可信运行节点”，Agent 身份回答“节点内部由哪个逻辑执行者处理”。二者不应混为同一层。
+Harness 执行任务，可在内部组织 `security-reviewer`、`backend-engineer` 等 Agent。内部 Agent 是执行角色，不自动获得 Bot 身份或独立网络信任。可选 `agentId` 只在所选 Binding 的本地允许范围内路由，不选择另一个 Bot 或 Harness。
+
+Peer 是当前本地 Bot 视角的对端 Bot。同一个远端在 A/B 中可以有不同信任与备注；同宿主不默认互信。共享执行进程不构成强多租户沙箱；共享不可变 blob 也不授予另一 Bot 访问权。
 
 ### Session
 
-Session 表示持续存在的协作上下文。ClawSynapse 的 `sessionKey` 可以映射到 Harness Session，使远端 Agent 能够在多轮消息之间延续上下文，而不必每次创建全新任务。
+Session 表示执行引擎的持续上下文，不是联系人。ClawSynapse 的外部 `sessionKey` 映射到 Bot 与 Binding 修订隔离的 Harness Session，同一发送方在 A/B 使用同名会话键不会共享上下文。未来协作会话模型不得绕过这一执行边界。
 
 ### Capability
 
@@ -170,7 +173,7 @@ Task 是跨 Agent 协作的主要单元。它至少需要目标、状态、输�
 
 ### Artifact
 
-Artifact 是任务产生或消费的制品，例如补丁、报告、日志、图片、数据集和构建产物。Artifact 应具备来源、内容摘要、MIME 类型、大小、访问策略和生命周期。
+Artifact 是任务产生或消费的制品，例如补丁、报告、日志、图片、数据集和构建产物。Artifact 应具备来源、内容摘要、MIME 类型、大小、访问策略和生命周期。当前本地不可变内容可跨 Bot 去重，但授权引用、传输记录和可写工作副本独立；信任不自动创建引用。备份/导出须包含引用实体，不能只复制 Bot 目录。
 
 ## 基础协作流程
 
@@ -229,7 +232,7 @@ task.verify
 - 委派任务并获得接受确认。
 - 接收进度、阻塞原因和最终结果。
 - 发送与接收文件。
-- 恢复一个跨节点长期会话。
+- 恢复一个跨 Bot 长期协作上下文，并映射到各自隔离的执行 Session。
 
 用户界面可以表现为 Agent Inbox，而不是普通聊天窗口：
 
@@ -251,14 +254,14 @@ Agent Inbox
 
 这一形态可以被理解为 Agent 之间的 Email、Slack 和异步 RPC 的组合。
 
-### 2. 跨节点人工审批
+### 2. 跨 Bot 人工审批
 
 对应阶段：3–5。
 
-Agent 网络自动流转的任务，一旦触及生产部署、敏感数据、大额预算或跨组织委派，就应该把决定权交还给人。人工审批跨节点化之后，"人"不再只属于某个 Agent 产品的本地 UI，而是网络中一个受信任、可寻址的节点。
+Agent 网络自动流转的任务，一旦触及生产部署、敏感数据、大额预算或跨组织委派，就应该把决定权交还给人。以下是阶段 3–5 的未来设想，不是当前已实现的人员身份或审批协议：人工审批跨 Bot 化后，人可以通过经授权的 Bot 接入参与网络协作，而不只依赖某个 Harness 产品的本地 UI。
 
 ```text
-Release Agent（云端节点）        运维负责人的节点（本地）
+Release Bot（云端）             运维负责人使用的 Bot（本地）
       │                                │
       ├── approval.request ──────────►│ 操作内容/影响范围/预算/截止时间
       │                                │ 人工审阅
@@ -272,7 +275,7 @@ Release Agent（云端节点）        运维负责人的节点（本地）
 - 审批请求必须携带完整的操作描述、影响范围和预算，而不是一句"是否允许"。
 - 批准结果是一次性、限范围、限时限的授权，不扩大长期信任。
 - 超时未审默认拒绝；批准与拒绝都进入审计，可追溯到原始发起者和完整委派链。
-- 人工节点同样要经过认证与信任审批——人在 Agent Internet 中通过自己的节点行使权力。
+- 人员使用的 Bot 同样要经过认证与信任审批；人的登录身份、实际审批权限与 Bot 的网络持钥身份必须分别校验，不能把 Bot 认证等同于人员授权。
 
 这让"人工接管"从每个 Agent 产品各自的 UI 补丁变成协作协议的一等能力，与"安全与治理"一章的防线一一对应。
 
@@ -298,7 +301,7 @@ Coordinator Agent
 
 对应阶段：3–4。
 
-一个 Harness Coding Agent 完成修改后，可以将后续工作分发给不同节点：
+一个 Harness Coding Agent 完成修改后，可以由其 Bot 将后续工作分发给绑定不同执行角色的对端 Bot：
 
 1. 将补丁发送给 Linux Test Agent。
 2. Test Agent 运行测试并返回日志。
@@ -347,7 +350,7 @@ External Vendor Agent Network
 - 外部供应商只能提交制品，不能读取内部代码。
 - 安全 Agent 可以审计跨域任务，但不能修改业务数据。
 - 高风险操作必须经过人工批准。
-- 某类文件只能在指定节点之间传输。
+- 某类文件只能在指定 Bot 之间传输。
 - 某些模型不得处理特定数据等级。
 
 ClawSynapse 的 Trust 可以由简单 Peer 信任逐步演进为基于能力、资源、时间、次数和数据等级的授权。
@@ -405,7 +408,7 @@ Original Task
  └─ verifier agent: validate the result
 ```
 
-协调 Agent 可以根据步骤难度和数据敏感度选择不同节点，实现成本、延迟、质量和隐私之间的动态平衡。
+协调 Agent 可以通过其 Bot 根据步骤难度和数据敏感度选择不同对端 Bot，实现成本、延迟、质量和隐私之间的动态平衡。
 
 这一形态最终可能形成一个 Agent Compute Grid：任务不再固定发送到某个模型 API，而是按能力和约束在网络中调度。
 
@@ -413,7 +416,7 @@ Original Task
 
 对应阶段：4–5。
 
-Agent 节点可以进一步延伸到机器人、无人机、车辆、摄像头、实验室仪器、工厂设备和边缘计算盒子。
+Bot 的 Harness 接入可以进一步延伸到机器人、无人机、车辆、摄像头、实验室仪器、工厂设备和边缘计算盒子；Bot 身份不等同于设备本身。
 
 例如维修 Agent 可以：
 
@@ -494,20 +497,20 @@ Goal / Executive Agent
 
 ## 寻址模型
 
-当前 `nodeId` 适合节点级路由，但 Agent Internet 还需要表达节点内部 Agent、Session、Capability 和 Topic。
+当前 `botId`（wire `nodeId`）用于 Bot 级路由。以下是远期逻辑地址设想，用于描述所选 Bot 背后的能力、内部 Agent 或 Session，不引入与 Bot 平行的聊天身份，也不改变当前网络 v2。
 
 远期可以采用类似以下的逻辑地址：
 
 ```text
-agent://<node-did>/agents/security-reviewer
-agent://<node-did>/sessions/project-42
+agent://<bot-did>/agents/security-reviewer
+agent://<bot-did>/sessions/project-42
 capability://code.security-review
 topic://project-42/build-events
 ```
 
 其语义分别是：
 
-- 向某个节点内的指定 Agent 投递。
+- 向某个 Bot 所绑定 Harness 内的指定 Agent 投递，仍受本地路由授权约束。
 - 恢复某个长期 Session。
 - 由网络选择具备某项能力的 Agent。
 - 向项目或组织的事件 Topic 发布。
@@ -563,7 +566,7 @@ Agent Internet 至少需要以下防线：
 
 ### Agent Network Console
 
-在 Harness 中展示节点、Agent、能力、信任关系、任务状态、文件和审计事件，是最适合作为第一款产品的形态。
+在 Harness 中展示本地 Bot、对端 Bot、内部 Agent 路由提示、能力、信任关系、任务状态、文件和审计事件，是最适合作为第一款产品的形态；内部 Agent 不作为额外聊天联系人。
 
 ### Agent Teamspace
 
@@ -586,7 +589,7 @@ Agent Internet 至少需要以下防线：
 ### 阶段 1：Harness 网络工具
 
 - 实现 ClawSynapse Harness Plugin。
-- 包装本地 `/v1/health`、`/v1/peers`、`/v1/publish` 和文件传输 API。
+- 包装所选 Bot 的 `/v2/bots/{botId}/health`、`peers`、`publish` 和文件传输 API；daemon 聚合健康 `/v2/health` 不是 Bot 业务入口。
 - 给模型提供查看 Peer、发送消息和发送文件的工具。
 - 高风险工具接入 Harness 审批机制。
 
@@ -608,7 +611,7 @@ Agent Internet 至少需要以下防线：
 
 - 将 Discovery 中的产品和能力信息改为可配置、可验证的数据。
 - 引入 AgentCard 和 CapabilityManifest。
-- 支持按能力而非固定 Node 选择执行者。
+- 支持按能力而非固定 Bot 选择执行者。
 - 增加负载、成本和数据位置约束。
 
 ### 阶段 5：组织策略与联邦
@@ -636,10 +639,10 @@ Agent Internet 至少需要以下防线：
 | 需要 DID、认证、信任审批和审计 | ClawSynapse |
 | 高频 Token 级实时流 | 需要在现有协议上新增流式通道 |
 
-ClawSynapse 不应替代 Harness 内部高效的进程内协作；Harness 也不应复制 ClawSynapse 的跨节点身份和网络协议。两者保持清晰边界，才能分别演进而不相互绑定。
+ClawSynapse 不应替代 Harness 内部高效的进程内协作；Harness 也不应复制 ClawSynapse 的跨 Bot 身份和网络协议。两者保持清晰边界，才能分别演进而不相互绑定。
 
 ## 结语
 
-DeepSeek Harness 可以成为 Agent Internet 中的 Agent Runtime：为每个节点提供模型、工具、会话、工作区和执行循环。ClawSynapse 可以成为 Runtime 之间的 Agent Fabric：提供身份、发现、信任、路由、任务和 Artifact 传输。
+DeepSeek Harness 可以成为 Agent Internet 中的一种执行引擎，为其绑定的 Bot 提供模型、工具、会话、工作区和执行循环。ClawSynapse 可以成为 Bot 之间的 Agent Fabric：提供身份、发现、信任、路由、任务和 Artifact 传输。
 
 近期最有价值的落点是“远程任务委派、状态追踪和结果回收”，而不是无结构的 Agent 聊天。以此为基础，系统可以逐步演进为能力路由器、分布式 Agent 团队、企业 Agent 联邦，最终形成由身份、能力、任务、信任和制品连接起来的 Agent Internet。

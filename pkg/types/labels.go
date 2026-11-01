@@ -12,7 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Node attribute limits. Shared by config validation, discovery announce
+// Bot attribute limits. Shared by config validation, discovery announce
 // publishing and validation, and the local peer-attrs API.
 const (
 	LabelKeyCaps = "caps"
@@ -276,7 +276,7 @@ func validateLabelValue(key, value string) error {
 	return nil
 }
 
-// ValidateDisplayName checks a node display name or peer alias. Empty is
+// ValidateDisplayName checks a Bot display name or peer alias. Empty is
 // valid and means unset.
 func ValidateDisplayName(name string) error {
 	if name == "" {

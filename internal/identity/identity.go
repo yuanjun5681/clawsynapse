@@ -6,8 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 
 	"clawsynapse/internal/store"
 )
@@ -17,38 +20,71 @@ type Identity struct {
 	PublicKey  ed25519.PublicKey
 }
 
-func LoadOrCreate(privatePath, publicPath string) (*Identity, error) {
-	if privatePath == "" || publicPath == "" {
-		return nil, errors.New("identity paths are required")
+// Load never creates or replaces identity material.
+func Load(privatePath, publicPath string) (*Identity, error) {
+	if privatePath == "" || publicPath == "" || privatePath == publicPath {
+		return nil, errors.New("distinct identity paths are required")
 	}
-
 	priv, pub, err := tryLoad(privatePath, publicPath)
-	if err == nil {
-		return &Identity{PrivateKey: priv, PublicKey: pub}, nil
+	if err != nil {
+		return nil, fmt.Errorf("load identity: %w", err)
 	}
+	return &Identity{PrivateKey: priv, PublicKey: pub}, nil
+}
 
+// Create exclusively publishes a new pair. Existing or partial pairs are errors.
+func Create(privatePath, publicPath string) (*Identity, error) {
+	if privatePath == "" || publicPath == "" || privatePath == publicPath {
+		return nil, errors.New("distinct identity paths are required")
+	}
+	for _, p := range []string{privatePath, publicPath} {
+		if err := store.CheckPath(p); err != nil {
+			return nil, err
+		}
+		if _, err := os.Lstat(p); !os.IsNotExist(err) {
+			return nil, fmt.Errorf("identity path already exists or is inaccessible: %s", p)
+		}
+		if err := store.EnsurePrivateDir(filepath.Dir(p)); err != nil {
+			return nil, err
+		}
+	}
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
 	}
-
-	privEnc := base64.RawURLEncoding.EncodeToString(private)
-	pubEnc := base64.RawURLEncoding.EncodeToString(public)
-
-	if err := os.MkdirAll(dirOf(privatePath), 0o700); err != nil {
+	write := func(path string, value any) error {
+		b, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return err
+		}
+		if _, err := f.Write(append(b, '\n')); err != nil {
+			f.Close()
+			os.Remove(path)
+			return err
+		}
+		if err := f.Sync(); err != nil {
+			f.Close()
+			os.Remove(path)
+			return err
+		}
+		if err := f.Close(); err != nil {
+			os.Remove(path)
+			return err
+		}
+		return store.SyncDir(filepath.Dir(path))
+	}
+	if err := write(privatePath, privateFile{KTY: "ed25519", PrivateKey: base64.RawURLEncoding.EncodeToString(private)}); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(dirOf(publicPath), 0o700); err != nil {
+	if err := write(publicPath, publicFile{KTY: "ed25519", PublicKey: base64.RawURLEncoding.EncodeToString(public)}); err != nil {
+		_ = os.Remove(privatePath)
+		_ = store.SyncDir(filepath.Dir(privatePath))
 		return nil, err
 	}
-
-	if err := store.WriteJSONAtomic(privatePath, map[string]string{"kty": "ed25519", "privateKey": privEnc}, 0o600); err != nil {
-		return nil, err
-	}
-	if err := store.WriteJSONAtomic(publicPath, map[string]string{"kty": "ed25519", "publicKey": pubEnc}, 0o644); err != nil {
-		return nil, err
-	}
-
 	return &Identity{PrivateKey: private, PublicKey: public}, nil
 }
 

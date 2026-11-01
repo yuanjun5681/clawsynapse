@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -17,32 +19,65 @@ import (
 
 type cliAdapter struct {
 	product       string
-	nodeID        string
+	botID         string
+	binding       string
+	workspace     string
+	model         string
 	log           *slog.Logger
 	sessionStore  *store.FSStore
 	command       commandFactory
 	allowedAgents map[string]struct{}
 }
 
-func newCLIAdapter(product, nodeID string, logger *slog.Logger, sessions *store.FSStore, agentIDs []string) *cliAdapter {
+func newCLIAdapter(product, botID, binding, workspace, model string, logger *slog.Logger, sessions *store.FSStore, agentIDs []string) (*cliAdapter, error) {
+	if strings.TrimSpace(botID) == "" || strings.TrimSpace(binding) == "" || workspace == "" {
+		return nil, errors.New("native bindings require Bot ID, binding revision, and workspace")
+	}
+	if product == "openclaw" && strings.TrimSpace(model) != "" {
+		return nil, errors.New("OpenClaw model selection must be configured on its dedicated engine instance")
+	}
+	if !filepath.IsAbs(workspace) || filepath.Clean(workspace) == string(filepath.Separator) {
+		return nil, errors.New("native workspace must be an absolute private directory")
+	}
+	if err := store.EnsurePrivateDir(workspace); err != nil {
+		return nil, fmt.Errorf("prepare native workspace: %w", err)
+	}
 	allowed := make(map[string]struct{}, len(agentIDs))
 	for _, id := range agentIDs {
 		allowed[id] = struct{}{}
 	}
 	return &cliAdapter{
-		product: product, nodeID: strings.TrimSpace(nodeID), log: logger, sessionStore: sessions, allowedAgents: allowed,
+		product: product, botID: botID, binding: binding, workspace: workspace, model: strings.TrimSpace(model), log: logger, sessionStore: sessions, allowedAgents: allowed,
 		command: func(ctx context.Context, args ...string) *exec.Cmd { return exec.CommandContext(ctx, product, args...) },
+	}, nil
+}
+
+func (a *cliAdapter) runCommand(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := a.command(ctx, args...)
+	cmd.Dir = a.workspace
+	return cmd
+}
+
+func (a *cliAdapter) scopedSessionKey(key string) string {
+	if key == "" {
+		return ""
 	}
+	scope, _ := json.Marshal([]string{a.botID, a.binding, a.product, key})
+	digest := sha256.Sum256(scope)
+	return hex.EncodeToString(digest[:])
 }
 
 func (a *cliAdapter) DeliverMessage(ctx context.Context, req DeliverMessageRequest) (*DeliverMessageResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, cancellationError(err, false)
+	}
 	if req.AgentID != "" {
 		_, allowed := a.allowedAgents[req.AgentID]
 		if a.product == "codex" || !safeLocalID(req.AgentID) || !allowed {
 			return nil, &ExecutionError{Code: "unsupported_agent", Stage: "validation", Err: errors.New("agent selection is unsupported or not authorized by the local agent allowlist")}
 		}
 	}
-	prompt, err := formatDeliverMessage(a.nodeID, req)
+	prompt, err := formatDeliverMessage(a.botID, req)
 	if err != nil {
 		return nil, err
 	}
@@ -54,11 +89,14 @@ func (a *cliAdapter) DeliverMessage(ctx context.Context, req DeliverMessageReque
 		return nil, err
 	}
 	if a.product == "openclaw" {
-		sessionID = req.SessionKey
-		if sessionID == "" {
-			sum := sha256.Sum256([]byte(a.nodeID + "\x00" + req.From))
-			sessionID = "cs-" + hex.EncodeToString(sum[:16])
+		key := req.SessionKey
+		if key == "" {
+			key = req.From
 		}
+		if key == "" {
+			key = "default"
+		}
+		sessionID = "cs-" + a.scopedSessionKey(key)
 	}
 	if sessionID != "" && !safeSessionID(sessionID) {
 		return nil, &ExecutionError{Code: "invalid_session", Stage: "validation", Err: errors.New("session ID is not a safe local identifier; create a new session explicitly")}
@@ -73,7 +111,7 @@ func (a *cliAdapter) DeliverMessage(ctx context.Context, req DeliverMessageReque
 	if a.product != "openclaw" {
 		onLine = stream.consume
 	}
-	out, err := runProcess(ctx, a.command, args, stdin, onLine, commandTimeout)
+	out, err := runProcess(ctx, a.runCommand, args, stdin, onLine, commandTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -84,6 +122,14 @@ func (a *cliAdapter) DeliverMessage(ctx context.Context, req DeliverMessageReque
 			err = emitter.add(result.Reply)
 		}
 	} else {
+		// OpenCode v2's JSON stream omits step_finish. Confirm the exact
+		// streamed assistant turn in native persisted state, not by exit code
+		// or the presence of answer text alone.
+		if a.product == "opencode" && !stream.completed && stream.sessionID != "" && stream.messageID != "" {
+			if err := a.confirmOpenCodeTurn(ctx, stream); err != nil {
+				return nil, err
+			}
+		}
 		result, err = stream.result()
 	}
 	if err != nil {
@@ -113,12 +159,18 @@ func (a *cliAdapter) deliveryArgs(prompt, sessionID, agentID string) ([]string, 
 			args = append(args, "resume")
 		}
 		args = append(args, "--json", "--skip-git-repo-check")
+		if a.model != "" {
+			args = append(args, "--model", a.model)
+		}
 		if sessionID != "" {
 			args = append(args, sessionID)
 		}
 		return append(args, "--", "-"), prompt
 	case "opencode":
-		args = []string{"run", "--format", "json"}
+		args = []string{"run", "--format", "json", "--standalone"}
+		if a.model != "" {
+			args = append(args, "--model", a.model)
+		}
 		if sessionID != "" {
 			args = append(args, "--session", sessionID)
 		}
@@ -135,14 +187,14 @@ func (a *cliAdapter) deliveryArgs(prompt, sessionID, agentID string) ([]string, 
 	}
 }
 
-func formatDeliverMessage(localNodeID string, req DeliverMessageRequest) (string, error) {
+func formatDeliverMessage(localBotID string, req DeliverMessageRequest) (string, error) {
 	payload := req.Payload
 	if payload.Text == "" && payload.Instruction == "" && len(payload.Input) == 0 {
 		payload.Text = req.Message
 	}
 	prompt := struct {
 		Source     string                  `json:"source"`
-		NodeID     string                  `json:"nodeId"`
+		BotID      string                  `json:"botId"`
 		MessageID  string                  `json:"messageId,omitempty"`
 		RequestID  string                  `json:"requestId,omitempty"`
 		RunID      string                  `json:"runId,omitempty"`
@@ -152,7 +204,7 @@ func formatDeliverMessage(localNodeID string, req DeliverMessageRequest) (string
 		SessionKey string                  `json:"sessionKey,omitempty"`
 		Payload    protocol.MessagePayload `json:"payload"`
 		Metadata   map[string]any          `json:"metadata,omitempty"`
-	}{"clawsynapse", localNodeID, req.MessageID, req.RequestID, req.RunID, req.Seq, req.Type, req.From, req.SessionKey, payload, req.Metadata}
+	}{"clawsynapse", localBotID, req.MessageID, req.RequestID, req.RunID, req.Seq, req.Type, req.From, req.SessionKey, payload, req.Metadata}
 	data, err := json.Marshal(prompt)
 	if err != nil {
 		return "", &ExecutionError{Code: "invalid_prompt", Stage: "validation", Err: errors.New("request cannot be encoded as structured JSON")}
@@ -199,7 +251,7 @@ func (a *cliAdapter) loadSession(key string) (string, error) {
 	if a.sessionStore == nil || key == "" {
 		return "", nil
 	}
-	state, found, err := a.sessionStore.LoadSessionState(a.product, key)
+	state, found, err := a.sessionStore.LoadSessionState(a.product, a.scopedSessionKey(key))
 	if err != nil {
 		return "", &ExecutionError{Code: "session_store", Stage: "session_load", Err: errors.New("cannot load persisted session mapping")}
 	}
@@ -216,7 +268,7 @@ func (a *cliAdapter) saveSession(key, id string) error {
 	if a.sessionStore == nil || key == "" || id == "" {
 		return nil
 	}
-	previous, found, err := a.sessionStore.LoadSessionState(a.product, key)
+	previous, found, err := a.sessionStore.LoadSessionState(a.product, a.scopedSessionKey(key))
 	if err != nil {
 		return &ExecutionError{Code: "session_store", Stage: "session_save", Indeterminate: true, Err: errors.New("cannot reload persisted session mapping")}
 	}
@@ -228,7 +280,7 @@ func (a *cliAdapter) saveSession(key, id string) error {
 	if found && previous.CreatedAtMs > 0 {
 		created = previous.CreatedAtMs
 	}
-	if err := a.sessionStore.SaveSessionState(store.SessionState{Adapter: a.product, SessionKey: key, SessionID: id, CreatedAtMs: created, UpdatedAtMs: now}); err != nil {
+	if err := a.sessionStore.SaveSessionState(store.SessionState{Adapter: a.product, SessionKey: a.scopedSessionKey(key), SessionID: id, CreatedAtMs: created, UpdatedAtMs: now}); err != nil {
 		return &ExecutionError{Code: "session_store", Stage: "session_save", Indeterminate: true, Err: errors.New("cannot persist completed native session")}
 	}
 	return nil

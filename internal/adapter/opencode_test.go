@@ -15,7 +15,7 @@ import (
 )
 
 func TestOpenCodeOnlyPublishesAnswerParts(t *testing.T) {
-	a, _ := NewOpenCodeAdapter(OpenCodeConfig{})
+	a, _ := NewOpenCodeAdapter(testOpenCodeConfig(t, OpenCodeConfig{}))
 	a.command = helperCommand("opencode", "thinking", "", "")
 	var answer strings.Builder
 	result, err := a.DeliverMessage(context.Background(), DeliverMessageRequest{Message: "task", Emit: func(event OutputEvent) error { answer.WriteString(event.Text); return nil }})
@@ -33,7 +33,7 @@ func TestOpenCodeRequiresSuccessfulFinalStep(t *testing.T) {
 		{"start-only", "incomplete_output"}, {"raw", "native_schema"}, {"empty", "incomplete_output"}, {"nonzero", "exit_failed"},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
-			a, _ := NewOpenCodeAdapter(OpenCodeConfig{})
+			a, _ := NewOpenCodeAdapter(testOpenCodeConfig(t, OpenCodeConfig{}))
 			a.command = helperCommand("opencode", tc.mode, "", "")
 			result, err := a.DeliverMessage(context.Background(), DeliverMessageRequest{Message: "task"})
 			assertExecutionCode(t, err, tc.code)
@@ -46,7 +46,7 @@ func TestOpenCodeRequiresSuccessfulFinalStep(t *testing.T) {
 
 func TestOpenCodePersistsCompletedSessionForNextTurn(t *testing.T) {
 	fs := store.NewFSStore(t.TempDir())
-	a, _ := NewOpenCodeAdapter(OpenCodeConfig{SessionStore: fs})
+	a, _ := NewOpenCodeAdapter(testOpenCodeConfig(t, OpenCodeConfig{SessionStore: fs}))
 	record := filepath.Join(t.TempDir(), "request")
 	a.command = helperCommand("opencode", "success", record, "")
 	for range 2 {
@@ -55,7 +55,7 @@ func TestOpenCodePersistsCompletedSessionForNextTurn(t *testing.T) {
 			t.Fatalf("completed turn: %+v %v", result, err)
 		}
 	}
-	state, found, err := fs.LoadSessionState("opencode", "conversation")
+	state, found, err := fs.LoadSessionState("opencode", a.scopedSessionKey("conversation"))
 	if err != nil || !found || state.SessionID != "ses_fixture" {
 		t.Fatalf("session not preserved: %+v %v", state, err)
 	}
@@ -85,7 +85,7 @@ func TestOpenCodeNamedAgentsRequireLocalAuthorization(t *testing.T) {
 		{"authorized", "build", []string{"build"}, true}, {"unsafe", "build;rm", []string{"build;rm"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			a, _ := NewOpenCodeAdapter(OpenCodeConfig{AllowAgentIDs: tc.allowed})
+			a, _ := NewOpenCodeAdapter(testOpenCodeConfig(t, OpenCodeConfig{AllowAgentIDs: tc.allowed}))
 			a.command = helperCommand("opencode", "success", "", "")
 			result, err := a.DeliverMessage(context.Background(), DeliverMessageRequest{AgentID: tc.agent, Message: "task"})
 			if !tc.ok {
@@ -102,7 +102,10 @@ func TestOpenCodeNamedAgentsRequireLocalAuthorization(t *testing.T) {
 func TestNativeSnapshotUpdatesDoNotDuplicateAnswers(t *testing.T) {
 	for _, product := range []string{"codex", "opencode"} {
 		t.Run(product, func(t *testing.T) {
-			a := newCLIAdapter(product, "", nil, nil, nil)
+			a, err := newCLIAdapter(product, "test-bot", "test-binding", privateTestDir(t), "", nil, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
 			a.command = helperCommand(product, "snapshots", "", "")
 			var answer strings.Builder
 			result, err := a.DeliverMessage(context.Background(), DeliverMessageRequest{Message: "task", Emit: func(event OutputEvent) error { answer.WriteString(event.Text); return nil }})
@@ -117,7 +120,7 @@ func TestAnswerBatchesPreserveUnicodeAndBoundConsumerMemory(t *testing.T) {
 	text := strings.Repeat("世界", 2500)
 	part, _ := json.Marshal(map[string]any{"type": "text", "part": map[string]any{"type": "text", "text": text}})
 	t.Setenv("CLI_JSON", string(part)+"\n"+`{"type":"step_finish","part":{"type":"step-finish","reason":"stop"}}`)
-	a, _ := NewOpenCodeAdapter(OpenCodeConfig{})
+	a, _ := NewOpenCodeAdapter(testOpenCodeConfig(t, OpenCodeConfig{}))
 	a.command = helperCommand("opencode", "native-json", "", "")
 	var answer strings.Builder
 	batches := 0
@@ -135,7 +138,7 @@ func TestAnswerBatchesPreserveUnicodeAndBoundConsumerMemory(t *testing.T) {
 }
 
 func TestOpenCodeReadinessReportsItsProbeLimitation(t *testing.T) {
-	a, _ := NewOpenCodeAdapter(OpenCodeConfig{})
+	a, _ := NewOpenCodeAdapter(testOpenCodeConfig(t, OpenCodeConfig{}))
 	a.command = helperCommand("opencode", "status-opencode", "", "")
 	status, err := a.GetStatus(context.Background())
 	if err != nil || !status.Healthy || !status.Degraded || status.Detail == "" {
@@ -146,8 +149,11 @@ func TestOpenCodeReadinessReportsItsProbeLimitation(t *testing.T) {
 func TestArgvOnlyAdaptersRejectOversizedPromptsBeforeExecution(t *testing.T) {
 	for _, product := range []string{"opencode", "openclaw"} {
 		t.Run(product, func(t *testing.T) {
-			a := newCLIAdapter(product, "", nil, nil, nil)
-			_, err := a.DeliverMessage(context.Background(), DeliverMessageRequest{Message: strings.Repeat("x", maxArgvPromptBytes+1)})
+			a, err := newCLIAdapter(product, "test-bot", "test-binding", privateTestDir(t), "", nil, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = a.DeliverMessage(context.Background(), DeliverMessageRequest{Message: strings.Repeat("x", maxArgvPromptBytes+1)})
 			failure := assertExecutionCode(t, err, "prompt_limit")
 			if failure.Indeterminate {
 				t.Fatal("validation rejection must happen before native execution")
@@ -158,7 +164,7 @@ func TestArgvOnlyAdaptersRejectOversizedPromptsBeforeExecution(t *testing.T) {
 
 func TestOpenCodeTextArrivesBeforeFinalStep(t *testing.T) {
 	gate := filepath.Join(t.TempDir(), "release")
-	a, _ := NewOpenCodeAdapter(OpenCodeConfig{})
+	a, _ := NewOpenCodeAdapter(testOpenCodeConfig(t, OpenCodeConfig{}))
 	a.command = helperCommand("opencode", "gate", "", gate)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

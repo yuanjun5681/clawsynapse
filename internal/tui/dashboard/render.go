@@ -153,11 +153,11 @@ func ensureVisible(offset, cursor, total, visible int) int {
 
 type peerColumns struct {
 	nameWidth       int
-	nodeIDWidth     int
+	botIDWidth      int
 	authWidth       int
 	trustWidth      int
 	adapterWidth    int
-	showNodeID      bool
+	showBotID       bool
 	showFingerprint bool
 }
 
@@ -170,7 +170,7 @@ func peerColumnsForWidth(width int, peers []types.Peer) peerColumns {
 		peerPrefixWidth     = 1
 		peerDotColumnsWidth = 2
 		minNameWidth        = 8
-		minNodeIDWidth      = 12
+		minBotIDWidth       = 12
 		minAdapterWidth     = 8
 	)
 
@@ -178,11 +178,11 @@ func peerColumnsForWidth(width int, peers []types.Peer) peerColumns {
 	authWidth := maxDisplayWidth("auth", "authenticated", "pending", "rejected", "expired")
 	trustWidth := maxDisplayWidth("trust", "trusted", "pending", "rejected", "revoked", "none")
 	nameWidth := displayWidth("name")
-	nodeIDWidth := displayWidth("nodeId")
+	botIDWidth := displayWidth("botId")
 	adapterWidth := displayWidth("adapter/version")
 	for _, peer := range peers {
 		nameWidth = maxInt(nameWidth, displayWidth(peerDisplayName(peer)))
-		nodeIDWidth = maxInt(nodeIDWidth, displayWidth(peer.NodeID))
+		botIDWidth = maxInt(botIDWidth, displayWidth(peer.BotID))
 		adapterWidth = maxInt(adapterWidth, displayWidth(peerAdapterLabel(peer)))
 	}
 
@@ -195,31 +195,31 @@ func peerColumnsForWidth(width int, peers []types.Peer) peerColumns {
 		trustWidth: trustWidth,
 	}
 
-	// Wide: name + fingerprint + full nodeId + auth + trust + adapter.
-	// Medium: drop nodeId. Narrow: also drop the fingerprint.
-	showNodeID := true
+	// Wide: name + fingerprint + full botId + auth + trust + adapter.
+	// Medium: drop botId. Narrow: also drop the fingerprint.
+	showBotID := true
 	showFingerprint := true
 	gapCount := 8
-	if width < fixedWidth+gapCount+nameWidth+peerFingerprintWidth+nodeIDWidth+adapterWidth {
-		showNodeID = false
+	if width < fixedWidth+gapCount+nameWidth+peerFingerprintWidth+botIDWidth+adapterWidth {
+		showBotID = false
 		gapCount = 7
 	}
-	if !showNodeID && width < fixedWidth+gapCount+nameWidth+peerFingerprintWidth+adapterWidth {
+	if !showBotID && width < fixedWidth+gapCount+nameWidth+peerFingerprintWidth+adapterWidth {
 		showFingerprint = false
 		gapCount = 6
 	}
-	cols.showNodeID = showNodeID
+	cols.showBotID = showBotID
 	cols.showFingerprint = showFingerprint
 
 	remaining := maxInt(minNameWidth+minAdapterWidth, width-fixedWidth-gapCount)
 	if showFingerprint {
 		remaining = maxInt(minNameWidth+minAdapterWidth, remaining-peerFingerprintWidth)
 	}
-	if showNodeID {
-		if nodeIDWidth > remaining-minNameWidth-minAdapterWidth {
-			nodeIDWidth = maxInt(minNodeIDWidth, remaining-minNameWidth-minAdapterWidth)
+	if showBotID {
+		if botIDWidth > remaining-minNameWidth-minAdapterWidth {
+			botIDWidth = maxInt(minBotIDWidth, remaining-minNameWidth-minAdapterWidth)
 		}
-		remaining -= nodeIDWidth
+		remaining -= botIDWidth
 	}
 	if nameWidth > remaining-minAdapterWidth {
 		nameWidth = maxInt(minNameWidth, remaining-minAdapterWidth)
@@ -227,7 +227,7 @@ func peerColumnsForWidth(width int, peers []types.Peer) peerColumns {
 	adapterWidth = maxInt(1, remaining-nameWidth)
 
 	cols.nameWidth = nameWidth
-	cols.nodeIDWidth = nodeIDWidth
+	cols.botIDWidth = botIDWidth
 	cols.adapterWidth = adapterWidth
 	return cols
 }
@@ -240,8 +240,8 @@ func formatPeerListHeader(cols peerColumns) string {
 	if cols.showFingerprint {
 		parts = append(parts, padRight(truncateRight("fingerprint", peerFingerprintWidth), peerFingerprintWidth))
 	}
-	if cols.showNodeID {
-		parts = append(parts, padRight(truncateRight("nodeId", cols.nodeIDWidth), cols.nodeIDWidth))
+	if cols.showBotID {
+		parts = append(parts, padRight(truncateRight("botId", cols.botIDWidth), cols.botIDWidth))
 	}
 	parts = append(parts,
 		padRight("", 1),
@@ -263,8 +263,8 @@ func formatPeerRow(prefix string, peer types.Peer, cols peerColumns) string {
 	if cols.showFingerprint {
 		parts = append(parts, padRight(truncateRight(peerFingerprint(peer), peerFingerprintWidth), peerFingerprintWidth))
 	}
-	if cols.showNodeID {
-		parts = append(parts, padRight(truncateRight(fallbackString(peer.NodeID, "-"), cols.nodeIDWidth), cols.nodeIDWidth))
+	if cols.showBotID {
+		parts = append(parts, padRight(truncateRight(fallbackString(peer.BotID, "-"), cols.botIDWidth), cols.botIDWidth))
 	}
 	parts = append(parts,
 		padRight(authDot, 1),

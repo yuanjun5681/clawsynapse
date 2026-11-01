@@ -31,6 +31,13 @@ func (a resultAdapter) GetStatus(context.Context) (*adapter.AgentStatus, error) 
 	return &adapter.AgentStatus{Healthy: true}, nil
 }
 
+func TestPublishValidationUsesBotTerminology(t *testing.T) {
+	svc := &Service{}
+	if _, err := svc.Publish(PublishRequest{}); err == nil || err.Error() != "invalid targetBot" {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestHandlerDistinguishesAcceptanceFromCompletion(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -106,18 +113,18 @@ func TestBrokerStreamingRejectsReplayAndRouteTampering(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	peers := discovery.NewRegistry()
 	ids := make([]*identity.Identity, 2)
-	nodes := make([]string, 2)
+	bots := make([]string, 2)
 	services := make([]*Service, 2)
 	for i := range ids {
 		dir := t.TempDir()
-		id, err := identity.LoadOrCreate(dir+"/identity.key", dir+"/identity.pub")
+		id, err := identity.Create(dir+"/identity.key", dir+"/identity.pub")
 		if err != nil {
 			t.Fatal(err)
 		}
 		ids[i] = id
-		nodes[i] = identity.DeriveNodeID(identity.DeriveNodeDID(id.PublicKey))
-		peers.Upsert(types.Peer{NodeID: nodes[i], AuthStatus: types.AuthAuthenticated, TrustStatus: types.TrustTrusted, Metadata: map[string]any{"publicKey": base64.RawURLEncoding.EncodeToString(id.PublicKey)}})
-		services[i] = NewService(log, peers, bus, nodes[i], id, "explicit", nil)
+		bots[i] = identity.DeriveBotID(identity.DeriveBotDID(id.PublicKey))
+		peers.Upsert(types.Peer{BotID: bots[i], AuthStatus: types.AuthAuthenticated, TrustStatus: types.TrustTrusted, Metadata: map[string]any{"publicKey": base64.RawURLEncoding.EncodeToString(id.PublicKey)}})
+		services[i] = NewService(log, peers, bus, bots[i], id, "explicit", nil)
 		if err := services[i].SetStatePath(dir + "/messages.jsonl"); err != nil {
 			t.Fatal(err)
 		}
@@ -125,7 +132,7 @@ func TestBrokerStreamingRejectsReplayAndRouteTampering(t *testing.T) {
 	}
 	events := make(chan protocol.MessageEnvelope, 32)
 	requests := make(chan protocol.MessageEnvelope, 8)
-	_, err := bus.Subscribe(inboxSubject(nodes[0]), func(_ string, data []byte) {
+	_, err := bus.Subscribe(inboxSubject(bots[0]), func(_ string, data []byte) {
 		var env protocol.MessageEnvelope
 		if protocol.DecodeStrict(data, &env) == nil {
 			events <- env
@@ -134,7 +141,7 @@ func TestBrokerStreamingRejectsReplayAndRouteTampering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = bus.Subscribe(inboxSubject(nodes[1]), func(_ string, data []byte) {
+	_, err = bus.Subscribe(inboxSubject(bots[1]), func(_ string, data []byte) {
 		var env protocol.MessageEnvelope
 		if protocol.DecodeStrict(data, &env) == nil {
 			requests <- env
@@ -175,7 +182,7 @@ func TestBrokerStreamingRejectsReplayAndRouteTampering(t *testing.T) {
 	if err := bus.FlushTimeout(time.Second); err != nil {
 		t.Fatal(err)
 	}
-	result, err := services[0].Publish(PublishRequest{TargetNode: nodes[1], Type: "task.request", SessionKey: "same-session", Message: "analyze"})
+	result, err := services[0].Publish(PublishRequest{TargetBot: bots[1], Type: "task.request", SessionKey: "same-session", Message: "analyze"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,25 +213,25 @@ func TestBrokerStreamingRejectsReplayAndRouteTampering(t *testing.T) {
 		t.Fatalf("premature terminal event: %#v", event)
 	default:
 	}
-	if err := bus.PublishJSON(inboxSubject(nodes[1]), request); err != nil {
+	if err := bus.PublishJSON(inboxSubject(bots[1]), request); err != nil {
 		t.Fatal(err)
 	}
 	tampered := request
 	tampered.ID = "tampered"
 	tampered.AgentID = "another-agent"
-	if err := bus.PublishJSON(inboxSubject(nodes[1]), tampered); err != nil {
+	if err := bus.PublishJSON(inboxSubject(bots[1]), tampered); err != nil {
 		t.Fatal(err)
 	}
 	expired := request
 	expired.ID = "expired"
 	expired.Ts = time.Now().Add(-time.Minute).UnixMilli()
 	expired.ExpiresAt = time.Now().Add(-time.Second).UnixMilli()
-	input, err := protocol.SignedBytes(inboxSubject(nodes[1]), expired)
+	input, err := protocol.SignedBytes(inboxSubject(bots[1]), expired)
 	if err != nil {
 		t.Fatal(err)
 	}
 	expired.Sig = identity.Sign(ids[0].PrivateKey, input)
-	if err := bus.PublishJSON(inboxSubject(nodes[1]), expired); err != nil {
+	if err := bus.PublishJSON(inboxSubject(bots[1]), expired); err != nil {
 		t.Fatal(err)
 	}
 	close(release)
@@ -238,7 +245,7 @@ func TestBrokerStreamingRejectsReplayAndRouteTampering(t *testing.T) {
 	if terminal.Type != "run.failed" || terminal.Payload.Code != "timeout" || !terminal.Payload.Indeterminate || terminal.RequestID != result.MessageID || terminal.Seq != delta.Seq+1 {
 		t.Fatalf("partial failure misreported: %#v", terminal)
 	}
-	barrier, err := services[0].Publish(PublishRequest{TargetNode: nodes[1], Type: "task.request", SessionKey: "same-session", Message: "barrier"})
+	barrier, err := services[0].Publish(PublishRequest{TargetBot: bots[1], Type: "task.request", SessionKey: "same-session", Message: "barrier"})
 	if err != nil {
 		t.Fatal(err)
 	}

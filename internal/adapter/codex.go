@@ -7,9 +7,9 @@ import (
 )
 
 type CodexConfig struct {
-	NodeID       string
-	Logger       *slog.Logger
-	SessionStore *store.FSStore
+	BotID, BindingRevision, Workspace, Model string
+	Logger                                   *slog.Logger
+	SessionStore                             *store.FSStore
 }
 
 // CodexAdapter supports native exec JSONL and stdin prompts. Codex has no
@@ -17,5 +17,9 @@ type CodexConfig struct {
 type CodexAdapter struct{ *cliAdapter }
 
 func NewCodexAdapter(cfg CodexConfig) (*CodexAdapter, error) {
-	return &CodexAdapter{newCLIAdapter("codex", cfg.NodeID, cfg.Logger, cfg.SessionStore, nil)}, nil
+	cli, err := newCLIAdapter("codex", cfg.BotID, cfg.BindingRevision, cfg.Workspace, cfg.Model, cfg.Logger, cfg.SessionStore, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &CodexAdapter{cli}, nil
 }

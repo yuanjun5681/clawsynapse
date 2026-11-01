@@ -22,6 +22,7 @@ type Client struct {
 	httpClient *http.Client
 	tokenPath  string
 	configErr  error
+	botID      string
 }
 
 type ClientOption func(*Client)
@@ -29,6 +30,11 @@ type ClientOption func(*Client)
 // WithTokenFile selects a private bearer token file; it never enables anonymous requests.
 func WithTokenFile(path string) ClientOption {
 	return func(c *Client) { c.tokenPath = path }
+}
+
+// WithBot binds relative business requests to one explicit local Bot.
+func WithBot(botID string) ClientOption {
+	return func(c *Client) { c.botID = strings.TrimSpace(botID) }
 }
 
 func NewClient(baseURL string, timeout time.Duration, options ...ClientOption) *Client {
@@ -45,20 +51,32 @@ func NewClient(baseURL string, timeout time.Duration, options ...ClientOption) *
 			},
 		},
 	}
-	cfg, err := config.LoadFromOS(nil)
-	if err != nil {
-		c.configErr = fmt.Errorf("load local API client configuration: %w", err)
-	} else {
-		c.tokenPath = cfg.APITokenPath
-		if strings.TrimSpace(baseURL) == "" {
-			c.baseURL = normalizeBaseURL(cfg.LocalAPIAddr)
-		}
-		if cfg.APITLSCertFile != "" && !strings.Contains(baseURL, "://") {
-			c.baseURL = "https://" + strings.TrimPrefix(c.baseURL, "http://")
-		}
-	}
 	for _, option := range options {
 		option(c)
+	}
+	// Explicit credentials never depend on (or borrow credentials from) the
+	// workstation's daemon configuration.
+	if strings.TrimSpace(baseURL) != "" && c.tokenPath != "" {
+		return c
+	}
+	cfg, err := config.LoadDaemon(nil)
+	if err != nil {
+		c.configErr = fmt.Errorf("load daemon client configuration: %w", err)
+		return c
+	}
+	configuredURL := normalizeBaseURL(cfg.LocalAPIAddr)
+	if cfg.APITLSCertFile != "" && !strings.Contains(cfg.LocalAPIAddr, "://") {
+		configuredURL = "https://" + strings.TrimPrefix(configuredURL, "http://")
+	}
+	if strings.TrimSpace(baseURL) == "" || (!strings.Contains(baseURL, "://") && normalizeBaseURL(baseURL) == normalizeBaseURL(cfg.LocalAPIAddr)) {
+		c.baseURL = configuredURL
+	}
+	if c.tokenPath == "" {
+		if c.baseURL != configuredURL {
+			c.configErr = fmt.Errorf("an explicit --token-file is required for a different daemon endpoint")
+		} else {
+			c.tokenPath = cfg.AdminTokenPath
+		}
 	}
 	return c
 }
@@ -83,12 +101,33 @@ func (c *Client) do(ctx context.Context, method, endpoint string, payload any) (
 	if c.configErr != nil {
 		return types.APIResult{}, c.configErr
 	}
+	if !strings.HasPrefix(endpoint, "/") || strings.HasPrefix(endpoint, "/v1/") || strings.Contains(endpoint, "://") || strings.ContainsAny(endpoint, "\\#") {
+		return types.APIResult{}, fmt.Errorf("invalid local API endpoint")
+	}
+	parsed, err := url.ParseRequestURI(endpoint)
+	if err != nil || strings.Contains(parsed.Path, "..") || strings.Contains(parsed.Path, "//") {
+		return types.APIResult{}, fmt.Errorf("invalid local API endpoint")
+	}
+	if !strings.HasPrefix(endpoint, "/v2/") {
+		if c.botID == "" {
+			return types.APIResult{}, fmt.Errorf("explicit Bot selection is required")
+		}
+		if strings.ContainsAny(c.botID, "/\\?#") {
+			return types.APIResult{}, fmt.Errorf("invalid Bot ID")
+		}
+		endpoint = "/v2/bots/" + url.PathEscape(c.botID) + endpoint
+	} else if c.botID != "" {
+		prefix := "/v2/bots/" + url.PathEscape(c.botID)
+		if parsed.Path != prefix && !strings.HasPrefix(parsed.Path, prefix+"/") {
+			return types.APIResult{}, fmt.Errorf("request is outside selected Bot scope")
+		}
+	}
 	token, err := readToken(c.tokenPath)
 	if err != nil {
 		return types.APIResult{}, err
 	}
 	u, err := url.Parse(c.baseURL)
-	if err != nil {
+	if err != nil || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
 		return types.APIResult{}, fmt.Errorf("invalid local API URL")
 	}
 	ip := net.ParseIP(u.Hostname())

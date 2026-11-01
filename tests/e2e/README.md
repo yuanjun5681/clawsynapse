@@ -1,23 +1,67 @@
-# Docker e2e（P0 契约验证）
+# Real multi-Bot acceptance
 
-真实容器化验收：`nats:2.11.9`（JetStream + 双向 TLS）+ 两个 `clawsynapsed` 容器 + 模拟 Codex JSONL fixture。
+The runner starts two **host daemons** against a uniquely named Docker Compose
+project containing `nats:2.11.9` with JetStream. Bot A and Bot B use independent
+real OpenCode bindings and private `--standalone` engines. External Bot R runs in
+the other daemon using the built-in adapter; R is a network peer, not a claimed
+real Harness. There are no simulated model executables or daemon containers.
+
+## Prerequisites and invocation
+
+- Docker with Compose; Python 3.9+; prebuilt `clawsynapsed` and `clawsynapse`.
+- A real installed `opencode` advertising `run --standalone`, and access to the
+  selected provider/model. The default is `zai-coding-plan/glm-5.3-flash`.
+- The model must be able to execute the narrowly scoped workspace commands in
+  the test prompts. The runner does not supply `--auto`, approve provider safety
+  checks, alter account permissions, or install credentials.
 
 ```bash
-python3 tests/e2e/runner.py         # 运行并清理
-python3 tests/e2e/runner.py --keep  # 保留环境便于排查
+python3 tests/e2e/runner.py \
+  --daemon-bin /absolute/path/to/clawsynapsed \
+  --cli-bin /absolute/path/to/clawsynapse \
+  --opencode-bin /absolute/path/to/opencode
 ```
 
-## 验证范围
+Binary defaults can also be set using `CLAWSYNAPSED_BIN`, `CLAWSYNAPSE_BIN`, and
+`OPENCODE_BIN`. `--model` or `E2E_OPENCODE_MODEL` selects another real model.
+`--turn-timeout` defaults to 150 seconds; `--deadline` bounds the entire scenario
+at 1,200 seconds. The runner does not build binaries or run unit tests.
 
-- mTLS NATS 连接、签名发现、认证与互信。
-- 节点名称与 labels（P1）：签名 announce 双向携带 `displayName`/`labels`（`caps` 集合规范化）；`label`（标量精确）与 `labelHas`（数组成员）筛选语义分离；本地备注（alias/description/labels）经 API 与 CLI 写入、非法 `caps` 类型拒绝、跨 daemon 重启与重新发现保留、远端心跳不覆盖、DELETE 清除。
-- 本地 API Bearer 认证与严格请求解码（未知字段、重复键、尾随 JSON 均拒绝）。
-- v2 结构化 payload 端到端一致性：大整数、Unicode、metadata、有效期与签名。
-- 流式执行：`run.started → run.output.delta → run.completed` 的 requestId/runId/seq 关联，且 delta 先于终态到达。
-- 失败语义：部分输出后失败、非结构化登录提示、超时（indeterminate）、超限事件、未授权 agentId 均不产生 `run.completed`。
+## Exercised assertions
 
-## 边界
+- Independent A/B IDs, DIDs and scoped credentials; explicit CLI Bot selection;
+  anonymous, cross-Bot, management and host-import authorization checks.
+- Real signed discovery, challenge authentication, and manually approved trust
+  with R. A's trust and alias for R do not appear in B.
+- Real A/B model turns, native session and working-directory isolation, routed
+  wire-v2 replies, large-integer/Unicode preservation, ordered execution events.
+- One active plus two queued real commands is enforced for B; excess work stays
+  on the durable broker until capacity frees, without concurrent model turns.
+- Stopping A while B's actual workspace command is active does not interrupt B;
+  restarting A retains its own session, alias and message replay cursor.
+- A binding change creates a new workspace/session namespace; configuration
+  updates use revision compare-and-swap.
+- Killing the daemon and its owned native children after a real admitted command
+  produces uncertain recovery without blindly repeating the workspace write.
+- Two received files share one immutable entity but retain independent grants
+  and workspace copies; deleting A's grant does not revoke B's; an archived B
+  retains authorized reads and protects its content across daemon restart.
 
-- `fake-codex.sh` 是受控 fixture，不代表真实 Codex 的认证、模型或事件兼容性。
-- 容器环境验证 Unix 进程组路径；Windows Job Object 行为需目标 OS 单独验收。
-- 未覆盖真实账号权限、跨主机网络、持久恢复（P1）与设备通道。
+These are assertions implemented by the runner, **not a claim that acceptance has
+passed**. Real provider behavior, latency, authentication, permissions and model
+tool execution are prerequisites; failures remain failures rather than switching
+to a fixture.
+
+## Isolation, evidence, and cleanup
+
+Each invocation owns a fresh canonical temporary root, ephemeral loopback ports,
+its own Compose project, host process trees and JetStream volume. No existing
+daemon, local repository workspace or fixed `tests/e2e/runtime` is used. NATS is
+plain TCP inside this local-only fixture; this scenario does not claim mTLS
+coverage.
+
+Success writes `report.json` with Bot identities, native session IDs, file
+references and passed assertions. `--keep` preserves that root and the private
+broker for inspection and prints its exact cleanup command. Host daemons always
+stop. Without `--keep`, only the invocation's own root, container and volume are
+removed. Failure prints the last 100 lines of each owned daemon's log.

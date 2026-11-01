@@ -29,7 +29,7 @@ func (r *Registry) Upsert(peer types.Peer) {
 		peer.LastSeenMs = time.Now().UnixMilli()
 	}
 
-	old, exists := r.peers[peer.NodeID]
+	old, exists := r.peers[peer.BotID]
 	if exists {
 		if peer.AuthStatus == "" {
 			peer.AuthStatus = old.AuthStatus
@@ -46,7 +46,7 @@ func (r *Registry) Upsert(peer types.Peer) {
 		peer.TrustStatus = types.TrustNone
 	}
 
-	r.peers[peer.NodeID] = peer
+	r.peers[peer.BotID] = peer
 }
 
 // refreshDiscovery updates remotely advertised fields without racing local
@@ -54,7 +54,7 @@ func (r *Registry) Upsert(peer types.Peer) {
 func (r *Registry) refreshDiscovery(peer types.Peer) (types.Peer, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	old, exists := r.peers[peer.NodeID]
+	old, exists := r.peers[peer.BotID]
 	if exists {
 		peer.AuthStatus = old.AuthStatus
 		peer.TrustStatus = old.TrustStatus
@@ -65,42 +65,42 @@ func (r *Registry) refreshDiscovery(peer types.Peer) (types.Peer, bool) {
 	if peer.TrustStatus == "" {
 		peer.TrustStatus = types.TrustNone
 	}
-	r.peers[peer.NodeID] = peer
+	r.peers[peer.BotID] = peer
 	return old, exists
 }
 
-func (r *Registry) SetAuthStatus(nodeID, authStatus string) bool {
+func (r *Registry) SetAuthStatus(botID, authStatus string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	peer, ok := r.peers[nodeID]
+	peer, ok := r.peers[botID]
 	if !ok {
 		return false
 	}
 	peer.AuthStatus = authStatus
 	peer.LastSeenMs = time.Now().UnixMilli()
-	r.peers[nodeID] = peer
+	r.peers[botID] = peer
 	return true
 }
 
-func (r *Registry) SetTrustStatus(nodeID, trustStatus string) bool {
+func (r *Registry) SetTrustStatus(botID, trustStatus string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	peer, ok := r.peers[nodeID]
+	peer, ok := r.peers[botID]
 	if !ok {
 		return false
 	}
 	peer.TrustStatus = trustStatus
 	peer.LastSeenMs = time.Now().UnixMilli()
-	r.peers[nodeID] = peer
+	r.peers[botID] = peer
 	return true
 }
 
-func (r *Registry) Get(nodeID string) (types.Peer, bool) {
+func (r *Registry) Get(botID string) (types.Peer, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	p, ok := r.peers[nodeID]
+	p, ok := r.peers[botID]
 	if !ok {
 		return types.Peer{}, false
 	}
@@ -116,7 +116,7 @@ func (r *Registry) List() []types.Peer {
 		out = append(out, r.mergeLocalLocked(p))
 	}
 	sort.Slice(out, func(i, j int) bool {
-		return out[i].NodeID < out[j].NodeID
+		return out[i].BotID < out[j].BotID
 	})
 	return out
 }
@@ -124,7 +124,7 @@ func (r *Registry) List() []types.Peer {
 // mergeLocalLocked overlays local remarks onto a peer view. Callers must
 // hold at least a read lock. Local remarks never travel back into peers.
 func (r *Registry) mergeLocalLocked(p types.Peer) types.Peer {
-	attrs, ok := r.local[p.NodeID]
+	attrs, ok := r.local[p.BotID]
 	if !ok {
 		return p
 	}
@@ -134,16 +134,16 @@ func (r *Registry) mergeLocalLocked(p types.Peer) types.Peer {
 	return p
 }
 
-// SetLocalAttrs replaces the local remarks for a node. Remarks are kept even
-// for nodes that are currently unknown, so they survive rediscovery.
-func (r *Registry) SetLocalAttrs(nodeID string, attrs types.PeerLocalAttrs) {
+// SetLocalAttrs replaces the local remarks for a Bot. Remarks are kept even
+// for Bots that are currently unknown, so they survive rediscovery.
+func (r *Registry) SetLocalAttrs(botID string, attrs types.PeerLocalAttrs) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if attrs.IsZero() {
-		delete(r.local, nodeID)
+		delete(r.local, botID)
 		return
 	}
-	r.local[nodeID] = attrs
+	r.local[botID] = attrs
 }
 
 // LoadLocalAttrs replaces all local remarks, e.g. from persisted state at
@@ -152,11 +152,11 @@ func (r *Registry) LoadLocalAttrs(attrs map[string]types.PeerLocalAttrs) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.local = map[string]types.PeerLocalAttrs{}
-	for nodeID, a := range attrs {
+	for botID, a := range attrs {
 		if a.IsZero() {
 			continue
 		}
-		r.local[nodeID] = a
+		r.local[botID] = a
 	}
 }
 
@@ -165,14 +165,14 @@ func (r *Registry) LocalAttrsSnapshot() map[string]types.PeerLocalAttrs {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	out := make(map[string]types.PeerLocalAttrs, len(r.local))
-	for nodeID, a := range r.local {
-		out[nodeID] = a
+	for botID, a := range r.local {
+		out[botID] = a
 	}
 	return out
 }
 
-func (r *Registry) Remove(nodeID string) {
+func (r *Registry) Remove(botID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.peers, nodeID)
+	delete(r.peers, botID)
 }

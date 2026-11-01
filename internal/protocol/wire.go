@@ -17,7 +17,13 @@ const (
 // DecodeStrict accepts exactly one bounded JSON value, rejecting duplicate keys
 // at every depth. Numbers retain their JSON spelling across a signed round trip.
 func DecodeStrict(data []byte, out any) error {
-	if len(data) > MaxMessageBytes || !utf8.Valid(data) {
+	return DecodeStrictLimit(data, out, MaxMessageBytes)
+}
+
+// DecodeStrictLimit shares strict decoding with local persistence without
+// changing the wire message size limit.
+func DecodeStrictLimit(data []byte, out any, maxBytes int) error {
+	if maxBytes <= 0 || len(data) > maxBytes || !utf8.Valid(data) {
 		return errors.New("invalid or oversized JSON message")
 	}
 	check := json.NewDecoder(bytes.NewReader(data))

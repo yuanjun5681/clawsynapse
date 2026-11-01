@@ -41,7 +41,7 @@ func TestPrintResultHealthIncludesVersion(t *testing.T) {
 		Message: "service healthy",
 		Data: map[string]any{
 			"self": map[string]any{
-				"nodeId":    "n1-localnodeid0000000000000000000000",
+				"botId":     "n1-localnodeid0000000000000000000000",
 				"version":   "v0.3.2",
 				"trustMode": "tofu",
 			},
@@ -76,7 +76,7 @@ func TestRunTransferSendPostsExpectedPayload(t *testing.T) {
 	client := &stubAPIClient{result: types.APIResult{OK: true, Code: "transfer.sent"}}
 	_, err := runTransfer(context.Background(), client, []string{
 		"send",
-		"--target", "node-beta",
+		"--target", "bot-beta",
 		"--file", "/tmp/demo.txt",
 		"--mime-type", "text/plain",
 	})
@@ -86,12 +86,12 @@ func TestRunTransferSendPostsExpectedPayload(t *testing.T) {
 	if client.method != "POST" {
 		t.Fatalf("expected POST, got %s", client.method)
 	}
-	if client.endpoint != "/v1/transfer/send" {
+	if client.endpoint != "/transfer/send" {
 		t.Fatalf("unexpected endpoint %s", client.endpoint)
 	}
 	body, _ := client.payload.(map[string]any)
-	if body["targetNode"] != "node-beta" {
-		t.Fatalf("unexpected targetNode %#v", body["targetNode"])
+	if body["targetBot"] != "bot-beta" {
+		t.Fatalf("unexpected targetBot %#v", body["targetBot"])
 	}
 	if body["filePath"] != "/tmp/demo.txt" {
 		t.Fatalf("unexpected filePath %#v", body["filePath"])
@@ -105,7 +105,7 @@ func TestRunTransferSendIncludesMetadata(t *testing.T) {
 	client := &stubAPIClient{result: types.APIResult{OK: true, Code: "transfer.sent"}}
 	_, err := runTransfer(context.Background(), client, []string{
 		"send",
-		"--target", "node-beta",
+		"--target", "bot-beta",
 		"--file", "/tmp/demo.txt",
 		"--metadata", "taskId=task-001",
 		"--metadata", "todoId=todo-042",
@@ -129,7 +129,7 @@ func TestRunTransferSendIncludesMetadata(t *testing.T) {
 func TestRunPublishPostsExpectedPayloadIncludingAgentID(t *testing.T) {
 	client := &stubAPIClient{result: types.APIResult{OK: true, Code: "msg.published"}}
 	_, err := runPublish(context.Background(), client, []string{
-		"--target", "node-beta",
+		"--target", "bot-beta",
 		"--type", "chat.message",
 		"--agent", "agent-42",
 		"--message", "hello",
@@ -142,12 +142,12 @@ func TestRunPublishPostsExpectedPayloadIncludingAgentID(t *testing.T) {
 	if client.method != "POST" {
 		t.Fatalf("expected POST, got %s", client.method)
 	}
-	if client.endpoint != "/v1/publish" {
+	if client.endpoint != "/publish" {
 		t.Fatalf("unexpected endpoint %s", client.endpoint)
 	}
 	body, _ := client.payload.(map[string]any)
-	if body["targetNode"] != "node-beta" {
-		t.Fatalf("unexpected targetNode %#v", body["targetNode"])
+	if body["targetBot"] != "bot-beta" {
+		t.Fatalf("unexpected targetBot %#v", body["targetBot"])
 	}
 	if body["type"] != "chat.message" {
 		t.Fatalf("unexpected type %#v", body["type"])
@@ -168,7 +168,7 @@ func TestRunTransferSendOmitsEmptyMetadata(t *testing.T) {
 	client := &stubAPIClient{result: types.APIResult{OK: true, Code: "transfer.sent"}}
 	_, err := runTransfer(context.Background(), client, []string{
 		"send",
-		"--target", "node-beta",
+		"--target", "bot-beta",
 		"--file", "/tmp/demo.txt",
 	})
 	if err != nil {
@@ -189,7 +189,7 @@ func TestRunTransferGetFetchesTransferByID(t *testing.T) {
 	if client.method != "GET" {
 		t.Fatalf("expected GET, got %s", client.method)
 	}
-	if client.endpoint != "/v1/transfer/tr-123" {
+	if client.endpoint != "/transfer/tr-123" {
 		t.Fatalf("unexpected endpoint %s", client.endpoint)
 	}
 }
@@ -203,7 +203,7 @@ func TestRunTransferDeleteCallsDeleteEndpoint(t *testing.T) {
 	if client.method != "DELETE" {
 		t.Fatalf("expected DELETE, got %s", client.method)
 	}
-	if client.endpoint != "/v1/transfer/tr-456" {
+	if client.endpoint != "/transfer/tr-456" {
 		t.Fatalf("unexpected endpoint %s", client.endpoint)
 	}
 }
@@ -217,7 +217,7 @@ func TestRunTransferListUsesTransfersEndpoint(t *testing.T) {
 	if client.method != "GET" {
 		t.Fatalf("expected GET, got %s", client.method)
 	}
-	if client.endpoint != "/v1/transfers" {
+	if client.endpoint != "/transfers" {
 		t.Fatalf("unexpected endpoint %s", client.endpoint)
 	}
 }
@@ -225,28 +225,28 @@ func TestRunTransferListUsesTransfersEndpoint(t *testing.T) {
 func TestRenderPeersTable(t *testing.T) {
 	peers := []types.Peer{
 		{
-			NodeID:      "n1-peerwithalias0000000000000000",
+			BotID:       "n1-peerwithalias0000000000000000",
 			DID:         "did:claw:aliaspeer",
-			DisplayName: "Builder Node",
+			DisplayName: "Builder Bot",
 			LocalAlias:  "build-box",
 			AuthStatus:  "authenticated",
 			TrustStatus: "trusted",
 			Labels:      types.Labels{"role": types.LabelString("builder")},
 		},
 		{
-			NodeID:     "n1-peernodisplayname000000000000",
+			BotID:      "n1-peernodisplayname000000000000",
 			AuthStatus: "discovered",
 			Labels:     types.Labels{"caps": types.LabelSet([]string{"shell", "fs.read"})},
 		},
 		{
-			NodeID:     "n1-peernolabels00000000000000000",
+			BotID:      "n1-peernolabels00000000000000000",
 			AuthStatus: "discovered",
 		},
 	}
 
 	out := renderPeersTable(peers)
 
-	if !strings.Contains(out, "NAME") || !strings.Contains(out, "NODE") ||
+	if !strings.Contains(out, "NAME") || !strings.Contains(out, "BOT") ||
 		!strings.Contains(out, "AUTH") || !strings.Contains(out, "TRUST") ||
 		!strings.Contains(out, "LABELS") {
 		t.Fatalf("expected header line with all columns, got %q", out)
@@ -257,7 +257,7 @@ func TestRenderPeersTable(t *testing.T) {
 	}
 
 	// Local alias takes precedence over displayName.
-	if !strings.Contains(lines[1], "build-box") || strings.Contains(lines[1], "Builder Node") {
+	if !strings.Contains(lines[1], "build-box") || strings.Contains(lines[1], "Builder Bot") {
 		t.Fatalf("expected alias to take precedence over displayName, got %q", lines[1])
 	}
 	if !strings.Contains(lines[1], "role=builder") {
@@ -293,7 +293,7 @@ func TestRunPeersBuildsFilterQuery(t *testing.T) {
 	if client.method != "GET" {
 		t.Fatalf("expected GET, got %s", client.method)
 	}
-	want := "/v1/peers?label=role%3Dbuilder&label=env+%3D+prod&labelHas=caps%3Dshell&name=build+box"
+	want := "/peers?label=role%3Dbuilder&label=env+%3D+prod&labelHas=caps%3Dshell&name=build+box"
 	if client.endpoint != want {
 		t.Fatalf("unexpected endpoint %q, want %q", client.endpoint, want)
 	}
@@ -304,21 +304,21 @@ func TestRunPeersPlainListsAll(t *testing.T) {
 	if _, err := runPeers(context.Background(), client, nil); err != nil {
 		t.Fatal(err)
 	}
-	if client.endpoint != "/v1/peers" {
+	if client.endpoint != "/peers" {
 		t.Fatalf("unexpected endpoint %q", client.endpoint)
 	}
 }
 
 func TestRunPeerAliasPutsAlias(t *testing.T) {
 	client := &stubAPIClient{result: types.APIResult{OK: true, Code: "peer_attrs.ok"}}
-	_, err := runPeer(context.Background(), client, []string{"alias", "node-1", "build-box"})
+	_, err := runPeer(context.Background(), client, []string{"alias", "bot-1", "build-box"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if client.method != "PUT" {
 		t.Fatalf("expected PUT, got %s", client.method)
 	}
-	if client.endpoint != "/v1/peers/node-1/attrs" {
+	if client.endpoint != "/peers/bot-1/attrs" {
 		t.Fatalf("unexpected endpoint %q", client.endpoint)
 	}
 	body, _ := client.payload.(map[string]any)
@@ -329,7 +329,7 @@ func TestRunPeerAliasPutsAlias(t *testing.T) {
 
 func TestRunPeerAliasWithoutValueClearsAlias(t *testing.T) {
 	client := &stubAPIClient{result: types.APIResult{OK: true, Code: "peer_attrs.ok"}}
-	if _, err := runPeer(context.Background(), client, []string{"alias", "node-1"}); err != nil {
+	if _, err := runPeer(context.Background(), client, []string{"alias", "bot-1"}); err != nil {
 		t.Fatal(err)
 	}
 	body, _ := client.payload.(map[string]any)
@@ -340,12 +340,12 @@ func TestRunPeerAliasWithoutValueClearsAlias(t *testing.T) {
 
 func TestRunPeerLabelMergesAndPutsFullLabels(t *testing.T) {
 	client := &stubAPIClient{result: types.APIResult{OK: true, Code: "peer_attrs.ok", Data: map[string]any{
-		"nodeId": "node-1",
+		"botId": "bot-1",
 		"attrs": map[string]any{
 			"labels": map[string]any{"role": "builder"},
 		},
 	}}}
-	_, err := runPeer(context.Background(), client, []string{"label", "node-1", "caps", "shell", "fs.read"})
+	_, err := runPeer(context.Background(), client, []string{"label", "bot-1", "caps", "shell", "fs.read"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,12 +368,12 @@ func TestRunPeerLabelMergesAndPutsFullLabels(t *testing.T) {
 
 func TestRunPeerUnlabelRemovesKey(t *testing.T) {
 	client := &stubAPIClient{result: types.APIResult{OK: true, Code: "peer_attrs.ok", Data: map[string]any{
-		"nodeId": "node-1",
+		"botId": "bot-1",
 		"attrs": map[string]any{
 			"labels": map[string]any{"role": "builder", "env": "prod"},
 		},
 	}}}
-	_, err := runPeer(context.Background(), client, []string{"unlabel", "node-1", "env"})
+	_, err := runPeer(context.Background(), client, []string{"unlabel", "bot-1", "env"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -12,7 +12,7 @@ func TestSignedMessageBindsRouteContextAndPayload(t *testing.T) {
 		t.Fatal(err)
 	}
 	original := map[string]any{"protocolVersion": "v2", "agentId": "analyst", "sessionKey": "session-a", "expiresAt": 123456, "metadata": map[string]any{"tenant": "a"}, "payload": map[string]any{"text": "hello"}}
-	input, err := SignedBytes("node.a.inbox", original)
+	input, err := SignedBytes("bot.a.inbox", original)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +24,7 @@ func TestSignedMessageBindsRouteContextAndPayload(t *testing.T) {
 				changed[key] = value
 			}
 			changed[field] = "tampered"
-			data, err := SignedBytes("node.a.inbox", changed)
+			data, err := SignedBytes("bot.a.inbox", changed)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -33,7 +33,7 @@ func TestSignedMessageBindsRouteContextAndPayload(t *testing.T) {
 			}
 		})
 	}
-	otherSubject, err := SignedBytes("node.b.inbox", original)
+	otherSubject, err := SignedBytes("bot.b.inbox", original)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -21,7 +21,7 @@ func TestCodexDeliversBeforeNativeProcessCompletes(t *testing.T) {
 	dir := t.TempDir()
 	gate, record := filepath.Join(dir, "release"), filepath.Join(dir, "request.json")
 	var logs bytes.Buffer
-	a, _ := NewCodexAdapter(CodexConfig{NodeID: "receiver", Logger: slog.New(slog.NewJSONHandler(&logs, nil))})
+	a, _ := NewCodexAdapter(testCodexConfig(t, CodexConfig{BotID: "receiver", Logger: slog.New(slog.NewJSONHandler(&logs, nil))}))
 	a.command = helperCommand("codex", "gate", record, gate)
 	observed := make(chan string, 1)
 	done := make(chan error, 1)
@@ -88,7 +88,7 @@ func TestCodexPartialOutputCannotBecomeSuccess(t *testing.T) {
 		{"raw", "native_schema"}, {"empty", "incomplete_output"}, {"start-only", "incomplete_output"},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
-			a, _ := NewCodexAdapter(CodexConfig{})
+			a, _ := NewCodexAdapter(testCodexConfig(t, CodexConfig{}))
 			a.command = helperCommand("codex", tc.mode, "", "")
 			var answer strings.Builder
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -110,7 +110,7 @@ func TestNativeOutputLimitsStopTheProcess(t *testing.T) {
 		{"event-limit", "event_limit", "stdout"}, {"total-limit", "output_limit", "stdout"}, {"stderr-limit", "output_limit", "stderr"},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
-			a, _ := NewCodexAdapter(CodexConfig{})
+			a, _ := NewCodexAdapter(testCodexConfig(t, CodexConfig{}))
 			a.command = helperCommand("codex", tc.mode, "", "")
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -124,7 +124,7 @@ func TestNativeOutputLimitsStopTheProcess(t *testing.T) {
 }
 
 func TestEmitFailureTerminatesNativeProcess(t *testing.T) {
-	a, _ := NewCodexAdapter(CodexConfig{})
+	a, _ := NewCodexAdapter(testCodexConfig(t, CodexConfig{}))
 	a.command = helperCommand("codex", "block", "", "")
 	consumerErr := errors.New("consumer stopped")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -139,7 +139,7 @@ func TestEmitFailureTerminatesNativeProcess(t *testing.T) {
 func TestCancellationStopsNativeDescendants(t *testing.T) {
 	dir := t.TempDir()
 	gate, escaped := filepath.Join(dir, "release-child"), filepath.Join(dir, "escaped")
-	a, _ := NewCodexAdapter(CodexConfig{})
+	a, _ := NewCodexAdapter(testCodexConfig(t, CodexConfig{}))
 	a.command = helperCommand("codex", "tree", escaped, gate)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -160,7 +160,7 @@ func TestCancellationStopsNativeDescendants(t *testing.T) {
 }
 
 func TestNativeTimeoutIsStructured(t *testing.T) {
-	a, _ := NewCodexAdapter(CodexConfig{})
+	a, _ := NewCodexAdapter(testCodexConfig(t, CodexConfig{}))
 	a.command = helperCommand("codex", "block", "", "")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -173,10 +173,10 @@ func TestNativeTimeoutIsStructured(t *testing.T) {
 
 func TestCodexUnavailableSessionIsNotRetried(t *testing.T) {
 	fs := store.NewFSStore(t.TempDir())
-	if err := fs.SaveSessionState(store.SessionState{Adapter: "codex", SessionKey: "conversation", SessionID: "thread_existing"}); err != nil {
+	a, _ := NewCodexAdapter(testCodexConfig(t, CodexConfig{SessionStore: fs}))
+	if err := fs.SaveSessionState(store.SessionState{Adapter: "codex", SessionKey: a.scopedSessionKey("conversation"), SessionID: "thread_existing"}); err != nil {
 		t.Fatal(err)
 	}
-	a, _ := NewCodexAdapter(CodexConfig{SessionStore: fs})
 	factory := helperCommand("codex", "unknown-session", "", "")
 	calls := 0
 	a.command = func(ctx context.Context, args ...string) *exec.Cmd { calls++; return factory(ctx, args...) }
@@ -187,7 +187,7 @@ func TestCodexUnavailableSessionIsNotRetried(t *testing.T) {
 	if calls != 1 || !strings.Contains(err.Error(), "create a new session") {
 		t.Fatalf("unavailable session must not cause duplicate execution: calls=%d err=%v", calls, err)
 	}
-	state, found, err := fs.LoadSessionState("codex", "conversation")
+	state, found, err := fs.LoadSessionState("codex", a.scopedSessionKey("conversation"))
 	if err != nil || !found || state.SessionID != "thread_existing" {
 		t.Fatalf("unavailable mapping was silently replaced: %+v %v", state, err)
 	}
@@ -196,14 +196,14 @@ func TestCodexUnavailableSessionIsNotRetried(t *testing.T) {
 func TestSessionStoreFailuresAreNotSilentlyIgnored(t *testing.T) {
 	t.Run("load", func(t *testing.T) {
 		fs := store.NewFSStore(t.TempDir())
-		path, _ := fs.SessionPath("codex", "conversation")
+		a, _ := NewCodexAdapter(testCodexConfig(t, CodexConfig{SessionStore: fs}))
+		path, _ := fs.SessionPath("codex", a.scopedSessionKey("conversation"))
 		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(path, []byte("broken JSON"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		a, _ := NewCodexAdapter(CodexConfig{SessionStore: fs})
 		_, err := a.DeliverMessage(context.Background(), DeliverMessageRequest{Message: "task", SessionKey: "conversation"})
 		failure := assertExecutionCode(t, err, "session_store")
 		if failure.Stage != "session_load" || failure.Indeterminate {
@@ -216,7 +216,7 @@ func TestSessionStoreFailuresAreNotSilentlyIgnored(t *testing.T) {
 		if err := os.WriteFile(blocked, []byte("not a directory"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		a, _ := NewCodexAdapter(CodexConfig{SessionStore: fs})
+		a, _ := NewCodexAdapter(testCodexConfig(t, CodexConfig{SessionStore: fs}))
 		a.command = helperCommand("codex", "success", "", "")
 		_, err := a.DeliverMessage(context.Background(), DeliverMessageRequest{Message: "task", SessionKey: "conversation", Emit: func(OutputEvent) error { fs.BaseDir = blocked; return nil }})
 		failure := assertExecutionCode(t, err, "session_store")
@@ -229,7 +229,7 @@ func TestSessionStoreFailuresAreNotSilentlyIgnored(t *testing.T) {
 func TestCodexStatusDoesNotMistakeVersionForReadiness(t *testing.T) {
 	for _, mode := range []string{"status-version-only", "status-no-auth"} {
 		t.Run(mode, func(t *testing.T) {
-			a, _ := NewCodexAdapter(CodexConfig{})
+			a, _ := NewCodexAdapter(testCodexConfig(t, CodexConfig{}))
 			a.command = helperCommand("codex", mode, "", "")
 			status, _ := a.GetStatus(context.Background())
 			if status.Healthy || !status.Degraded {
@@ -240,7 +240,7 @@ func TestCodexStatusDoesNotMistakeVersionForReadiness(t *testing.T) {
 }
 
 func TestCodexRejectsAgentSelection(t *testing.T) {
-	a, _ := NewCodexAdapter(CodexConfig{})
+	a, _ := NewCodexAdapter(testCodexConfig(t, CodexConfig{}))
 	_, err := a.DeliverMessage(context.Background(), DeliverMessageRequest{AgentID: "build", Message: "task"})
 	failure := assertExecutionCode(t, err, "unsupported_agent")
 	if failure.Indeterminate {

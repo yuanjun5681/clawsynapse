@@ -33,7 +33,7 @@ func TestOpenClawRequiresCompletedNativeResponse(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("CLI_JSON", tc.body)
-			a, _ := NewOpenClawAdapter(OpenClawConfig{})
+			a, _ := NewOpenClawAdapter(testOpenClawConfig(t, OpenClawConfig{}))
 			a.command = helperCommand("openclaw", "native-json", "", "")
 			result, err := a.DeliverMessage(context.Background(), DeliverMessageRequest{Message: "task"})
 			if !tc.success {
@@ -51,7 +51,7 @@ func TestOpenClawRequiresCompletedNativeResponse(t *testing.T) {
 
 func TestOpenClawStructuredTaskAndAuthorizedAgent(t *testing.T) {
 	record := filepath.Join(t.TempDir(), "request")
-	a, _ := NewOpenClawAdapter(OpenClawConfig{NodeID: "receiver", AllowAgentIDs: []string{"research"}})
+	a, _ := NewOpenClawAdapter(testOpenClawConfig(t, OpenClawConfig{BotID: "receiver", AllowAgentIDs: []string{"research"}}))
 	a.command = helperCommand("openclaw", "success", record, "")
 	var answer strings.Builder
 	result, err := a.DeliverMessage(context.Background(), DeliverMessageRequest{
@@ -90,9 +90,8 @@ func TestOpenClawNamedAgentAndSessionInputCannotBecomeShellDispatch(t *testing.T
 		{AgentID: "unauthorized", Message: "task"},
 		{AgentID: "research;id", Message: "task"},
 		{AgentID: "--help", Message: "task"},
-		{SessionKey: "conversation;id", Message: "task"},
 	} {
-		a, _ := NewOpenClawAdapter(OpenClawConfig{AllowAgentIDs: []string{"research;id", "--help"}})
+		a, _ := NewOpenClawAdapter(testOpenClawConfig(t, OpenClawConfig{AllowAgentIDs: []string{"research;id", "--help"}}))
 		_, err := a.DeliverMessage(context.Background(), req)
 		if err == nil {
 			t.Fatal("unsafe or unauthorized local routing was accepted")
@@ -101,7 +100,7 @@ func TestOpenClawNamedAgentAndSessionInputCannotBecomeShellDispatch(t *testing.T
 }
 
 func TestOpenClawStatusChecksGatewayWithoutRunningModelTask(t *testing.T) {
-	a, _ := NewOpenClawAdapter(OpenClawConfig{})
+	a, _ := NewOpenClawAdapter(testOpenClawConfig(t, OpenClawConfig{}))
 	a.command = helperCommand("openclaw", "status-openclaw", "", "")
 	status, err := a.GetStatus(context.Background())
 	if err != nil || !status.Healthy || status.Degraded {

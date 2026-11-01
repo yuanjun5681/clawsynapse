@@ -1,7 +1,8 @@
 package store
 
 import (
-	"encoding/json"
+	"clawsynapse/internal/protocol"
+	"errors"
 	"os"
 	"path/filepath"
 
@@ -9,7 +10,7 @@ import (
 )
 
 // PeerAttrsState persists locally maintained peer remarks (alias,
-// description, labels) keyed by NodeID. Remote heartbeats never touch this
+// description, labels) keyed by BotID. Remote heartbeats never touch this
 // file.
 type PeerAttrsState struct {
 	SchemaVersion int                             `json:"schemaVersion"`
@@ -21,29 +22,32 @@ func (s *FSStore) PeerAttrsPath() string {
 }
 
 func (s *FSStore) ensurePeerAttrsState() error {
-	if _, err := os.Stat(s.PeerAttrsPath()); err == nil {
-		return nil
+	if _, err := os.Lstat(s.PeerAttrsPath()); err == nil {
+		_, err = s.LoadPeerAttrsState()
+		return err
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	st := PeerAttrsState{SchemaVersion: 1}
 	return WriteJSONAtomic(s.PeerAttrsPath(), st, 0o600)
 }
 
 func (s *FSStore) LoadPeerAttrsState() (PeerAttrsState, error) {
-	b, err := os.ReadFile(s.PeerAttrsPath())
+	b, err := ReadFile(s.PeerAttrsPath())
 	if err != nil {
 		return PeerAttrsState{}, err
 	}
 
 	var st PeerAttrsState
-	if err := json.Unmarshal(b, &st); err != nil {
+	if err := protocol.DecodeStrictLimit(b, &st, 64<<20); err != nil {
 		return PeerAttrsState{}, err
 	}
-	if st.SchemaVersion == 0 {
-		st.SchemaVersion = 1
+	if st.SchemaVersion != 1 {
+		return PeerAttrsState{}, errors.New("invalid peer attributes schema")
 	}
-	for nodeID, attrs := range st.Peers {
+	for botID, attrs := range st.Peers {
 		if attrs.IsZero() {
-			delete(st.Peers, nodeID)
+			delete(st.Peers, botID)
 		}
 	}
 	return st, nil

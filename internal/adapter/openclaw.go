@@ -3,8 +3,8 @@ package adapter
 import "log/slog"
 
 type OpenClawConfig struct {
-	NodeID string
-	Logger *slog.Logger
+	BotID, BindingRevision, Workspace, Model string
+	Logger                                   *slog.Logger
 	// AllowAgentIDs is local authorization, not a remotely supplied selector.
 	AllowAgentIDs []string
 }
@@ -14,5 +14,9 @@ type OpenClawConfig struct {
 type OpenClawAdapter struct{ *cliAdapter }
 
 func NewOpenClawAdapter(cfg OpenClawConfig) (*OpenClawAdapter, error) {
-	return &OpenClawAdapter{newCLIAdapter("openclaw", cfg.NodeID, cfg.Logger, nil, cfg.AllowAgentIDs)}, nil
+	cli, err := newCLIAdapter("openclaw", cfg.BotID, cfg.BindingRevision, cfg.Workspace, cfg.Model, cfg.Logger, nil, cfg.AllowAgentIDs)
+	if err != nil {
+		return nil, err
+	}
+	return &OpenClawAdapter{cli}, nil
 }

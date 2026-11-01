@@ -24,9 +24,9 @@ announceTtl: 30s
 agentProduct: clawsynapse
 # Empty uses the clawsynapsed build version.
 agentVersion: ""
-# Human readable node name shown to peers (empty = unset).
+# Human readable Bot name shown to peers (empty = unset).
 displayName: ""
-# Node attributes advertised in discovery. Values are a string or a list of
+# Bot attributes advertised in discovery. Values are a string or a list of
 # strings. "caps" is the reserved self-reported capability set.
 labels:
   env: production

@@ -1,9 +1,9 @@
 package store
 
 import (
+	"clawsynapse/internal/protocol"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -23,6 +23,9 @@ type SessionState struct {
 func (s *FSStore) SessionPath(adapterName, sessionKey string) (string, error) {
 	adapterName = strings.ToLower(strings.TrimSpace(adapterName))
 	sessionKey = strings.TrimSpace(sessionKey)
+	if adapterName != filepath.Base(adapterName) || adapterName == "." || adapterName == ".." || strings.ContainsAny(adapterName, `/\\`) {
+		return "", errors.New("invalid adapter name")
+	}
 	if adapterName == "" {
 		return "", errors.New("adapter name is required")
 	}
@@ -32,7 +35,11 @@ func (s *FSStore) SessionPath(adapterName, sessionKey string) (string, error) {
 
 	hash := sha256.Sum256([]byte(sessionKey))
 	hexHash := hex.EncodeToString(hash[:])
-	return filepath.Join(s.BaseDir, "sessions", adapterName, hexHash[:2], hexHash+".json"), nil
+	dir := s.SessionDir
+	if dir == "" {
+		dir = filepath.Join(s.BaseDir, "sessions")
+	}
+	return filepath.Join(dir, adapterName, hexHash[:2], hexHash+".json"), nil
 }
 
 func (s *FSStore) LoadSessionState(adapterName, sessionKey string) (SessionState, bool, error) {
@@ -41,7 +48,7 @@ func (s *FSStore) LoadSessionState(adapterName, sessionKey string) (SessionState
 		return SessionState{}, false, err
 	}
 
-	b, err := os.ReadFile(path)
+	b, err := ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return SessionState{}, false, nil
@@ -50,17 +57,11 @@ func (s *FSStore) LoadSessionState(adapterName, sessionKey string) (SessionState
 	}
 
 	var st SessionState
-	if err := json.Unmarshal(b, &st); err != nil {
+	if err := protocol.DecodeStrict(b, &st); err != nil {
 		return SessionState{}, false, err
 	}
-	if st.SchemaVersion == 0 {
-		st.SchemaVersion = 1
-	}
-	if strings.TrimSpace(st.Adapter) == "" {
-		st.Adapter = strings.ToLower(strings.TrimSpace(adapterName))
-	}
-	if strings.TrimSpace(st.SessionKey) == "" {
-		st.SessionKey = strings.TrimSpace(sessionKey)
+	if st.SchemaVersion != 1 || st.Adapter != strings.ToLower(strings.TrimSpace(adapterName)) || st.SessionKey != strings.TrimSpace(sessionKey) || strings.TrimSpace(st.SessionID) == "" {
+		return SessionState{}, false, errors.New("invalid or mismatched session state")
 	}
 	return st, true, nil
 }

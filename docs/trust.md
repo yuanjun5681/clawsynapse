@@ -5,7 +5,7 @@ title: "ClawSynapse Trust"
 
 # ClawSynapse Trust
 
-最后更新：2026-03-12
+最后更新：2026-10-31
 
 ## 设计目标
 
@@ -16,50 +16,65 @@ ClawSynapse 的 Trust 设计同时解决两个问题：
 
 因此本文将身份认证与信任建立拆成两层：
 
-- `身份认证`：确认某个节点确实持有与其公钥对应的私钥
-- `信任授权`：确认该节点是否被允许与本节点建立持久关系
+- `身份认证`：确认某个 Bot 确实持有与其公钥对应的私钥
+- `信任授权`：确认该 Bot 是否被允许与本地 Bot 建立持久关系
 
 认证成功不等于自动获得业务访问权限。生产环境应将“我认识它”和“我允许它接入”视为两个独立判断。
 
 ## 身份模型
 
-ClawSynapse 使用基于 Ed25519 的节点身份模型：
+ClawSynapse 使用基于 Ed25519 的 Bot 身份模型；网络 v2 的 `nodeId` 标识 Bot，而非 daemon 或机器：
 
-- 每个节点首次启动时生成本地密钥对
-- 私钥仅保存在本机文件系统
+- 创建新 Bot 时生成独立密钥对；已有 Bot 启动只加载并验证密钥，缺失或损坏即失败
+- 公钥派生 `did:key`，再派生 `botId = "n1-" + hex(sha256(did)[:16])`；它与 wire v2 的 `nodeId` 为同一值
+- 私钥仅保存在该 Bot 的本机凭据目录，daemon 不持有替代所有 Bot 的公共网络身份
 - 公钥通过 announce 广播或控制面交换
 - 首次通信前执行 challenge-response 握手
-- 后续控制消息和业务消息可附带签名
+- 后续控制消息和业务消息按 wire v2 规范签名；本地 Bot 命名不改变 `nodeId/from/to`、subject、签名或 consumer 契约
 - 接收侧校验时间戳、随机数和签名，防止重放与冒充
 
 ### 本地状态目录
 
 ```text
 ~/.clawsynapse/
-├── identity.key
-├── identity.pub
-├── trust.json
-├── replay-cache.json
-└── peers/
-    ├── n1-11223344556677889900aabbccddeeff.json
-    └── n1-ffeeddccbbaa00998877665544332211.json
+├── config.json                 # daemon 配置，不是 Bot 身份
+├── admin.token                 # daemon 管理凭据，不分发给 Harness
+├── blobs/                      # 共享不可变实体；摘要不是授权
+└── bots/<botId>/
+    ├── config.json             # Bot 策略和 Harness Binding
+    ├── credentials/
+    │   ├── identity.key
+    │   ├── identity.pub
+    │   └── api.token           # 只授权当前 Bot 的本地业务访问
+    ├── trust.json
+    ├── replay-cache.json
+    ├── peer-attrs.json
+    ├── peers/
+    ├── sessions/<bindingRevision>/
+    └── transfers/              # 该 Bot 的记录与文件引用
 ```
 
-- `identity.key`：本地私钥，仅本机可读
-- `identity.pub`：本地公钥
-- `trust.json`：信任、待审批、撤销等持久化状态
-- `replay-cache.json`：最近见过的 challenge / nonce / message id 缓存
-- `peers/*.json`：缓存的 peer 公钥、指纹、首次见到时间、最后认证结果
+- `credentials/identity.key` / `identity.pub`：Bot 私钥和公钥；私钥保持受限权限
+- `trust.json`：该 Bot 的信任、待审批和撤销状态
+- `replay-cache.json`：该 Bot 的 challenge / nonce 重放状态
+- `peers/*.json`：该 Bot 缓存的 peer 公钥、指纹及认证结果
+- `peer-attrs.json`：该 Bot 对远端的本地备注，不广播且不被心跳覆盖
+
+A 信任 R 不代表 B 信任 R；A 撤销 R 不改变 B，A/B 同宿主也不默认互信。Harness 内部 Agent、Session 与模型不拥有独立网络信任；Session 按 Bot、Binding 修订及外部会话作用域隔离。共享进程、同 OS 用户不是强多租户安全沙箱。
+
+信任只授权通信，不同步文件、不创建文件引用。共享 blob 的读取/转发仍需当前 Bot 的有效引用；知道摘要或另一个 Bot 已接收不构成授权。Harness 只获得独立工作副本，不获得全局实体路径。离线备份/单 Bot 导出必须包含其引用指向的全部实体；仅复制 `bots/<botId>/` 不完整，导入保留原身份并重新生成本地访问凭据。
+
+本地操作显式选择 Bot，例如 `clawsynapse --bot <local-bot-id> trust pending`；HTTP 使用 `/v2/bots/{botId}/trust/...`。Bot 作用域 token 不能管理其他 Bot 或修改绑定，也不能作为 daemon 管理凭据。
 
 ## 信任模式
 
-- `open`：不验证签名，仅用于开发和测试
+- `open`：仅用于非生产联调，跳过常规业务信任门禁，但仍要求已发现身份和有效签名
 - `tofu`：首次见到时记录公钥，后续严格校验是否发生漂移
 - `explicit`：仅接受预配置公钥或受信任控制面分发的公钥
 
 | 模式 | 说明 | 适用场景 |
 |------|------|----------|
-| `open` | 接受所有消息，不校验签名 | 本地开发、临时联调 |
+| `open` | 非生产业务门禁放宽；仍验身份与签名 | 本地开发、临时联调 |
 | `tofu` | 首次见到写入本地指纹，后续严格比对 | 小团队、受控网络 |
 | `explicit` | 仅接受预配置或受控分发的公钥 | 生产环境、跨网络部署 |
 
@@ -70,13 +85,13 @@ ClawSynapse 使用基于 Ed25519 的节点身份模型：
 - 若使用 `tofu`，必须启用 key mismatch 告警
 - 为 NATS 开启认证与 ACL
 - 跨网络部署时启用 TLS
-- 确保节点时钟同步，例如使用 NTP
+- 确保宿主设备时钟同步，例如使用 NTP
 
 ## 认证层与信任层
 
 ### 身份状态
 
-- `unknown`：从未见过该节点
+- `unknown`：从未见过该 Bot
 - `seen`：已收到 announce 或元数据，但尚未完成认证
 - `auth_pending`：挑战已发出，等待对端响应
 - `authenticated`：挑战校验成功，身份已确认
@@ -108,7 +123,7 @@ ClawSynapse 应对发现信息进行分级暴露，而不是默认全部公开�
 | `publicKey` 指纹 | 可选公开 | 用于 TOFU / 预检，不应泄露私钥材料 |
 | `hostname` / 标签 | 建议受限 | 可按租户、命名空间或 allowlist 控制 |
 | 真实业务 endpoint | 仅 trusted 可见 | 避免未授权探测与骚扰 |
-| `labels`（含 `caps` 自报能力）/ service list | 仅 trusted 或同租户可见 | 防止服务枚举；`caps` 是节点自报属性，不是就绪状态或授权 |
+| `labels`（含 `caps` 自报能力）/ service list | 仅 trusted 或同租户可见 | 防止服务枚举；`caps` 是 Bot 自报属性，不是就绪状态或授权 |
 
 推荐做法：
 
@@ -120,7 +135,7 @@ ClawSynapse 应对发现信息进行分级暴露，而不是默认全部公开�
 
 ClawSynapse 不建议将“公钥私钥加密”笼统地理解为直接用长期身份密钥去加密所有业务数据。更合理的分层是：
 
-- `Ed25519`：用于节点身份、握手签名、审批签名、撤销签名
+- `Ed25519`：用于 Bot 身份、握手签名、审批签名、撤销签名
 - `X25519`：用于在双方之间协商临时会话密钥
 - `AES-256-GCM` 或 `ChaCha20-Poly1305`：用于加密真实业务流量
 
@@ -128,7 +143,7 @@ ClawSynapse 不建议将“公钥私钥加密”笼统地理解为直接用长�
 
 #### 1. 身份证明
 
-- 节点首次启动时生成长期身份密钥对
+- 创建新 Bot 时生成长期身份密钥对，启动现有 Bot 不重新生成
 - 私钥仅保存在本地文件系统
 - 公钥通过 announce、控制面或预配置方式分发
 - 后续所有 trust 相关操作都基于该身份密钥签名
@@ -206,7 +221,7 @@ ClawSynapse 不建议将“公钥私钥加密”笼统地理解为直接用长�
 ### 典型时序图
 
 ```text
-Node A                                         Node B
+Bot A                                          Bot B
   |                                               |
   | clawsynapse.auth.<targetNodeId>.challenge.request |
   |---------------------------------------------->|
@@ -240,7 +255,7 @@ Node A                                         Node B
 若直连 challenge 或 trust request 失败，可插入一层控制面中继：
 
 ```text
-Node A              Control Plane / NATS Inbox              Node B
+Bot A               Control Plane / NATS Inbox              Bot B
   |                           |                               |
   | clawsynapse.trust.<targetNodeId>.request                 |
   |-------------------------->|                               |
@@ -279,12 +294,12 @@ clawsynapse.auth.<targetNodeId>.challenge.ack
 
 ### 流程
 
-1. Node A 发送 challenge request，包含 `from`、`publicKey`、`nonceA`、`ts`
-2. Node B 校验请求时间窗口与 nonce 去重情况
-3. Node B 返回 challenge response，包含 `nonceB` 与对 `nonceA|fromA|fromB|tsA` 的签名 `proof`
-4. Node A 校验 Node B 的签名与公钥
-5. Node A 回发 challenge ack，对 `nonceB|fromB|fromA|tsB` 进行签名确认
-6. Node B 校验成功后，将对端身份状态更新为 `authenticated`
+1. Bot A 发送 challenge request，包含 `from`、`publicKey`、`nonceA`、`ts`
+2. Bot B 校验请求时间窗口与 nonce 去重情况
+3. Bot B 返回 challenge response，包含 `nonceB` 与对 `nonceA|fromA|fromB|tsA` 的签名 `proof`
+4. Bot A 校验 Bot B 的签名与公钥
+5. Bot A 回发 challenge ack，对 `nonceB|fromB|fromA|tsB` 进行签名确认
+6. Bot B 校验成功后，将对端身份状态更新为 `authenticated`
 
 说明：
 
@@ -351,50 +366,37 @@ clawsynapse.trust.<targetNodeId>.revoke
 
 ### 流程
 
-1. Node A 完成对 Node B 的身份认证
-2. Node A 发送 trust request，包含 `from`、`reason`、`ts`、`requestId`、`signature`
-3. Node B 将该请求写入本地 `pending`
-4. Node B 可按策略自动处理，或由操作者执行 approve / reject
+1. Bot A 完成对 Bot B 的身份认证
+2. Bot A 发送 trust request，包含 `from`、`reason`、`ts`、`requestId`、`signature`
+3. Bot B 将该请求写入本地 `pending`
+4. Bot B 可按策略自动处理，或由操作者执行 approve / reject
 5. 若 approve，则双方状态进入 `trusted`
 6. 若 reject，则本地记录为 `rejected`，并向发起方返回拒绝原因
 
-当前实现提供一个有限的自动批准开关：
+当前实现提供每 Bot 的显式自动批准开关，默认关闭，在该 Bot 的 JSON 配置中设置：
 
-```yaml
-trustAutoApprove: true
+```json
+{"trustAutoApprove": true}
 ```
 
-开启后，本节点收到任意签名校验通过的 inbound `trust.request` 都会立即返回
-`trust.response(approve)`，并将对端写入本地 `trusted`。发起方收到 approve
-响应后也会将本节点写入 `trusted`，从而形成自动互相信任。
+这只是配置片段；更新配置应使用完整 Bot 配置及当前修订号。开启后，该 Bot 收到签名及协议校验通过的 inbound `trust.request` 时自动批准，响应方与发起方再各自记录对端的信任状态。它不把同 daemon 的其他 Bot 加入信任关系，也不授权任何文件。
 
-该模式适合受控网络内的自动组网。生产或跨网络部署应保持默认关闭，并继续由操作者执行
-approve / reject。
-
-### mutual trust
-
-若 Node A 与 Node B 独立地都向对方发起 trust request，则可触发自动互认：
-
-- 如果双方都已完成身份认证
-- 且本地策略允许 `mutual auto-approve`
-- 则双方可从 `pending` 或 `none` 直接进入 `trusted`
-
-这适合 agent-to-agent 自动组网，但应允许配置关闭。
+该模式只适合部署者明确选择的受控网络。生产或跨网络部署应保持关闭，由操作者执行 approve / reject。仅仅同宿主、彼此发现或双方都发起请求，不是独立的自动互认条件；当前没有另一个 `mutual auto-approve` 配置。
 
 ## 中继握手
 
-节点之间未必总能直接收发 challenge 或 trust request，因此需要中继路径：
+Bot 之间未必总能直接收发 challenge 或 trust request，因此需要中继路径：
 
 - 优先走直接 subject / 点对点通道
 - 直连失败时，回退到控制面 inbox 或 NATS 中继 subject
-- 目标节点通过轮询或订阅 inbox 获取待处理请求
+- 目标 Bot 通过轮询或订阅 inbox 获取待处理请求
 
 建议增加两类控制面能力：
 
 - `control.trust.poll`：拉取并清空待处理的 trust request
 - `control.trust.response`：对待处理请求返回 approve / reject
 
-中继只负责转发请求与响应，不应代替终端节点做签名校验。
+中继只负责转发请求与响应，不应代替终端 Bot 做签名校验。
 
 ## 状态机
 
@@ -422,7 +424,7 @@ approve / reject。
 ┌───────┐   trust request   ┌─────────┐   approve   ┌─────────┐
 │ none  ├──────────────────►│ pending ├────────────►│ trusted │
 └───┬───┘                   └────┬────┘             └────┬────┘
-    │ reject                         │ mutual auto-approve     │ revoke
+    │ reject                         │ 显式自动批准策略        │ revoke
     ▼                                └───────────────►─────────┘
 ┌──────────┐                                               ▼
 │ rejected │                                          ┌─────────┐
@@ -519,7 +521,7 @@ approve / reject。
 
 - challenge、trust request、approve / reject / revoke 都必须是可签名、可审计的控制消息
 - `authenticated` 与 `trusted` 必须保持语义分离
-- 中继只负责转发，不替代终端节点执行信任决策
+- 中继只负责转发，不替代终端 Bot 执行信任决策
 - 所有信任状态迁移都应映射到统一协议状态值与错误码
 
 ## 实现建议
@@ -530,4 +532,4 @@ approve / reject。
 2. 再实现独立的 trust request / approve / reject / revoke
 3. 为 pending / trusted / revoked 增加持久化
 4. 增加 replay cache 与时间窗口校验
-5. 最后补充 relay inbox、mutual auto-approve 与策略控制
+5. 中继与其他自动信任策略须另行定义，不因同 daemon 或发现关系而自动授信

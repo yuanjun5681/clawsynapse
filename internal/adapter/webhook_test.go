@@ -14,7 +14,7 @@ import (
 )
 
 func TestWebhookAdapterRequiresURL(t *testing.T) {
-	_, err := NewWebhookAdapter(WebhookConfig{NodeID: "n1"})
+	_, err := NewWebhookAdapter(testWebhookConfig(t, WebhookConfig{BotID: "n1"}))
 	if err == nil {
 		t.Fatal("expected error for empty url")
 	}
@@ -41,7 +41,7 @@ func TestWebhookDeliverMessageSuccess(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	a, err := NewWebhookAdapter(WebhookConfig{NodeID: "node-1", URL: srv.URL, AuthToken: " webhook-secret "})
+	a, err := NewWebhookAdapter(testWebhookConfig(t, WebhookConfig{BotID: "bot-1", URL: srv.URL, AuthToken: " webhook-secret "}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,8 +68,8 @@ func TestWebhookDeliverMessageSuccess(t *testing.T) {
 		t.Fatalf("unexpected reply: %s", result.Reply)
 	}
 
-	if received.NodeID != "node-1" {
-		t.Fatalf("expected nodeId node-1, got %s", received.NodeID)
+	if received.BotID != "bot-1" {
+		t.Fatalf("expected receiving Bot identity bot-1, got %s", received.BotID)
 	}
 	if received.MessageID != "msg-123" {
 		t.Fatalf("expected messageId msg-123, got %s", received.MessageID)
@@ -106,7 +106,7 @@ func TestWebhookDeliverMessageRequestDecodesEscapedNewlines(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	a, err := NewWebhookAdapter(WebhookConfig{NodeID: "node-1", URL: srv.URL})
+	a, err := NewWebhookAdapter(testWebhookConfig(t, WebhookConfig{BotID: "bot-1", URL: srv.URL}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestWebhookDeliverMessageJSONReplyDecodesEscapedNewlines(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	a, err := NewWebhookAdapter(WebhookConfig{NodeID: "node-1", URL: srv.URL})
+	a, err := NewWebhookAdapter(testWebhookConfig(t, WebhookConfig{BotID: "bot-1", URL: srv.URL}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestWebhookDeliverMessageServerError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	a, err := NewWebhookAdapter(WebhookConfig{NodeID: "n1", URL: srv.URL})
+	a, err := NewWebhookAdapter(testWebhookConfig(t, WebhookConfig{BotID: "n1", URL: srv.URL}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestWebhookGetStatusHealthy(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	a, err := NewWebhookAdapter(WebhookConfig{NodeID: "n1", URL: srv.URL, AuthToken: "status-secret"})
+	a, err := NewWebhookAdapter(testWebhookConfig(t, WebhookConfig{BotID: "n1", URL: srv.URL, AuthToken: "status-secret"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestWebhookGetStatusUnhealthy(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	a, err := NewWebhookAdapter(WebhookConfig{NodeID: "n1", URL: srv.URL})
+	a, err := NewWebhookAdapter(testWebhookConfig(t, WebhookConfig{BotID: "n1", URL: srv.URL}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +224,7 @@ func TestWebhookGetStatusUnhealthyWhenUnauthorized(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	a, err := NewWebhookAdapter(WebhookConfig{NodeID: "n1", URL: srv.URL, AuthToken: "wrong-secret"})
+	a, err := NewWebhookAdapter(testWebhookConfig(t, WebhookConfig{BotID: "n1", URL: srv.URL, AuthToken: "wrong-secret"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestWebhookFeedbackPreservesStructuredPayloadAndCorrelation(t *testing.T) {
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	defer srv.Close()
-	a, _ := NewWebhookAdapter(WebhookConfig{URL: srv.URL})
+	a, _ := NewWebhookAdapter(testWebhookConfig(t, WebhookConfig{URL: srv.URL}))
 	result, err := a.DeliverMessage(context.Background(), DeliverMessageRequest{
 		Type: "run.failed", MessageID: "event", RequestID: "request", RunID: "run", Seq: 3,
 		Payload: protocol.MessagePayload{Text: "partial", Code: "timeout", Stage: "execution", Indeterminate: true},
@@ -277,7 +277,7 @@ func TestWebhookDistinguishesCompletedAndAcceptedResponses(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(tc.body)) }))
 			defer srv.Close()
-			a, _ := NewWebhookAdapter(WebhookConfig{URL: srv.URL})
+			a, _ := NewWebhookAdapter(testWebhookConfig(t, WebhookConfig{URL: srv.URL}))
 			var emitted string
 			result, err := a.DeliverMessage(context.Background(), DeliverMessageRequest{Message: "task", Emit: func(event OutputEvent) error { emitted += event.Text; return nil }})
 			if err != nil || result.Completed != tc.completed {
@@ -298,7 +298,7 @@ func TestWebhookRejectsOversizedReplyBeforeEmitting(t *testing.T) {
 		_, _ = io.WriteString(w, strings.Repeat("answer", 1000))
 	}))
 	defer srv.Close()
-	a, err := NewWebhookAdapter(WebhookConfig{NodeID: "local", URL: srv.URL})
+	a, err := NewWebhookAdapter(testWebhookConfig(t, WebhookConfig{BotID: "local", URL: srv.URL}))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -41,7 +41,7 @@ type Service struct {
 	log       *slog.Logger
 	peers     *discovery.Registry
 	bus       *natsbus.Client
-	nodeID    string
+	botID     string
 	identity  *identity.Identity
 	replay    *ReplayGuard
 	trustMode string
@@ -51,12 +51,12 @@ type Service struct {
 	acks    map[string]*pendingAck
 }
 
-func NewService(log *slog.Logger, peers *discovery.Registry, bus *natsbus.Client, nodeID string, id *identity.Identity, replay *ReplayGuard, trustMode string) *Service {
+func NewService(log *slog.Logger, peers *discovery.Registry, bus *natsbus.Client, botID string, id *identity.Identity, replay *ReplayGuard, trustMode string) *Service {
 	return &Service{
 		log:       log,
 		peers:     peers,
 		bus:       bus,
-		nodeID:    nodeID,
+		botID:     botID,
 		identity:  id,
 		replay:    replay,
 		trustMode: trustMode,
@@ -66,38 +66,38 @@ func NewService(log *slog.Logger, peers *discovery.Registry, bus *natsbus.Client
 }
 
 func (s *Service) Start() error {
-	if _, err := s.bus.Subscribe("clawsynapse.auth."+s.nodeID+".challenge.request", s.handleChallengeRequest); err != nil {
+	if _, err := s.bus.Subscribe("clawsynapse.auth."+s.botID+".challenge.request", s.handleChallengeRequest); err != nil {
 		return err
 	}
-	if _, err := s.bus.Subscribe("clawsynapse.auth."+s.nodeID+".challenge.response", s.handleChallengeResponse); err != nil {
+	if _, err := s.bus.Subscribe("clawsynapse.auth."+s.botID+".challenge.response", s.handleChallengeResponse); err != nil {
 		return err
 	}
-	if _, err := s.bus.Subscribe("clawsynapse.auth."+s.nodeID+".challenge.ack", s.handleChallengeAck); err != nil {
+	if _, err := s.bus.Subscribe("clawsynapse.auth."+s.botID+".challenge.ack", s.handleChallengeAck); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (s *Service) StartChallenge(ctx context.Context, targetNode string) error {
-	if targetNode == "" {
-		return errors.New("targetNode is required")
+func (s *Service) StartChallenge(ctx context.Context, targetBot string) error {
+	if targetBot == "" {
+		return errors.New("targetBot is required")
 	}
 
-	_, ok := s.peers.Get(targetNode)
+	_, ok := s.peers.Get(targetBot)
 	if !ok {
 		return errors.New("target peer not found")
 	}
 
 	if s.trustMode == "open" {
-		_ = s.peers.SetAuthStatus(targetNode, types.AuthAuthenticated)
+		_ = s.peers.SetAuthStatus(targetBot, types.AuthAuthenticated)
 		s.log.Info("authentication accepted in open mode",
 			logging.Event("auth.challenge.skipped"),
-			logging.Peer(targetNode),
+			logging.Peer(targetBot),
 		)
 		return nil
 	}
 
-	_ = s.peers.SetAuthStatus(targetNode, types.AuthPending)
+	_ = s.peers.SetAuthStatus(targetBot, types.AuthPending)
 
 	challengeID := randID()
 	nonce := randID()
@@ -105,8 +105,8 @@ func (s *Service) StartChallenge(ctx context.Context, targetNode string) error {
 	req := protocol.AuthChallengeRequest{
 		MessageID:   challengeID,
 		MessageType: "auth.challenge.request",
-		From:        s.nodeID,
-		To:          targetNode,
+		From:        s.botID,
+		To:          targetBot,
 		PublicKey:   pub,
 		Nonce:       nonce,
 		Ts:          time.Now().UnixMilli(),
@@ -120,45 +120,45 @@ func (s *Service) StartChallenge(ctx context.Context, targetNode string) error {
 	s.pending[challengeID] = &pendingChallenge{
 		requestID: challengeID,
 		nonce:     nonce,
-		target:    targetNode,
+		target:    targetBot,
 		requestTs: req.Ts,
 		createdAt: time.Now(),
 		resultCh:  waitCh,
 	}
 	s.mu.Unlock()
 
-	subject := "clawsynapse.auth." + targetNode + ".challenge.request"
+	subject := "clawsynapse.auth." + targetBot + ".challenge.request"
 	if err := s.bus.PublishJSON(subject, req); err != nil {
 		s.clearPending(challengeID)
-		_ = s.peers.SetAuthStatus(targetNode, types.AuthSeen)
+		_ = s.peers.SetAuthStatus(targetBot, types.AuthSeen)
 		return err
 	}
 	s.log.Info("authentication challenge sent",
 		logging.Event("auth.challenge.sent"),
-		logging.Peer(targetNode),
+		logging.Peer(targetBot),
 		logging.MessageID(challengeID),
 	)
 
 	select {
 	case <-ctx.Done():
 		s.clearPending(challengeID)
-		_ = s.peers.SetAuthStatus(targetNode, types.AuthSeen)
+		_ = s.peers.SetAuthStatus(targetBot, types.AuthSeen)
 		return ctx.Err()
 	case err := <-waitCh:
 		if err != nil {
-			_ = s.peers.SetAuthStatus(targetNode, types.AuthRejected)
+			_ = s.peers.SetAuthStatus(targetBot, types.AuthRejected)
 			s.log.Warn("authentication challenge failed",
 				logging.Event("auth.challenge.failed"),
-				logging.Peer(targetNode),
+				logging.Peer(targetBot),
 				logging.MessageID(challengeID),
 				logging.Error(err),
 			)
 			return err
 		}
-		_ = s.peers.SetAuthStatus(targetNode, types.AuthAuthenticated)
+		_ = s.peers.SetAuthStatus(targetBot, types.AuthAuthenticated)
 		s.log.Info("authentication challenge completed",
 			logging.Event("auth.challenge.completed"),
-			logging.Peer(targetNode),
+			logging.Peer(targetBot),
 			logging.MessageID(challengeID),
 		)
 		return nil
@@ -172,7 +172,7 @@ func (s *Service) handleChallengeRequest(subject string, data []byte) {
 		return
 	}
 
-	if req.To != s.nodeID {
+	if req.To != s.botID {
 		return
 	}
 
@@ -215,11 +215,11 @@ func (s *Service) handleChallengeRequest(subject string, data []byte) {
 	}
 
 	nonce := randID()
-	proofData := []byte(req.Nonce + "|" + req.From + "|" + s.nodeID + "|" + fmt.Sprintf("%d", req.Ts))
+	proofData := []byte(req.Nonce + "|" + req.From + "|" + s.botID + "|" + fmt.Sprintf("%d", req.Ts))
 	resp := protocol.AuthChallengeResponse{
 		MessageID:    randID(),
 		MessageType:  "auth.challenge.response",
-		From:         s.nodeID,
+		From:         s.botID,
 		To:           req.From,
 		PublicKey:    base64.RawURLEncoding.EncodeToString(s.identity.PublicKey),
 		Nonce:        nonce,
@@ -256,7 +256,7 @@ func (s *Service) handleChallengeResponse(subject string, data []byte) {
 		return
 	}
 
-	if resp.To != s.nodeID {
+	if resp.To != s.botID {
 		return
 	}
 	if s.trustMode == "open" {
@@ -302,17 +302,17 @@ func (s *Service) handleChallengeResponse(subject string, data []byte) {
 		return
 	}
 
-	proofData := []byte(p.nonce + "|" + s.nodeID + "|" + resp.From + "|" + fmt.Sprintf("%d", p.requestTs))
+	proofData := []byte(p.nonce + "|" + s.botID + "|" + resp.From + "|" + fmt.Sprintf("%d", p.requestTs))
 	if !identity.Verify(peerPub, proofData, resp.Proof) {
 		s.failChallenge(resp.ChallengeRef, p, errors.New("challenge response signature verification failed"))
 		return
 	}
 
-	ackProof := identity.Sign(s.identity.PrivateKey, []byte(resp.Nonce+"|"+resp.From+"|"+s.nodeID+"|"+fmt.Sprintf("%d", resp.Ts)))
+	ackProof := identity.Sign(s.identity.PrivateKey, []byte(resp.Nonce+"|"+resp.From+"|"+s.botID+"|"+fmt.Sprintf("%d", resp.Ts)))
 	ack := protocol.AuthChallengeAck{
 		MessageID:    randID(),
 		MessageType:  "auth.challenge.ack",
-		From:         s.nodeID,
+		From:         s.botID,
 		To:           resp.From,
 		ChallengeRef: resp.MessageID,
 		Proof:        ackProof,
@@ -341,7 +341,7 @@ func (s *Service) handleChallengeAck(_ string, data []byte) {
 		return
 	}
 
-	subject := "clawsynapse.auth." + s.nodeID + ".challenge.ack"
+	subject := "clawsynapse.auth." + s.botID + ".challenge.ack"
 	if err := protocol.ValidateMessage(subject, protocol.ControlMessage{MessageType: ack.MessageType, To: ack.To, Ts: ack.Ts}, protocol.ValidateOptions{}); err != nil {
 		s.log.Warn("invalid challenge ack", logging.Error(err))
 		return
@@ -354,7 +354,7 @@ func (s *Service) handleChallengeAck(_ string, data []byte) {
 		}
 	}
 
-	if ack.To != s.nodeID {
+	if ack.To != s.botID {
 		return
 	}
 	if s.trustMode == "open" {
@@ -384,7 +384,7 @@ func (s *Service) handleChallengeAck(_ string, data []byte) {
 		return
 	}
 
-	proofData := []byte(ap.nonce + "|" + s.nodeID + "|" + ack.From + "|" + fmt.Sprintf("%d", ap.responseTs))
+	proofData := []byte(ap.nonce + "|" + s.botID + "|" + ack.From + "|" + fmt.Sprintf("%d", ap.responseTs))
 	if !identity.Verify(peerPub, proofData, ack.Proof) {
 		s.log.Warn("invalid challenge ack proof", logging.Peer(ack.From), slog.String("challengeRef", ack.ChallengeRef))
 		return
@@ -433,8 +433,8 @@ func (s *Service) clearPendingAck(challengeRef string) {
 	delete(s.acks, challengeRef)
 }
 
-func (s *Service) peerPublicKey(peerNode, fallback string) (ed25519.PublicKey, error) {
-	peer, ok := s.peers.Get(peerNode)
+func (s *Service) peerPublicKey(peerBot, fallback string) (ed25519.PublicKey, error) {
+	peer, ok := s.peers.Get(peerBot)
 	if !ok {
 		return nil, errors.New("peer not found")
 	}
@@ -490,12 +490,12 @@ func (s *Service) storePeerPublicKey(peer types.Peer, pub string) {
 	s.peers.Upsert(peer)
 }
 
-func (s *Service) ensurePeerState(nodeID, authStatus string) {
-	if _, ok := s.peers.Get(nodeID); !ok {
-		s.peers.Upsert(types.Peer{NodeID: nodeID, AuthStatus: authStatus, TrustStatus: types.TrustNone})
+func (s *Service) ensurePeerState(botID, authStatus string) {
+	if _, ok := s.peers.Get(botID); !ok {
+		s.peers.Upsert(types.Peer{BotID: botID, AuthStatus: authStatus, TrustStatus: types.TrustNone})
 		return
 	}
-	_ = s.peers.SetAuthStatus(nodeID, authStatus)
+	_ = s.peers.SetAuthStatus(botID, authStatus)
 }
 
 func randID() string {

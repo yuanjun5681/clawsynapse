@@ -30,8 +30,8 @@ func (s stubAgentAdapter) GetStatus(_ context.Context) (*adapter.AgentStatus, er
 
 func TestHandleHealthIncludesAdapterStatus(t *testing.T) {
 	peers := discovery.NewRegistry()
-	peers.Upsert(types.Peer{NodeID: "n1-localnodeid0000000000000000000000"})
-	peers.Upsert(types.Peer{NodeID: "n1-remotepeer0000000000000000000000"})
+	peers.Upsert(types.Peer{BotID: "n1-localbotid0000000000000000000000"})
+	peers.Upsert(types.Peer{BotID: "n1-remotepeer0000000000000000000000"})
 
 	srv := &Server{
 		peers:       peers,
@@ -39,14 +39,14 @@ func TestHandleHealthIncludesAdapterStatus(t *testing.T) {
 		adapterName: "openclaw",
 		version:     "v0.3.2",
 		self: SelfInfo{
-			NodeID:              "n1-localnodeid0000000000000000000000",
+			BotID:               "n1-localbotid0000000000000000000000",
 			DID:                 "did:key:z6MkexampleLocalDid",
 			IdentityFingerprint: "sha256:1234abcd5678ef90",
 			TrustMode:           "tofu",
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
 	srv.handleHealth(rec, req)
 
@@ -67,8 +67,8 @@ func TestHandleHealthIncludesAdapterStatus(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected self data map, got %#v", result.Data["self"])
 	}
-	if selfData["nodeId"] != "n1-localnodeid0000000000000000000000" {
-		t.Fatalf("expected self nodeId, got %#v", selfData["nodeId"])
+	if selfData["botId"] != "n1-localbotid0000000000000000000000" {
+		t.Fatalf("expected self botId, got %#v", selfData["botId"])
 	}
 	if selfData["did"] != "did:key:z6MkexampleLocalDid" {
 		t.Fatalf("expected self did, got %#v", selfData["did"])
@@ -96,19 +96,19 @@ func TestHandleHealthIncludesAdapterStatus(t *testing.T) {
 	}
 }
 
-func TestHandlePeersExcludesSelfNode(t *testing.T) {
+func TestHandlePeersExcludesSelfBot(t *testing.T) {
 	peers := discovery.NewRegistry()
-	peers.Upsert(types.Peer{NodeID: "n1-localnodeid0000000000000000000000"})
-	peers.Upsert(types.Peer{NodeID: "n1-remotepeer0000000000000000000000", AuthStatus: types.AuthAuthenticated, TrustStatus: types.TrustTrusted})
+	peers.Upsert(types.Peer{BotID: "n1-localbotid0000000000000000000000"})
+	peers.Upsert(types.Peer{BotID: "n1-remotepeer0000000000000000000000", AuthStatus: types.AuthAuthenticated, TrustStatus: types.TrustTrusted})
 
 	srv := &Server{
 		peers: peers,
 		self: SelfInfo{
-			NodeID: "n1-localnodeid0000000000000000000000",
+			BotID: "n1-localbotid0000000000000000000000",
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/peers", nil)
+	req := httptest.NewRequest(http.MethodGet, "/peers", nil)
 	rec := httptest.NewRecorder()
 	srv.handlePeers(rec, req)
 
@@ -132,8 +132,8 @@ func TestHandlePeersExcludesSelfNode(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected peer item map, got %#v", items[0])
 	}
-	if peer["nodeId"] != "n1-remotepeer0000000000000000000000" {
-		t.Fatalf("expected remote peer only, got %#v", peer["nodeId"])
+	if peer["botId"] != "n1-remotepeer0000000000000000000000" {
+		t.Fatalf("expected remote peer only, got %#v", peer["botId"])
 	}
 }
 
@@ -144,14 +144,14 @@ func TestHandleHealthIncludesAdapterError(t *testing.T) {
 		adapterName: "openclaw",
 		version:     "v0.3.2",
 		self: SelfInfo{
-			NodeID:              "n1-localnodeid0000000000000000000000",
+			BotID:               "n1-localbotid0000000000000000000000",
 			DID:                 "did:key:z6MkexampleLocalDid",
 			IdentityFingerprint: "sha256:1234abcd5678ef90",
 			TrustMode:           "explicit",
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
 	srv.handleHealth(rec, req)
 
@@ -175,20 +175,20 @@ func TestHandleHealthIncludesAdapterError(t *testing.T) {
 func peersFilterServer(t *testing.T) *Server {
 	t.Helper()
 	peers := discovery.NewRegistry()
-	peers.Upsert(types.Peer{NodeID: "n1-localnodeid0000000000000000000000"})
+	peers.Upsert(types.Peer{BotID: "n1-localbotid0000000000000000000000"})
 	peers.Upsert(types.Peer{
-		NodeID:      "n1-scalarpeer0000000000000000000000000",
-		DisplayName: "Scalar Node",
+		BotID:       "n1-scalarpeer0000000000000000000000000",
+		DisplayName: "Scalar Bot",
 		Labels:      types.Labels{"env": types.LabelString("production")},
 	})
 	peers.Upsert(types.Peer{
-		NodeID:      "n1-setpeer0000000000000000000000000000",
-		DisplayName: "Set Node",
+		BotID:       "n1-setpeer0000000000000000000000000000",
+		DisplayName: "Set Bot",
 		Labels:      types.Labels{"caps": types.LabelSet([]string{"production", "chat"})},
 	})
 	return &Server{
 		peers: peers,
-		self:  SelfInfo{NodeID: "n1-localnodeid0000000000000000000000"},
+		self:  SelfInfo{BotID: "n1-localbotid0000000000000000000000"},
 	}
 }
 
@@ -210,19 +210,19 @@ func filteredPeerIDs(t *testing.T, srv *Server, target string) []string {
 	}
 	ids := make([]string, 0, len(items))
 	for _, item := range items {
-		ids = append(ids, item.(map[string]any)["nodeId"].(string))
+		ids = append(ids, item.(map[string]any)["botId"].(string))
 	}
 	return ids
 }
 
 func TestHandlePeersLabelExactDoesNotMatchSet(t *testing.T) {
 	srv := peersFilterServer(t)
-	ids := filteredPeerIDs(t, srv, "/v1/peers?label=env%3Dproduction")
+	ids := filteredPeerIDs(t, srv, "/peers?label=env%3Dproduction")
 	if len(ids) != 1 || ids[0] != "n1-scalarpeer0000000000000000000000000" {
 		t.Fatalf("expected scalar peer only, got %v", ids)
 	}
 	// exact match against a set member must not hit
-	ids = filteredPeerIDs(t, srv, "/v1/peers?label=caps%3Dproduction")
+	ids = filteredPeerIDs(t, srv, "/peers?label=caps%3Dproduction")
 	if len(ids) != 0 {
 		t.Fatalf("expected no peers for exact match on set, got %v", ids)
 	}
@@ -230,12 +230,12 @@ func TestHandlePeersLabelExactDoesNotMatchSet(t *testing.T) {
 
 func TestHandlePeersLabelHasDoesNotMatchScalar(t *testing.T) {
 	srv := peersFilterServer(t)
-	ids := filteredPeerIDs(t, srv, "/v1/peers?labelHas=caps%3Dproduction")
+	ids := filteredPeerIDs(t, srv, "/peers?labelHas=caps%3Dproduction")
 	if len(ids) != 1 || ids[0] != "n1-setpeer0000000000000000000000000000" {
 		t.Fatalf("expected set peer only, got %v", ids)
 	}
 	// member match against a scalar must not hit
-	ids = filteredPeerIDs(t, srv, "/v1/peers?labelHas=env%3Dproduction")
+	ids = filteredPeerIDs(t, srv, "/peers?labelHas=env%3Dproduction")
 	if len(ids) != 0 {
 		t.Fatalf("expected no peers for member match on scalar, got %v", ids)
 	}
@@ -244,11 +244,11 @@ func TestHandlePeersLabelHasDoesNotMatchScalar(t *testing.T) {
 func TestHandlePeersNameFilterMatchesDisplayNameAndAlias(t *testing.T) {
 	srv := peersFilterServer(t)
 	srv.peers.SetLocalAttrs("n1-setpeer0000000000000000000000000000", types.PeerLocalAttrs{Alias: "Build Runner"})
-	ids := filteredPeerIDs(t, srv, "/v1/peers?name=scalar")
+	ids := filteredPeerIDs(t, srv, "/peers?name=scalar")
 	if len(ids) != 1 || ids[0] != "n1-scalarpeer0000000000000000000000000" {
 		t.Fatalf("expected display name match, got %v", ids)
 	}
-	ids = filteredPeerIDs(t, srv, "/v1/peers?name=build")
+	ids = filteredPeerIDs(t, srv, "/peers?name=build")
 	if len(ids) != 1 || ids[0] != "n1-setpeer0000000000000000000000000000" {
 		t.Fatalf("expected alias match, got %v", ids)
 	}
@@ -256,7 +256,7 @@ func TestHandlePeersNameFilterMatchesDisplayNameAndAlias(t *testing.T) {
 
 func TestHandlePeersMalformedFilterRejected(t *testing.T) {
 	srv := peersFilterServer(t)
-	for _, target := range []string{"/v1/peers?label=noequals", "/v1/peers?labelHas=%3Dvalue", "/v1/peers?label="} {
+	for _, target := range []string{"/peers?label=noequals", "/peers?labelHas=%3Dvalue", "/peers?label="} {
 		req := httptest.NewRequest(http.MethodGet, target, nil)
 		rec := httptest.NewRecorder()
 		srv.handlePeers(rec, req)
@@ -280,7 +280,7 @@ func peerAttrsServer(t *testing.T) *Server {
 	return &Server{
 		peers: peers,
 		attrs: fs,
-		self:  SelfInfo{NodeID: "n1-localnodeid0000000000000000000000"},
+		self:  SelfInfo{BotID: "n1-localbotid0000000000000000000000"},
 	}
 }
 
@@ -291,6 +291,17 @@ func peerAttrsResult(t *testing.T, rec *httptest.ResponseRecorder) types.APIResu
 		t.Fatalf("decode response: %v", err)
 	}
 	return result
+}
+
+func TestPeerAttrsValidationUsesBotTerminology(t *testing.T) {
+	rec := httptest.NewRecorder()
+	peerAttrsBotID(rec, httptest.NewRequest(http.MethodGet, "/peers//attrs", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if result := peerAttrsResult(t, rec); result.Message != "invalid bot id" {
+		t.Fatalf("message = %q", result.Message)
+	}
 }
 
 func peerAttrsData(t *testing.T, result types.APIResult) map[string]any {
@@ -304,11 +315,11 @@ func peerAttrsData(t *testing.T, result types.APIResult) map[string]any {
 
 func TestHandlePeerAttrsPutGetDeleteRoundTrip(t *testing.T) {
 	srv := peerAttrsServer(t)
-	nodeID := "n1-remotepeer0000000000000000000000"
+	botID := "n1-remotepeer0000000000000000000000"
 
-	// GET on unknown node returns empty object.
-	req := httptest.NewRequest(http.MethodGet, "/v1/peers/"+nodeID+"/attrs", nil)
-	req.SetPathValue("nodeID", nodeID)
+	// GET on unknown Bot returns empty object.
+	req := httptest.NewRequest(http.MethodGet, "/peers/"+botID+"/attrs", nil)
+	req.SetPathValue("peerID", botID)
 	rec := httptest.NewRecorder()
 	srv.handlePeerAttrsGet(rec, req)
 	if rec.Code != http.StatusOK {
@@ -319,8 +330,8 @@ func TestHandlePeerAttrsPutGetDeleteRoundTrip(t *testing.T) {
 	}
 
 	// PUT sets alias + labels.
-	put := httptest.NewRequest(http.MethodPut, "/v1/peers/"+nodeID+"/attrs", strings.NewReader(`{"alias":"Buddy","labels":{"env":"production","caps":["chat"]}}`))
-	put.SetPathValue("nodeID", nodeID)
+	put := httptest.NewRequest(http.MethodPut, "/peers/"+botID+"/attrs", strings.NewReader(`{"alias":"Buddy","labels":{"env":"production","caps":["chat"]}}`))
+	put.SetPathValue("peerID", botID)
 	rec = httptest.NewRecorder()
 	srv.handlePeerAttrsPut(rec, put)
 	if rec.Code != http.StatusOK {
@@ -332,8 +343,8 @@ func TestHandlePeerAttrsPutGetDeleteRoundTrip(t *testing.T) {
 	}
 
 	// PUT with omitted keys leaves existing values untouched.
-	put = httptest.NewRequest(http.MethodPut, "/v1/peers/"+nodeID+"/attrs", strings.NewReader(`{"description":"note"}`))
-	put.SetPathValue("nodeID", nodeID)
+	put = httptest.NewRequest(http.MethodPut, "/peers/"+botID+"/attrs", strings.NewReader(`{"description":"note"}`))
+	put.SetPathValue("peerID", botID)
 	rec = httptest.NewRecorder()
 	srv.handlePeerAttrsPut(rec, put)
 	attrs = peerAttrsData(t, peerAttrsResult(t, rec))
@@ -342,8 +353,8 @@ func TestHandlePeerAttrsPutGetDeleteRoundTrip(t *testing.T) {
 	}
 
 	// Explicit empty clears only that key.
-	put = httptest.NewRequest(http.MethodPut, "/v1/peers/"+nodeID+"/attrs", strings.NewReader(`{"description":""}`))
-	put.SetPathValue("nodeID", nodeID)
+	put = httptest.NewRequest(http.MethodPut, "/peers/"+botID+"/attrs", strings.NewReader(`{"description":""}`))
+	put.SetPathValue("peerID", botID)
 	rec = httptest.NewRecorder()
 	srv.handlePeerAttrsPut(rec, put)
 	attrs = peerAttrsData(t, peerAttrsResult(t, rec))
@@ -359,13 +370,13 @@ func TestHandlePeerAttrsPutGetDeleteRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load persisted attrs: %v", err)
 	}
-	if st.Peers[nodeID].Alias != "Buddy" {
-		t.Fatalf("expected persisted alias Buddy, got %#v", st.Peers[nodeID])
+	if st.Peers[botID].Alias != "Buddy" {
+		t.Fatalf("expected persisted alias Buddy, got %#v", st.Peers[botID])
 	}
 
 	// DELETE clears.
-	del := httptest.NewRequest(http.MethodDelete, "/v1/peers/"+nodeID+"/attrs", nil)
-	del.SetPathValue("nodeID", nodeID)
+	del := httptest.NewRequest(http.MethodDelete, "/peers/"+botID+"/attrs", nil)
+	del.SetPathValue("peerID", botID)
 	rec = httptest.NewRecorder()
 	srv.handlePeerAttrsDelete(rec, del)
 	if rec.Code != http.StatusOK {
@@ -374,21 +385,21 @@ func TestHandlePeerAttrsPutGetDeleteRoundTrip(t *testing.T) {
 	if result := peerAttrsResult(t, rec); len(peerAttrsData(t, result)) != 0 {
 		t.Fatalf("expected empty attrs after delete, got %#v", result)
 	}
-	if got := srv.peers.LocalAttrsSnapshot()[nodeID]; !got.IsZero() {
+	if got := srv.peers.LocalAttrsSnapshot()[botID]; !got.IsZero() {
 		t.Fatalf("expected registry attrs cleared, got %#v", got)
 	}
 }
 
 func TestHandlePeerAttrsPutValidationFailure(t *testing.T) {
 	srv := peerAttrsServer(t)
-	nodeID := "n1-remotepeer0000000000000000000000"
+	botID := "n1-remotepeer0000000000000000000000"
 	for _, body := range []string{
 		`{"alias":"bad
 name"}`,
 		`{"labels":{"caps":"not-a-set"}}`,
 	} {
-		put := httptest.NewRequest(http.MethodPut, "/v1/peers/"+nodeID+"/attrs", strings.NewReader(body))
-		put.SetPathValue("nodeID", nodeID)
+		put := httptest.NewRequest(http.MethodPut, "/peers/"+botID+"/attrs", strings.NewReader(body))
+		put.SetPathValue("peerID", botID)
 		rec := httptest.NewRecorder()
 		srv.handlePeerAttrsPut(rec, put)
 		if rec.Code != http.StatusBadRequest {

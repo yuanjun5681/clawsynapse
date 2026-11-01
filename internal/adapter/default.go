@@ -9,11 +9,11 @@ import (
 )
 
 type DefaultAdapter struct {
-	nodeID string
+	botID string
 }
 
-func NewDefaultAdapter(nodeID string) *DefaultAdapter {
-	return &DefaultAdapter{nodeID: nodeID}
+func NewDefaultAdapter(botID string) *DefaultAdapter {
+	return &DefaultAdapter{botID: botID}
 }
 
 func (a *DefaultAdapter) DeliverMessage(ctx context.Context, req DeliverMessageRequest) (*DeliverMessageResult, error) {
@@ -28,7 +28,7 @@ func (a *DefaultAdapter) DeliverMessage(ctx context.Context, req DeliverMessageR
 	if message == "" {
 		message = req.Message
 	}
-	reply := fmt.Sprintf("node %s handled message from %s (runId=%s): %s", a.nodeID, req.From, runID, message)
+	reply := fmt.Sprintf("bot %s handled message from %s (runId=%s): %s", a.botID, req.From, runID, message)
 	emitter := &answerEmitter{emit: req.Emit}
 	if err := emitter.add(reply); err != nil {
 		return nil, err

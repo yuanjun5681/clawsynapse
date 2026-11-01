@@ -31,6 +31,9 @@ type Client struct {
 	lastError        string
 	lastConnectedURL string
 	closed           bool
+	callbackMu       sync.Mutex
+	callbacks        sync.WaitGroup
+	quiescing        bool
 }
 
 type Status struct {
@@ -248,6 +251,14 @@ func (c *Client) Subscribe(subject string, handler func(subject string, data []b
 	}
 
 	return c.nc.Subscribe(subject, func(msg *nats.Msg) {
+		c.callbackMu.Lock()
+		if c.quiescing {
+			c.callbackMu.Unlock()
+			return
+		}
+		c.callbacks.Add(1)
+		c.callbackMu.Unlock()
+		defer c.callbacks.Done()
 		handler(msg.Subject, msg.Data)
 	})
 }
@@ -277,6 +288,15 @@ func (c *Client) Conn() *nats.Conn {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.nc
+}
+
+// Quiesce rejects new control callbacks and joins all admitted callbacks without
+// deleting subscriptions or durable consumers. The Bot keeps NATS open to depart.
+func (c *Client) Quiesce() {
+	c.callbackMu.Lock()
+	c.quiescing = true
+	c.callbackMu.Unlock()
+	c.callbacks.Wait()
 }
 
 func (c *Client) Close() {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -68,6 +69,31 @@ func TestNativeCLIHelperProcess(t *testing.T) {
 	}
 	product, mode := os.Getenv("CLI_PRODUCT"), os.Getenv("CLI_MODE")
 	args := fixtureArgs()
+	if mode == "confirmed-turn" || mode == "stale-turn" || mode == "unfinished-turn" || mode == "failed-turn" {
+		if len(args) > 1 && args[0] == "session" && args[1] == "export" {
+			id, finish, outcome := "msg_current", "stop", "succeeded"
+			if mode == "stale-turn" {
+				id = "msg_previous"
+			}
+			if mode == "unfinished-turn" {
+				finish = "tool-calls"
+			}
+			if mode == "failed-turn" {
+				outcome = "failed"
+			}
+			fixtureEvent(map[string]any{
+				"info": map[string]any{"id": "ses_current", "outcome": outcome},
+				"messages": []any{
+					map[string]any{"id": id, "type": "assistant", "finish": finish, "time": map[string]any{"completed": 123}},
+					map[string]any{"type": "idle", "outcome": outcome},
+				},
+			})
+			os.Exit(0)
+		}
+		fmt.Println(`{"type":"step_start","sessionID":"ses_current","part":{"type":"step-start","messageID":"msg_current"}}`)
+		fmt.Println(`{"type":"text","sessionID":"ses_current","part":{"type":"text","messageID":"msg_current","id":"answer","text":"verified answer"}}`)
+		os.Exit(0)
+	}
 	if mode == "descendant" {
 		if err := os.WriteFile(os.Getenv("CLI_RECORD")+".ready", []byte("ready"), 0600); err != nil {
 			os.Exit(22)
@@ -89,7 +115,7 @@ func TestNativeCLIHelperProcess(t *testing.T) {
 			if args[0] == "auth" {
 				fmt.Println("1 credential configured")
 			} else {
-				fmt.Println("--format --session --agent")
+				fmt.Println("--format --session --agent --standalone")
 			}
 		case "status-openclaw":
 			if args[0] == "health" {
@@ -116,10 +142,28 @@ func TestNativeCLIHelperProcess(t *testing.T) {
 		}
 	}
 	if record := os.Getenv("CLI_RECORD"); record != "" && mode != "tree" {
-		data, _ := json.Marshal(map[string]any{"args": args, "prompt": json.RawMessage(prompt)})
+		cwd, _ := os.Getwd()
+		data, _ := json.Marshal(map[string]any{"args": args, "cwd": cwd, "prompt": json.RawMessage(prompt)})
 		if err := os.WriteFile(record, data, 0600); err != nil {
 			os.Exit(23)
 		}
+	}
+	if mode == "private-engine" {
+		private := false
+		for _, arg := range args {
+			if arg == "--standalone" {
+				private = true
+			}
+		}
+		if !private {
+			os.Exit(25)
+		}
+		cwd, _ := os.Getwd()
+		id := "ses_" + filepath.Base(cwd)
+		fixtureEvent(map[string]any{"type": "text", "sessionID": id, "part": map[string]any{"id": "answer", "type": "text", "text": filepath.Base(cwd)}})
+		fixtureWaitFile(os.Getenv("CLI_GATE"))
+		fixtureEvent(map[string]any{"type": "step_finish", "sessionID": id, "part": map[string]any{"type": "step-finish", "reason": "stop"}})
+		os.Exit(0)
 	}
 	switch mode {
 	case "raw":

@@ -3,8 +3,6 @@ package api
 import (
 	"bytes"
 	"crypto/rand"
-	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -13,10 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"clawsynapse/internal/protocol"
-	"clawsynapse/pkg/types"
 )
 
 const maxRequestBytes = protocol.MaxMessageBytes
@@ -67,29 +63,26 @@ func ensureToken(path string) (string, error) {
 		f.Close()
 		return "", fmt.Errorf("write API token file: %w", err)
 	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return "", fmt.Errorf("sync API token file: %w", err)
+	}
 	if err := f.Close(); err != nil {
 		return "", fmt.Errorf("close API token file: %w", err)
 	}
 	if err := os.Link(f.Name(), path); err != nil && !os.IsExist(err) {
 		return "", fmt.Errorf("persist API token file: %w", err)
 	}
+	// Make the published credential durable before accepting management traffic.
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return "", err
+	}
+	defer dir.Close()
+	if err := dir.Sync(); err != nil {
+		return "", err
+	}
 	return readToken(path)
-}
-
-func bearerAuth(token string, next http.Handler) http.Handler {
-	expected := sha256.Sum256([]byte(token))
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		header := r.Header.Get("Authorization")
-		provided := strings.TrimPrefix(header, "Bearer ")
-		actual := sha256.Sum256([]byte(provided))
-		if !strings.HasPrefix(header, "Bearer ") || subtle.ConstantTimeCompare(expected[:], actual[:]) != 1 {
-			w.Header().Set("WWW-Authenticate", "Bearer")
-			respondJSON(w, http.StatusUnauthorized, types.APIResult{OK: false, Code: "unauthorized", Message: "bearer authentication required", TS: time.Now().UnixMilli()})
-			return
-		}
-		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
-		next.ServeHTTP(w, r)
-	})
 }
 
 func decodeRequest(r *http.Request, out any) error {
