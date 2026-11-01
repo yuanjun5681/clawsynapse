@@ -349,10 +349,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	adapterStatus := map[string]any{
-		"name":    s.adapterName,
-		"healthy": false,
+		"name":       s.adapterName,
+		"healthy":    false,
+		"applicable": s.adapterName != "console",
 	}
-	if s.adapter == nil {
+	if s.adapterName == "console" {
+		adapterStatus["detail"] = "not applicable: console is a durable inbox, not an execution Harness"
+	} else if s.adapter == nil {
 		adapterStatus["error"] = "agent adapter unavailable"
 	} else {
 		ctx, cancel := contextWithTimeout(r.Context(), 3*time.Second)

@@ -81,3 +81,24 @@ func TestDaemonLoadsStrictV2DefaultsAndOverrides(t *testing.T) {
 		t.Fatalf("unexpected config: %#v", got)
 	}
 }
+
+func TestConsoleConfigurationRejectsExecutionBindingFields(t *testing.T) {
+	cfg := DefaultBotConfig()
+	cfg.Harness.Adapter = "console"
+	if err := ValidateBot(cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, mutate := range []func(*HarnessBinding){
+		func(h *HarnessBinding) { h.Model = "model" },
+		func(h *HarnessBinding) { h.Instance = "instance" },
+		func(h *HarnessBinding) { h.WebhookURL = "https://localhost" },
+		func(h *HarnessBinding) { h.CredentialsFile = "/private/credential" },
+		func(h *HarnessBinding) { h.AllowedAgentIDs = []string{"agent"} },
+	} {
+		candidate := cfg
+		mutate(&candidate.Harness)
+		if err := ValidateBot(candidate); err == nil {
+			t.Fatal("Console accepted execution Harness configuration")
+		}
+	}
+}

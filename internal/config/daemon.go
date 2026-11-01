@@ -174,12 +174,15 @@ func ValidateBot(b BotConfig) error {
 		return errors.New("trustMode must be open, tofu or explicit")
 	}
 	switch b.Harness.Adapter {
-	case "default", "openclaw", "opencode", "codex", "webhook":
+	case "console", "default", "openclaw", "opencode", "codex", "webhook":
 	default:
 		return errors.New("unsupported Harness adapter")
 	}
 	if (b.Harness.Adapter == "default" || b.Harness.Adapter == "openclaw") && b.Harness.Model != "" {
 		return errors.New("OpenClaw does not support a per-call model override")
+	}
+	if b.Harness.Adapter == "console" && (b.Harness.Model != "" || b.Harness.Instance != "" || b.Harness.WebhookURL != "" || b.Harness.CredentialsFile != "" || len(b.Harness.AllowedAgentIDs) != 0) {
+		return errors.New("console has no execution Harness configuration")
 	}
 	if b.MaxConcurrent <= 0 || b.MaxQueued < 0 || b.FileQuotaBytes <= 0 || b.TransferMaxFileSize <= 0 {
 		return errors.New("invalid Bot execution or storage limits")

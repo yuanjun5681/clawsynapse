@@ -146,6 +146,28 @@ func TestInPlaceMigrationRetainsOriginalBackup(t *testing.T) {
 	}
 }
 
+func TestCatalogReadAndRewritePreservesWorkspaceClaim(t *testing.T) {
+	root := t.TempDir()
+	data := []byte(`{"schemaVersion":2,"bots":[{"botId":"n1-0123456789abcdef0123456789abcdef","desiredState":"stopped","archived":false,"workspaceId":"desktop"}]}`)
+	if err := os.WriteFile(filepath.Join(root, "bots.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := loadCatalog(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Bots) != 1 || c.Bots[0].WorkspaceID != "desktop" {
+		t.Fatal("migration catalog reader lost an existing workspace claim")
+	}
+	raw, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"workspaceId":"desktop"`)) {
+		t.Fatal("catalog rewrite would unbind the existing Console")
+	}
+}
+
 func TestCompleteBotExportImportAndDuplicateConflict(t *testing.T) {
 	c, _ := legacyFixture(t)
 	source := filepath.Join(t.TempDir(), "source")

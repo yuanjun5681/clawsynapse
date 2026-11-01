@@ -22,6 +22,7 @@ func (s *Store) validateRegisteredReferences() error {
 			BotID        string `json:"botId"`
 			DesiredState string `json:"desiredState"`
 			Archived     bool   `json:"archived"`
+			WorkspaceID  string `json:"workspaceId,omitempty"`
 		} `json:"bots"`
 	}
 	if err := protocol.DecodeStrictLimit(data, &catalog, 64<<20); err != nil {

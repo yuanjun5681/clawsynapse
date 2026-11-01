@@ -33,20 +33,22 @@ type catalogRecord struct {
 	BotID        string `json:"botId"`
 	DesiredState string `json:"desiredState"`
 	Archived     bool   `json:"archived"`
+	WorkspaceID  string `json:"workspaceId,omitempty"`
 }
 type catalog struct {
 	SchemaVersion int             `json:"schemaVersion"`
 	Bots          []catalogRecord `json:"bots"`
 }
 type managedBot struct {
-	mu         sync.Mutex
-	info       api.BotInfo
-	cfg        config.BotConfig
-	runtime    *Runtime
-	refs       sync.WaitGroup
-	transition sync.WaitGroup
-	token      [32]byte
-	hasToken   bool
+	mu          sync.Mutex
+	info        api.BotInfo
+	cfg         config.BotConfig
+	runtime     *Runtime
+	refs        sync.WaitGroup
+	transition  sync.WaitGroup
+	token       [32]byte
+	hasToken    bool
+	workspaceID string
 }
 
 type Manager struct {
@@ -89,14 +91,21 @@ func newManager(cfg config.DaemonConfig, version string, blobs *blob.Store) (*Ma
 	if c.SchemaVersion != 2 || c.Bots == nil {
 		return nil, fmt.Errorf("invalid or unsupported Bot catalog")
 	}
+	workspaceIDs := make(map[string]bool)
 	for _, rec := range c.Bots {
 		if !validBotID(rec.BotID) || (rec.DesiredState != "running" && rec.DesiredState != "stopped") || (rec.Archived && rec.DesiredState != "stopped") {
 			return nil, fmt.Errorf("invalid Bot catalog entry")
 		}
+		if rec.WorkspaceID != "" {
+			if !validWorkspaceID(rec.WorkspaceID) || workspaceIDs[rec.WorkspaceID] {
+				return nil, errors.New("invalid or duplicate workspace binding")
+			}
+			workspaceIDs[rec.WorkspaceID] = true
+		}
 		if _, exists := m.bots[rec.BotID]; exists {
 			return nil, fmt.Errorf("duplicate Bot catalog identity")
 		}
-		b := &managedBot{info: api.BotInfo{BotID: rec.BotID, DesiredState: rec.DesiredState, State: "stopped", Archived: rec.Archived}}
+		b := &managedBot{workspaceID: rec.WorkspaceID, info: api.BotInfo{BotID: rec.BotID, DesiredState: rec.DesiredState, State: "stopped", Archived: rec.Archived}}
 		if rec.Archived {
 			b.info.State = "archived"
 		}
@@ -154,6 +163,7 @@ func (m *Manager) loadEntry(b *managedBot) error {
 	b.cfg = cfg
 	b.info.DisplayName = b.cfg.DisplayName
 	b.info.Revision = b.cfg.Revision
+	b.info.HarnessApplicable = b.cfg.Harness.Adapter != "console"
 	b.info.BindingRevision = b.cfg.BindingRevision
 	id, err := identity.Load(filepath.Join(dir, "credentials", "identity.key"), filepath.Join(dir, "credentials", "identity.pub"))
 	if err != nil {
@@ -162,6 +172,12 @@ func (m *Manager) loadEntry(b *managedBot) error {
 	did := identity.DeriveBotDID(id.PublicKey)
 	if identity.DeriveBotID(did) != b.info.BotID {
 		return errors.New("identity does not match catalog")
+	}
+	if err := m.validateWorkspaceBinding(b.info.BotID, b.workspaceID); err != nil {
+		return err
+	}
+	if b.workspaceID != "" && b.cfg.Harness.Adapter != "console" {
+		return errors.New("workspace binding requires a Console Bot")
 	}
 	b.info.DID = did
 	token, err := loadPrivateToken(filepath.Join(dir, "credentials", "api.token"))
@@ -297,7 +313,8 @@ func (m *Manager) desiredLocked(b *managedBot, desired string, archived bool) er
 		}
 	}
 	old := m.catalog[b.info.BotID]
-	next := catalogRecord{BotID: b.info.BotID, DesiredState: desired, Archived: archived}
+	next := old
+	next.DesiredState, next.Archived = desired, archived
 	m.catalog[b.info.BotID] = next
 	if err := m.saveCatalogLocked(); err != nil {
 		m.catalog[b.info.BotID] = old
@@ -330,9 +347,13 @@ func (m *Manager) Create(cfg config.BotConfig) (api.BotInfo, error) {
 	if err := config.ValidateBot(cfg); err != nil {
 		return api.BotInfo{}, api.Failure(400, "bot.config_invalid", err.Error())
 	}
-	// Serialize creation/registration only, never network work. Unregistered leftovers are never reused.
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.createLocked(cfg, "")
+}
+
+// createLocked commits the identity and optional workspace claim in one catalog write.
+func (m *Manager) createLocked(cfg config.BotConfig, workspaceID string) (api.BotInfo, error) {
 	if m.closing {
 		return api.BotInfo{}, api.Failure(503, "daemon.stopping", "daemon is stopping")
 	}
@@ -374,6 +395,11 @@ func (m *Manager) Create(cfg config.BotConfig) (api.BotInfo, error) {
 	if err = writeToken(filepath.Join(credentials, "api.token")); err != nil {
 		return api.BotInfo{}, err
 	}
+	if workspaceID != "" {
+		if err = store.WriteJSONAtomic(filepath.Join(staging, "workspace-binding.json"), workspaceClaim{WorkspaceID: workspaceID}, 0600); err != nil {
+			return api.BotInfo{}, err
+		}
+	}
 	destination := m.botDir(botID)
 	if _, err = os.Lstat(destination); !errors.Is(err, os.ErrNotExist) {
 		return api.BotInfo{}, errors.New("Bot directory already exists")
@@ -385,12 +411,13 @@ func (m *Manager) Create(cfg config.BotConfig) (api.BotInfo, error) {
 	if err = syncDir(filepath.Dir(destination)); err != nil {
 		return api.BotInfo{}, err
 	}
-	b := &managedBot{cfg: cfg, info: api.BotInfo{BotID: botID, DesiredState: "stopped", State: "stopped"}}
+	b := &managedBot{workspaceID: workspaceID, cfg: cfg, info: api.BotInfo{BotID: botID, DesiredState: "stopped", State: "stopped"}}
+	m.catalog[botID] = catalogRecord{BotID: botID, DesiredState: "stopped", WorkspaceID: workspaceID}
 	if err = m.loadEntry(b); err != nil {
+		delete(m.catalog, botID)
 		m.recovery = append(m.recovery, botID)
 		return api.BotInfo{}, err
 	}
-	m.catalog[botID] = catalogRecord{BotID: botID, DesiredState: "stopped"}
 	if err = m.saveCatalogLocked(); err != nil {
 		delete(m.catalog, botID)
 		m.recovery = append(m.recovery, botID)
@@ -457,6 +484,9 @@ func (m *Manager) Update(id string, cfg config.BotConfig) (api.BotInfo, error) {
 	if m.closing {
 		return api.BotInfo{}, api.Failure(503, "daemon.stopping", "daemon is stopping")
 	}
+	if m.catalog[id].WorkspaceID != "" && !reflect.DeepEqual(cfg.Harness, b.cfg.Harness) {
+		return api.BotInfo{}, api.Failure(409, "workspace.binding_invalid", "a workspace Console Bot cannot be rebound to another Harness")
+	}
 	if err = m.checkBindingLocked(id, cfg.Harness); err != nil {
 		return api.BotInfo{}, err
 	}
@@ -468,6 +498,7 @@ func (m *Manager) Update(id string, cfg config.BotConfig) (api.BotInfo, error) {
 	b.info.Revision = cfg.Revision
 	b.info.BindingRevision = cfg.BindingRevision
 	b.info.DisplayName = cfg.DisplayName
+	b.info.HarnessApplicable = cfg.Harness.Adapter != "console"
 	// Configuration repair does not claim failed keys/state are repaired.
 	return b.info, nil
 }

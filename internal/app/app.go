@@ -167,6 +167,8 @@ func newAgentAdapter(cfg config.Config, b config.BotConfig, botID string, log *s
 		return nil, err
 	}
 	switch cfg.AgentAdapter {
+	case "console":
+		return adapter.ConsoleAdapter{}, nil
 	case "", "default":
 		return adapter.NewDefaultAdapter(botID), nil
 	case "opencode":

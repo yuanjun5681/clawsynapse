@@ -96,6 +96,25 @@ func TestHandleHealthIncludesAdapterStatus(t *testing.T) {
 	}
 }
 
+func TestConsoleHealthReportsHarnessNotApplicable(t *testing.T) {
+	for _, harness := range []adapter.AgentAdapter{nil, adapter.ConsoleAdapter{}} {
+		srv := &Server{peers: discovery.NewRegistry(), adapter: harness, adapterName: "console"}
+		rec := httptest.NewRecorder()
+		srv.handleHealth(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+		var result types.APIResult
+		if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		status := result.Data["adapter"].(map[string]any)
+		if status["name"] != "console" || status["applicable"] != false || status["healthy"] != false || !strings.Contains(status["detail"].(string), "not applicable") {
+			t.Fatalf("Console incorrectly advertises execution health: %#v", status)
+		}
+		if _, exists := status["error"]; exists {
+			t.Fatal("not-applicable Harness was reported as an error")
+		}
+	}
+}
+
 func TestHandlePeersExcludesSelfBot(t *testing.T) {
 	peers := discovery.NewRegistry()
 	peers.Upsert(types.Peer{BotID: "n1-localbotid0000000000000000000000"})

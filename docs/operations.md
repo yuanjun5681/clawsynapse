@@ -45,9 +45,11 @@ pkg/types/
 
 daemon 共享一个 HTTP listener、catalog、内容存储、日志和全局执行预算；每个 Bot 独占身份、NATS 连接/订阅、发现、认证/信任、备注、消息日志、Harness 绑定、会话与 workspace。一个 Bot 启动失败记为 failed，不把其他 Bot 的身份或状态借来兜底。业务请求显式带 Bot ID，无默认 Bot。
 
-`bots.json` 是 schemaVersion 2 的持久 catalog，保存 `botId`, `desiredState: running|stopped`, `archived`。只加载 catalog 注册项；未知目录不自动激活，列入 daemon health 的 recoveryIssues。每个 Bot 配置/密钥损坏可独立 failed；catalog 本身损坏则启动失败。
+`bots.json` 是 schemaVersion 2 的持久 catalog，保存 `botId`, `desiredState: running|stopped`, `archived` 及 Console 可选的 `workspaceId`。只加载 catalog 注册项；未知目录不自动激活，列入 daemon health 的 recoveryIssues。每个 Bot 配置/密钥损坏可独立 failed；catalog 本身损坏、工作区认领重复/非法则启动失败。
 
 start/stop 先持久化 desiredState，再异步转换 starting/running/stopping/stopped；API 202 只是接纳，需轮询。显式 stop 持久化 stopped；daemon 退出保留原 desiredState，重启恢复期望 running 的 Bot。archive 必须等待停止，保留全部状态及文件引用，restore 回 stopped，不自动 start。管理接口及 revision CAS 见 [api.md](api.md)。
+
+桌面工作区使用 admin `POST /v2/workspaces/{workspaceId}/binding`，一次 catalog 原子写入同时注册新 Console 和工作区；重试只交付原 Bot 的 scoped token，不替换普通既有身份。对应 Bot 私有 `workspace-binding.json` 与 catalog 交叉校验。绑定失效/归档、密钥或 api.token 丢失均 fail closed；恢复原 0600 文件与一致性 catalog 后重试，不删除目录“重新初始化”。若创建在 catalog 提交前中断，未注册目录保留为 recoveryIssues，匹配的工作区标记阻止重试另建身份；先人工对照一致性备份恢复原认领，不能按 displayName 猜测接管。
 
 ## 配置：daemon config.json + 每 Bot config.json
 
@@ -112,7 +114,7 @@ BotConfig 保存在 `bots/{botId}/config.json`；通过 admin API/CLI create/con
 }
 ```
 
-可选 Bot 连接字段 `natsCredentialsFile`, `natsTLSCAFile`, `natsTLSCertFile`, `natsTLSKeyFile`, `natsTLSServerName` 覆盖 daemon 的同项；不覆盖共享 natsServers/listener。Harness 还有 `webhookUrl`, `credentialsFile`, `instance`；凭据是私有文件，不是 JSON 内明文。支持 adapter `default|openclaw|opencode|codex|webhook`。OpenClaw/Webhook 必须显式 instance，同 adapter 的非归档 Bot 不可共享 instance。OpenClaw/default 不允许 per-call model override；OpenCode/Codex model 传到真实原生命令，而非仅展示字段。
+可选 Bot 连接字段 `natsCredentialsFile`, `natsTLSCAFile`, `natsTLSCertFile`, `natsTLSKeyFile`, `natsTLSServerName` 覆盖 daemon 的同项；不覆盖共享 natsServers/listener。Harness 还有 `webhookUrl`, `credentialsFile`, `instance`；凭据是私有文件，不是 JSON 内明文。支持 adapter `console|default|openclaw|opencode|codex|webhook`。Console 无执行 Harness，仅持久收件；不配置 model/instance/webhook/凭据/agent allowlist，健康为不适用。OpenClaw/Webhook 必须显式 instance，同 adapter 的非归档 Bot 不可共享 instance。OpenClaw/default 不允许 per-call model override；OpenCode/Codex model 传到真实原生命令，而非仅展示字段。
 
 更新配置先 stop 并等到停止，再 GET 完整 config、修改、以当前 revision PUT；陈旧 revision 返回 409，不能覆盖他人更新。任何 Harness 变更生成新 bindingRevision 和 `bots/{botId}/workspace/{bindingRevision}`；原生 CLI 在该目录运行。产品 session 再按 Bot、绑定、产品和发送方/目标 Agent/会话作用域隔离，原生 session ID 持久保存。失效 session 明确报错，不静默重建重跑。绑定切换不复用旧会话；工作区不是 OS 沙箱，仍须按模型工具权限和宿主账号限制执行。
 
@@ -135,6 +137,7 @@ DataDir/
   bots.json                   注册 catalog
   bots/{botId}/
     config.json
+    workspace-binding.json     仅工作区 Console；与 catalog 的 workspaceId 核验
     credentials/              identity.key, identity.pub, api.token
     trust.json, replay-cache.json, peer-attrs.json
     state/messages.jsonl       持久消息/outbox/执行状态

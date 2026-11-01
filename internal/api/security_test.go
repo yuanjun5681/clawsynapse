@@ -40,6 +40,9 @@ func (securityManager) Acquire(string, bool) (http.Handler, func(), error) {
 func (securityManager) Authenticate(token string) (string, bool) {
 	return "n1-a", token == strings.Repeat("b", 64)
 }
+func (securityManager) BindWorkspace(string, string) (BotInfo, string, error) {
+	panic("unauthorized workspace management call")
+}
 func newProtectedServer(t *testing.T) *DaemonServer {
 	t.Helper()
 	cfg := config.DefaultDaemonConfig()
@@ -54,7 +57,7 @@ func newProtectedServer(t *testing.T) *DaemonServer {
 }
 func TestAllAPIRoutesRequireBearer(t *testing.T) {
 	s := newProtectedServer(t)
-	for _, route := range []struct{ method, path string }{{"GET", "/v2/health"}, {"GET", "/v2/bots"}, {"POST", "/v2/bots"}, {"GET", "/v2/bots/n1-a"}, {"PUT", "/v2/bots/n1-a/config"}, {"POST", "/v2/bots/n1-a/start"}, {"GET", "/v2/bots/n1-a/messages"}, {"POST", "/v2/bots/n1-a/publish"}, {"GET", "/v2/bots/n1-a/transfer/id/file"}} {
+	for _, route := range []struct{ method, path string }{{"GET", "/v2/health"}, {"POST", "/v2/workspaces/workspace-a/binding"}, {"GET", "/v2/bots"}, {"POST", "/v2/bots"}, {"GET", "/v2/bots/n1-a"}, {"PUT", "/v2/bots/n1-a/config"}, {"POST", "/v2/bots/n1-a/start"}, {"GET", "/v2/bots/n1-a/messages"}, {"POST", "/v2/bots/n1-a/publish"}, {"GET", "/v2/bots/n1-a/transfer/id/file"}} {
 		for _, auth := range []string{"", "Bearer wrong", "Basic wrong"} {
 			r := httptest.NewRequest(route.method, route.path, nil)
 			r.Header.Set("Authorization", auth)
@@ -68,7 +71,7 @@ func TestAllAPIRoutesRequireBearer(t *testing.T) {
 }
 func TestScopedCredentialCannotCrossBotOrManagement(t *testing.T) {
 	s := newProtectedServer(t)
-	for _, route := range []struct{ method, path string }{{"GET", "/v2/bots"}, {"GET", "/v2/health"}, {"POST", "/v2/bots"}, {"GET", "/v2/bots/n1-b/messages"}, {"POST", "/v2/bots/n1-b/publish"}, {"GET", "/v2/bots/n1-a/config"}, {"POST", "/v2/bots/n1-a/start"}, {"POST", "/v2/bots/n1-a/transfer/import"}} {
+	for _, route := range []struct{ method, path string }{{"GET", "/v2/bots"}, {"GET", "/v2/health"}, {"POST", "/v2/workspaces/workspace-a/binding"}, {"POST", "/v2/bots"}, {"GET", "/v2/bots/n1-b/messages"}, {"POST", "/v2/bots/n1-b/publish"}, {"GET", "/v2/bots/n1-a/config"}, {"POST", "/v2/bots/n1-a/start"}, {"POST", "/v2/bots/n1-a/transfer/import"}} {
 		r := httptest.NewRequest(route.method, route.path, nil)
 		r.Header.Set("Authorization", "Bearer "+strings.Repeat("b", 64))
 		w := httptest.NewRecorder()

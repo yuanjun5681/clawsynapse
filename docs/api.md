@@ -29,9 +29,10 @@ title: "ClawSynapse API Reference"
 
 | 方法与路径 | 成功状态 / code | data |
 |---|---|---|
-| `GET /v2/health` | 200 `daemon.healthy` | `activeBots`, `failedBots`, `botsCount`, `version`, `recoveryIssues` |
+| `GET /v2/health` | 200 `daemon.healthy` | `activeBots`, `failedBots`, `botsCount`, `version`, `recoveryIssues`, `capabilities: ["console","workspace_binding"]` |
 | `GET /v2/bots` | 200 `bots.list` | `items: BotInfo[]`，按 botId 排序 |
 | `POST /v2/bots` | 201 `bot.created` | `bot: BotInfo` |
+| `POST /v2/workspaces/{workspaceId}/binding` | 200 `workspace.bound` | `bot: BotInfo`, `token: string`（该 Bot 的 scoped token） |
 | `GET /v2/bots/{botId}` | 200 `bot.info` | `bot: BotInfo`；自己的 scoped token 也可读取 |
 | `GET /v2/bots/{botId}/config` | 200 `bot.config` | `config: BotConfig` |
 | `PUT /v2/bots/{botId}/config` | 200 `bot.updated` | `bot: BotInfo` |
@@ -40,13 +41,17 @@ title: "ClawSynapse API Reference"
 | `POST /v2/bots/{botId}/archive` | 200 `bot.archive` | `bot: BotInfo` |
 | `POST /v2/bots/{botId}/restore` | 200 `bot.restore` | `bot: BotInfo` |
 
-`BotInfo` 包含 `botId`, `did`, `displayName`, `desiredState`, `state`, `archived`, `revision`, `bindingRevision`, `networkHealthy`, `harnessHealthy`，失败时有 `error`。catalog 列表不主动探测 Harness；读取单个运行 Bot 信息才查询网络/Harness 健康。daemon health 不等于任何模型任务已验收。
+`BotInfo` 包含 `botId`, `did`, `displayName`, `desiredState`, `state`, `archived`, `revision`, `bindingRevision`, `networkHealthy`, `harnessHealthy`, `harnessApplicable`，失败时有 `error`。Console 的 `harnessApplicable=false`、`harnessHealthy=false` 表示不适用，而非执行故障；其他 adapter 为 applicable。catalog 列表不主动探测 Harness；读取单个运行 Bot 信息才查询网络/Harness 健康。daemon health 不等于任何模型任务已验收。
 
 创建接受 BotConfig，未提供字段使用默认值；`displayName` 必填。身份由新建 Ed25519 密钥派生，不能由调用方选择 botId。创建后为 stopped，不自动启动。示例：
 
 ```json
 {"displayName":"assistant-a","harness":{"adapter":"opencode","model":"zai-coding-plan/glm-5.3-flash","timeout":"10m"}}
 ```
+
+工作区绑定接受 `{"displayName":"Bot-A"}`；`workspaceId` 为客户端持久保存的 1–128 位 ASCII 字母、数字、`-` 或 `_`。首次创建独立 Console Bot（显式信任、stopped），在 catalog 中原子认领；同一工作区并发重试、响应丢失或 daemon 重启均返回同一身份及原 scoped token，不按名称/labels 复用 Bot，也不会因重试名称变化而改名。客户端应持久保存 workspaceId，使用 admin 启动并等待 Bot running，之后以 scoped token 查询/发布。响应 `Cache-Control: no-store`；不要记录或展示 token。
+
+绑定归档、失败、密钥/凭据/标记缺失或 catalog 认领丢失时返回 409 `workspace.binding_invalid`，不自动换钥或另建身份。恢复原数据后重试；归档须显式 restore。已绑定 Console 的 Harness 配置不可改绑（同样返回 409），普通 Bot 的配置 CAS 不变。工作区绑定仅 admin 可调用，scoped token 不可认领其他工作区。
 
 配置更新是**完整替换 + revision CAS**：先 GET `data.config`，修改后原样 PUT，必须提交当前 `revision`。运行/过渡中更新返回 409 `bot.must_stop`；revision 过期为 409 `bot.revision_conflict`。成功递增 revision；`bindingRevision` 由服务器控制，Harness 绑定变更会产生新绑定和独立工作区/产品会话。校验失败为 400 `bot.config_invalid`。完整字段、默认值见 operations。
 

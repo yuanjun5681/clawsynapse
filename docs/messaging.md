@@ -58,6 +58,7 @@ sequenceDiagram
 - `run.accepted` 仅表示异步接纳，产品运行标识放在 `payload.adapterRunId`；后续结果依赖权威端查询。
 - 超时、取消或失败可能发生在副作用之后。`payload.indeterminate=true` 时不自动重新执行原动作。
 - run 事件不进入 LLM，也不产生反馈回复；Webhook 可以消费这些事件。
+- Console Bot 的 `chat.message` 与反馈只提交持久 inbox，不执行模型，不 echo 或生成虚构 completed；执行请求以 `console.execution_unsupported` 失败。它仍能正常发布聊天并接收执行 Bot 的 `run.*` 答案，Harness 健康为不适用，不能把它当作人工任务执行器。
 
 ## 有界执行与会话
 

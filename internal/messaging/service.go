@@ -653,12 +653,15 @@ func (s *Service) deliver(work admittedWork) bool {
 		}
 		return false
 	}
-	if !feedback && env.ExpiresAt <= time.Now().UnixMilli() {
-		return s.emit(&work, "run.failed", protocol.MessagePayload{Code: "execution.expired", Stage: "queue"}, "done") == nil
-	}
 	s.mu.Lock()
 	handler, transfer := s.handler, s.transferHandler
 	s.mu.Unlock()
+	if passive, ok := handler.(interface{ InboxOnly(string) bool }); ok && passive.InboxOnly(env.Type) {
+		return s.setWork(work, "done") == nil
+	}
+	if !feedback && env.ExpiresAt <= time.Now().UnixMilli() {
+		return s.emit(&work, "run.failed", protocol.MessagePayload{Code: "execution.expired", Stage: "queue"}, "done") == nil
+	}
 	if env.Type == "transfer.available" {
 		if transfer == nil {
 			return false

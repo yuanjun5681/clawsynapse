@@ -107,6 +107,7 @@ CLI Adapter 将请求编码为 JSON prompt，不再拼接未转义的 `key=value
 
 | 适配器 | `harness.adapter` 值 | 说明 |
 |--------|-------------------------|------|
+| `ConsoleAdapter` | `console` | 真实持久 inbox；不调用模型、不 echo、不假称执行完成 |
 | `DefaultAdapter` | `default` | 内置默认，echo 回显，用于调试和测试 |
 | `OpenClawAdapter` | `openclaw` | 调用本地 OpenClaw CLI 投递消息 |
 | `OpenCodeAdapter` | `opencode` | 通过原生 JSONL 事件增量投递答案 |
@@ -114,6 +115,10 @@ CLI Adapter 将请求编码为 JSON prompt，不再拼接未转义的 `key=value
 | `WebhookAdapter` | `webhook` | 通过 HTTP POST 将消息 JSON 转发到外部 URL |
 
 通过 admin API/CLI 配置每 Bot `harness.adapter`、`harness.timeout`（默认 10m）及可选 `harness.model`，不使用 daemon 环境变量/旧 YAML 的全局 adapter。Bot 配置变更必须先停止并以当前 revision CAS 更新，再显式启动。daemon 的 listener/NATS 默认值与资源预算在 schemaVersion 2 的 config.json，Bot 配置在 bots/{botId}/config.json，详见 operations。
+
+Console Bot 可通过 admin `POST /v2/workspaces/{workspaceId}/binding` 创建/恢复并取得其 scoped token。普通 `chat.message` 在签名、认证和信任校验后提交到该 Bot 的 `state/messages.jsonl`，仅完成 inbox 消费，不生成 `run.started/accepted/completed` 或答案；`run.*` 等反馈同样只入 journal，不进入模型或形成回复循环。`task.assign` 等执行请求明确以 `run.failed`、`payload.code="console.execution_unsupported"` 拒绝，不代表人工完成。出站聊天仍使用正常 publish/幂等键，来自执行 Bot 的答案可按消息 cursor 和 requestId/runId/seq 回放。
+
+Console 的 BotInfo 为 `harnessApplicable=false`；Bot health 的 `adapter.name="console"`、`applicable=false`、`healthy=false` 且 detail 明确 not applicable。网络健康单独观察，不要求本地 CLI/模型安装。Console 不接受 model、instance、webhookUrl、credentialsFile 或 allowedAgentIds；timeout 字段沿用统一配置格式，但不触发执行。
 
 ### 真实原生执行绑定
 

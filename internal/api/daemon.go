@@ -17,17 +17,18 @@ import (
 )
 
 type BotInfo struct {
-	BotID           string `json:"botId"`
-	DID             string `json:"did,omitempty"`
-	DisplayName     string `json:"displayName"`
-	DesiredState    string `json:"desiredState"`
-	State           string `json:"state"`
-	Archived        bool   `json:"archived"`
-	Revision        uint64 `json:"revision"`
-	BindingRevision string `json:"bindingRevision"`
-	Error           string `json:"error,omitempty"`
-	NetworkHealthy  bool   `json:"networkHealthy"`
-	HarnessHealthy  bool   `json:"harnessHealthy"`
+	BotID             string `json:"botId"`
+	DID               string `json:"did,omitempty"`
+	DisplayName       string `json:"displayName"`
+	DesiredState      string `json:"desiredState"`
+	State             string `json:"state"`
+	Archived          bool   `json:"archived"`
+	Revision          uint64 `json:"revision"`
+	BindingRevision   string `json:"bindingRevision"`
+	Error             string `json:"error,omitempty"`
+	NetworkHealthy    bool   `json:"networkHealthy"`
+	HarnessHealthy    bool   `json:"harnessHealthy"`
+	HarnessApplicable bool   `json:"harnessApplicable"`
 }
 
 // BotManager is the authorized management seam. Acquire pins a runtime until release.
@@ -40,6 +41,7 @@ type BotManager interface {
 	Transition(string, string) (BotInfo, error)
 	Acquire(string, bool) (http.Handler, func(), error)
 	Authenticate(string) (string, bool)
+	BindWorkspace(string, string) (BotInfo, string, error)
 }
 
 type Error struct {
@@ -99,7 +101,7 @@ func NewDaemonServer(cfg config.DaemonConfig, manager BotManager) (*DaemonServer
 				failed++
 			}
 		}
-		data := map[string]any{"activeBots": active, "failedBots": failed, "botsCount": len(items)}
+		data := map[string]any{"activeBots": active, "failedBots": failed, "botsCount": len(items), "capabilities": []string{"console", "workspace_binding"}}
 		if source, ok := manager.(interface{ Version() string }); ok {
 			data["version"] = source.Version()
 		}
@@ -107,6 +109,22 @@ func NewDaemonServer(cfg config.DaemonConfig, manager BotManager) (*DaemonServer
 			data["recoveryIssues"] = source.RecoveryIssues()
 		}
 		success(w, 200, "daemon.healthy", data)
+	})
+	mux.HandleFunc("POST /v2/workspaces/{workspaceID}/binding", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			DisplayName string `json:"displayName"`
+		}
+		if err := decodeRequest(r, &body); err != nil {
+			respondError(w, Failure(400, "invalid_argument", err.Error()))
+			return
+		}
+		bot, token, err := manager.BindWorkspace(r.PathValue("workspaceID"), body.DisplayName)
+		if err != nil {
+			respondError(w, err)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		success(w, 200, "workspace.bound", map[string]any{"bot": bot, "token": token})
 	})
 	mux.HandleFunc("GET /v2/bots", func(w http.ResponseWriter, r *http.Request) {
 		success(w, 200, "bots.list", map[string]any{"items": manager.List()})

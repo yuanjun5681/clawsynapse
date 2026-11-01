@@ -30,6 +30,7 @@ type botEntry struct {
 	BotID        string `json:"botId"`
 	DesiredState string `json:"desiredState"`
 	Archived     bool   `json:"archived"`
+	WorkspaceID  string `json:"workspaceId,omitempty"`
 }
 type catalog struct {
 	SchemaVersion int        `json:"schemaVersion"`
