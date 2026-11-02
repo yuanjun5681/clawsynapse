@@ -172,9 +172,12 @@ build_service_path() {
     local candidate
     local openclaw_dir
     local opencode_dir
+    local pi_bin omp_bin
 
     openclaw_dir="$(detect_openclaw_dir)"
     opencode_dir="$(detect_opencode_dir)"
+    pi_bin="$(command -v pi 2>/dev/null || true)"
+    omp_bin="$(command -v omp 2>/dev/null || true)"
 
     for candidate in \
         "$INSTALL_DIR" \
@@ -182,6 +185,9 @@ build_service_path() {
         "$HOME/.npm-global/bin" \
         ${openclaw_dir:+"$openclaw_dir"} \
         ${opencode_dir:+"$opencode_dir"} \
+        ${pi_bin:+"$(dirname "$pi_bin")"} \
+        ${omp_bin:+"$(dirname "$omp_bin")"} \
+        "$HOME/.bun/bin" \
         "/opt/homebrew/bin" \
         "/opt/homebrew/sbin" \
         "/usr/local/bin" \

@@ -203,7 +203,7 @@ func DecodeStrict(data []byte, v any) error {
 
 func supportedAgentAdapter(adapter string) bool {
 	switch adapter {
-	case "default", "openclaw", "opencode", "codex", "webhook":
+	case "default", "openclaw", "opencode", "codex", "pi", "omp", "webhook":
 		return true
 	default:
 		return false

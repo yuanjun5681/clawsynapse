@@ -64,11 +64,15 @@ type nativeStream struct {
 	completed bool
 	items     map[string]string
 	reply     strings.Builder
+	pi        *piStreamState
 }
 
 func (s *nativeStream) consume(line []byte) error {
 	if s.product == "codex" {
 		return s.consumeCodex(line)
+	}
+	if s.product == "pi" || s.product == "omp" {
+		return s.consumePiFamily(line)
 	}
 	return s.consumeOpenCode(line)
 }

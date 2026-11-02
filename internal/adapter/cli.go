@@ -73,7 +73,7 @@ func (a *cliAdapter) DeliverMessage(ctx context.Context, req DeliverMessageReque
 	}
 	if req.AgentID != "" {
 		_, allowed := a.allowedAgents[req.AgentID]
-		if a.product == "codex" || !safeLocalID(req.AgentID) || !allowed {
+		if a.product == "codex" || a.isPiFamily() || !safeLocalID(req.AgentID) || !allowed {
 			return nil, &ExecutionError{Code: "unsupported_agent", Stage: "validation", Err: errors.New("agent selection is unsupported or not authorized by the local agent allowlist")}
 		}
 	}
@@ -101,12 +101,25 @@ func (a *cliAdapter) DeliverMessage(ctx context.Context, req DeliverMessageReque
 	if sessionID != "" && !safeSessionID(sessionID) {
 		return nil, &ExecutionError{Code: "invalid_session", Stage: "validation", Err: errors.New("session ID is not a safe local identifier; create a new session explicitly")}
 	}
-	args, stdin := a.deliveryArgs(prompt, sessionID, req.AgentID)
+	nativeSession := sessionID
+	if a.isPiFamily() {
+		if sessionID != "" && !safePiSessionID(sessionID) {
+			return nil, &ExecutionError{Code: "invalid_session", Stage: "validation", Err: errors.New("session ID is not a safe native UUID; create a new session explicitly")}
+		}
+		nativeSession, err = a.preparePiSession(sessionID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	args, stdin := a.deliveryArgs(prompt, nativeSession, req.AgentID)
 	if a.log != nil {
 		a.log.Info("executing native CLI", slog.String("product", a.product))
 	}
 	emitter := &answerEmitter{emit: req.Emit}
 	stream := &nativeStream{product: a.product, emitter: emitter, items: make(map[string]string)}
+	if a.isPiFamily() {
+		stream.pi = &piStreamState{expectedSession: sessionID}
+	}
 	var onLine func([]byte) error
 	if a.product != "openclaw" {
 		onLine = stream.consume
@@ -134,6 +147,11 @@ func (a *cliAdapter) DeliverMessage(ctx context.Context, req DeliverMessageReque
 	}
 	if err != nil {
 		return nil, err
+	}
+	if a.isPiFamily() && result.SessionID != "" {
+		if _, err := a.findPiSession(result.SessionID); err != nil {
+			return nil, &ExecutionError{Code: "session_unavailable", Stage: "session_save", Indeterminate: true, Err: errors.New("completed native session was not safely persisted")}
+		}
 	}
 	if err := emitter.flush(); err != nil {
 		return nil, err
@@ -176,6 +194,22 @@ func (a *cliAdapter) deliveryArgs(prompt, sessionID, agentID string) ([]string, 
 		}
 		if agentID != "" {
 			args = append(args, "--agent", agentID)
+		}
+		return append(args, "--", prompt), ""
+	case "pi", "omp":
+		args = []string{"-p", "--mode", "json"}
+		if a.model != "" {
+			args = append(args, "--model", a.model)
+		}
+		// An explicit directory starts a fresh session, including when omp's
+		// global autoResume setting is enabled. Resume always names a checked file.
+		args = append(args, "--session-dir", a.piSessionDir())
+		if sessionID != "" {
+			flag := "--session"
+			if a.product == "omp" {
+				flag = "--resume"
+			}
+			args = append(args, flag, sessionID)
 		}
 		return append(args, "--", prompt), ""
 	default:

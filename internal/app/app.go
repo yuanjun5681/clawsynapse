@@ -175,6 +175,10 @@ func newAgentAdapter(cfg config.Config, b config.BotConfig, botID string, log *s
 		return adapter.NewOpenCodeAdapter(adapter.OpenCodeConfig{BotID: botID, BindingRevision: b.BindingRevision, Workspace: workspace, Model: b.Harness.Model, Logger: log, SessionStore: fs, AllowAgentIDs: cfg.AgentAllowedIDs})
 	case "codex":
 		return adapter.NewCodexAdapter(adapter.CodexConfig{BotID: botID, BindingRevision: b.BindingRevision, Workspace: workspace, Model: b.Harness.Model, Logger: log, SessionStore: fs})
+	case "pi":
+		return adapter.NewPiAdapter(adapter.PiConfig{BotID: botID, BindingRevision: b.BindingRevision, Workspace: workspace, Model: b.Harness.Model, Logger: log, SessionStore: fs})
+	case "omp":
+		return adapter.NewOMPAdapter(adapter.OMPConfig{BotID: botID, BindingRevision: b.BindingRevision, Workspace: workspace, Model: b.Harness.Model, Logger: log, SessionStore: fs})
 	case "openclaw":
 		return adapter.NewOpenClawAdapter(adapter.OpenClawConfig{BotID: botID, BindingRevision: b.BindingRevision, Workspace: workspace, Model: b.Harness.Model, Logger: log, AllowAgentIDs: cfg.AgentAllowedIDs})
 	case "webhook":

@@ -115,7 +115,7 @@ BotConfig 保存在 `bots/{botId}/config.json`；通过无 token 的本机 API/C
 }
 ```
 
-可选 Bot 连接字段 `natsCredentialsFile`, `natsTLSCAFile`, `natsTLSCertFile`, `natsTLSKeyFile`, `natsTLSServerName` 覆盖 daemon 的同项；不覆盖共享 natsServers/listener。Agent 必须显式提供非空 `harness` 与受支持的 `adapter`，支持 `default|openclaw|opencode|codex|webhook`；`console` 不再是 adapter。Harness 还有 `webhookUrl`, `credentialsFile`, `instance`；凭据是私有文件，不是 JSON 内明文。OpenClaw/Webhook 必须显式 instance，同 adapter 的非归档 Bot 不可共享 instance。OpenClaw/default 不允许 per-call model override；OpenCode/Codex model 传到真实原生命令，而非仅展示字段。
+可选 Bot 连接字段 `natsCredentialsFile`, `natsTLSCAFile`, `natsTLSCertFile`, `natsTLSKeyFile`, `natsTLSServerName` 覆盖 daemon 的同项；不覆盖共享 natsServers/listener。Agent 必须显式提供非空 `harness` 与受支持的 `adapter`，支持 `default|openclaw|opencode|codex|pi|omp|webhook`；`console` 不再是 adapter。Harness 还有 `webhookUrl`, `credentialsFile`, `instance`；凭据是私有文件，不是 JSON 内明文。OpenClaw/Webhook 必须显式 instance，同 adapter 的非归档 Bot 不可共享 instance。OpenClaw/default 不允许 per-call model override；OpenCode/Codex/pi/omp model 传到真实原生命令，而非仅展示字段。pi/omp 原生 CLI 的安装、provider 凭据及会话目录见 [集成文档](./integration.md#pi--omp-接入)。
 
 Console 最小创建配置为 `{"displayName":"inbox","role":"console"}`；必须省略 `harness`（`null`、`{}` 也拒绝）、`maxConcurrent` 和 `maxQueued`。Console 仅持久收件，没有执行 Harness，健康为不适用；公共文件配额、传输限制、信任和网络配置仍适用。缺失、空值、null、未知 Role、`roles[]` 或未实现的 `device` 均拒绝。配置解码先检查字段是否适用，再填充角色默认值，不从 adapter 推断 Role、不为 Agent 猜测 adapter。
 

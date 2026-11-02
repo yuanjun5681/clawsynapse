@@ -258,7 +258,7 @@ func TestBotDecodeRequiresExplicitRoleAndApplicableFields(t *testing.T) {
 }
 
 func TestBotDecodeDefaultsOnlyApplicableFields(t *testing.T) {
-	for _, adapter := range []string{"default", "openclaw", "opencode", "codex", "webhook"} {
+	for _, adapter := range []string{"default", "openclaw", "opencode", "codex", "pi", "omp", "webhook"} {
 		body := `{"role":"agent","harness":{"adapter":"` + adapter + `"`
 		if adapter == "webhook" {
 			body += `,"webhookUrl":"https://localhost/hook"`

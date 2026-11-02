@@ -319,7 +319,7 @@ func LoadFromOS(args []string) (Config, error) {
 		capabilities        = fs.String("capabilities", strings.Join(merged.Labels.Caps(), ","), "deprecated: comma separated capabilities folded into labels.caps (use --label caps=<value>)")
 		trustMode           = fs.String("trust-mode", merged.TrustMode, "trust mode: open|tofu|explicit")
 		trustAutoApprove    = fs.Bool("trust-auto-approve", merged.TrustAutoApprove, "automatically approve valid inbound trust requests")
-		agentAdapter        = fs.String("agent-adapter", merged.AgentAdapter, "agent adapter: console|default|openclaw|opencode|codex|webhook")
+		agentAdapter        = fs.String("agent-adapter", merged.AgentAdapter, "agent adapter: console|default|openclaw|opencode|codex|pi|omp|webhook")
 		agentAllowedIDs     = fs.String("agent-allowed-ids", strings.Join(merged.AgentAllowedIDs, ","), "comma separated authorized local agent routing IDs")
 		agentAdapterTimeout = fs.Duration("agent-adapter-timeout", merged.AgentAdapterTimeout, "timeout for delivering a message to the agent adapter")
 		webhookURLFlag      = fs.String("webhook-url", merged.WebhookURL, "webhook url for webhook adapter")
@@ -371,8 +371,8 @@ func LoadFromOS(args []string) (Config, error) {
 	if adapterName == "" {
 		adapterName = defaultAgentAdapter
 	}
-	if adapterName != "console" && adapterName != "default" && adapterName != "openclaw" && adapterName != "opencode" && adapterName != "codex" && adapterName != "webhook" {
-		return Config{}, errors.New("agent adapter must be one of: console|default|openclaw|opencode|codex|webhook")
+	if adapterName != "console" && !supportedAgentAdapter(adapterName) {
+		return Config{}, errors.New("agent adapter must be one of: console|default|openclaw|opencode|codex|pi|omp|webhook")
 	}
 
 	webhookURL := strings.TrimSpace(*webhookURLFlag)

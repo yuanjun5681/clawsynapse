@@ -132,7 +132,7 @@ clawsynapse --bot "$BOT_A" publish --target "$PEER" --type chat.message \
 clawsynapse --bot "$BOT_A" --json messages
 ```
 
-备注/认证/信任按本地 Bot 隔离，Bot A 的 alias 或信任不影响 B。peer alias/describe 不带值清除；label 一个值为标量，多个值为集合；unlabel 删除键。标量/数组筛选不互换，不以逗号拆分。labels 是自报属性，不是授权。聊天对象是 Bot，不是 Harness 内部 Agent 目录；`publish --agent ID` 只是受接收端 `harness.allowedAgentIds` 限制的可选内部路由，Codex 不支持命名路由。
+备注/认证/信任按本地 Bot 隔离，Bot A 的 alias 或信任不影响 B。peer alias/describe 不带值清除；label 一个值为标量，多个值为集合；unlabel 删除键。标量/数组筛选不互换，不以逗号拆分。labels 是自报属性，不是授权。聊天对象是 Bot，不是 Harness 内部 Agent 目录；`publish --agent ID` 只是受接收端 `harness.allowedAgentIds` 限制的可选内部路由，Codex、pi、omp 不支持命名路由。
 
 CLI publish 是文本快捷入口，只支持 `--target`、`--type`、`--agent`、`--message`、`--session-key`、可重复 `--metadata key=value`。结构化 payload、expiresAt、稳定 idempotencyKey、请求查询和游标回放用 HTTP API；没有 publish 等待模型完成选项。发布成功只是持久接纳，messages 包含关联 run.* 事件；持久恢复边界见 [messaging.md](messaging.md)。
 

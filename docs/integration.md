@@ -118,6 +118,8 @@ CLI Adapter 将请求编码为 JSON prompt，不再拼接未转义的 `key=value
 | `OpenClawAdapter` | `openclaw` | 调用本地 OpenClaw CLI 投递消息 |
 | `OpenCodeAdapter` | `opencode` | 通过原生 JSONL 事件增量投递答案 |
 | `CodexAdapter` | `codex` | stdin prompt、原生 JSONL、明确 turn.completed 终态 |
+| `PiAdapter` | `pi` | `pi -p --mode json`，原生会话恢复与答案增量 |
+| `OMPAdapter` | `omp` | `omp -p --mode json`，原生会话恢复与答案增量 |
 | `WebhookAdapter` | `webhook` | 通过 HTTP POST 将消息 JSON 转发到外部 URL |
 
 通过无 token 的本机管理 API/CLI 创建时必须显式指定 `role`。Agent 必须显式提供 `harness.adapter`，`harness.timeout` 默认 10m，并可配置适用的 `harness.model`；不从 adapter 推断 Role、不使用 daemon 环境变量/旧 YAML 的全局 adapter。Bot 配置变更必须先停止并以当前 revision CAS 完整更新，保留原 Role，再显式启动。daemon 的 listener/NATS 默认值与资源预算在 schemaVersion 3 的 config.json，Bot 配置在 bots/{botId}/config.json，详见 operations。
@@ -130,7 +132,7 @@ Console 的 BotInfo 为 `harnessApplicable=false`；Bot health 的 adapter 为 `
 
 - 每 Bot 的身份、credentials、状态及 workspace 独立。原生 CLI 实际 cwd 为 `bots/{botId}/workspace/{bindingRevision}`；不是仅给 prompt 添加 Bot 名称。
 - 产品会话按 Bot ID、bindingRevision、产品，再结合发送方/Agent/会话键隔离，原生产品 session ID 持久映射。Harness 变更由服务器生成新 bindingRevision，旧会话不自动接回。失效会话明确失败，不新建并重跑。
-- OpenCode/Codex 的 `harness.model` 传给原生命令 `--model`。OpenCode 使用原生 `run --format json --standalone`；Codex 使用 `exec --json`。OpenClaw 不支持每调用 model override，配置非空 model 会被拒绝。
+- OpenCode/Codex/pi/omp 的 `harness.model` 传给原生命令 `--model`。OpenCode 使用原生 `run --format json --standalone`；Codex 使用 `exec --json`；pi/omp 使用 `-p --mode json`。OpenClaw 不支持每调用 model override，配置非空 model 会被拒绝。
 - OpenClaw/Webhook 需要明确 `harness.instance`，同 adapter 的未归档 Bot 不允许复用 instance。Webhook 发送 botId、bindingRevision、instance 以及对应身份 headers，接收端也必须按绑定隔离状态和权限。instance 标识不是自动创建远端隔离实例的承诺。
 - workspace 不等于 OS 沙箱。原生产品账号、工具权限、文件访问和外部副作用仍需部署策略控制；daemon scoped token 不能取代产品凭据隔离。
 
@@ -138,6 +140,7 @@ Console 的 BotInfo 为 `harnessApplicable=false`；Bot health 的 adapter 为 `
 
 - Codex/OpenCode 增量读取原生事件，只发布答案，不转发 thinking、reasoning 或工具事件。Codex 要求 turn.completed；OpenCode 接受成功 step_finish（tool-calls 不是终态）。没有 step_finish 的 OpenCode 版本只能通过只读 `session export --standalone --sanitize` 核验：session ID 匹配、整体 succeeded、末条 idle/succeeded，最近 assistant 必须是本次流中精确 messageID、finish=stop 且有 completed 时间。旧回合、仅有答案或进程 exit 0 都不能代替完成；查询失败/缺少权威证据明确 indeterminate，不重新执行任务。
 - OpenClaw 保留 Gateway-backed `agent --json` 调用，以明确成功 status/result 判定；一次性 JSON 响应不宣称原生流式。
+- pi/omp 只发布 assistant 的 text delta；无 delta 时使用一次终态文本快照，不转发 thinking、工具或用户内容。必须收到成功 assistant `stopReason=stop` 和 `agent_end`，toolUse、length、error、aborted 或仅答案/exit 0 不算完成。健康探针仅核对 CLI help，返回 degraded，未验证认证或模型连接。
 - 未知输出、登录提示、仅启动事件、非零退出或中断不报完成；会话失效不自动新建重跑。
 - 单原生事件或一次性 JSON 响应最多 256 KiB，累计输出最多 4 MiB，stderr 最多 8 KiB；prompt 最多 32 KiB，argv prompt 最多 16 KiB。超限明确失败，不静默截断成功。
 - 首个答案立即发布，后续小片段按最多 4 KiB 合并，终止时刷新。回调背压同步传到进程，回调错误会取消执行。
@@ -146,6 +149,23 @@ Console 的 BotInfo 为 `harnessApplicable=false`；Bot health 的 adapter 为 `
 - 有 Emit 时结果不再重复返回完整 Reply；失败使用 ExecutionError 的 code、stage 和 indeterminate，不泄露原生 stdout/stderr。
 - DSH 集成只需 Bot 显示名与 labels；不要为聊天配置 Agent 名称或 Agent 目录。通用 CLI 适配器可使用 `harness.allowedAgentIds` 约束本地目标。真实模型任务与第三方 CLI 终态兼容必须单独验收，不能从 health/仅答案输出推断完整 acceptance 通过。
 
+### pi / omp 接入
+
+在 Agent Bot 的 `harness` 中设置 `adapter` 和产品可解析的 `model`，例如：
+
+```json
+{"displayName":"pi-worker","role":"agent","harness":{"adapter":"pi","model":"zai-coding-cn/glm-5.3-flash","timeout":"10m"}}
+```
+
+```json
+{"displayName":"omp-worker","role":"agent","harness":{"adapter":"omp","model":"zai/glm-5.3-flash","timeout":"10m"}}
+```
+
+安装对应 CLI，并在 daemon 宿主账号配置产品自己的 provider 凭据；provider 名称取决于本机模型目录，不将上述两个前缀视为可互换别名。`credentialsFile` 是 Webhook 凭据，不用于注入原生 CLI 模型密钥。安装脚本会将检测到的 pi/omp 所在目录及 `~/.bun/bin` 纳入服务 PATH；CLI 在安装服务之后才加入其他目录时，需更新服务 PATH。
+
+两者不支持 `agentId` 命名路由，即使设置 `allowedAgentIds` 也会拒绝。原生 Session 文件位于该 Binding 工作目录的 `.clawsynapse/pi-sessions` 或 `.clawsynapse/omp-sessions`。显式 `--session-dir` 启动新会话；恢复仅允许该目录中与持久 UUID 匹配的文件，pi 使用 `--session FILE`，omp 使用 `--resume FILE`。丢失、损坏、歧义、符号链接或 UUID 不符时明确失败，不自动创建新会话。OMP 文件可有原生 v1 title 元数据前导记录，之后仍须匹配 session 身份头。
+
+2026-11-02 在 macOS 上通过 pi 1.4.0（`zai-coding-cn/glm-5.3-flash`）与 omp 18.15.0（`zai/glm-5.3-flash`）的 Adapter 真实执行验收：流式答案、工具写文件、重建 Adapter 后恢复同一原生会话并回忆前轮内容、切换 Binding 后独立会话，以及删除原生会话文件后拒绝执行。该验收直接调用 Adapter，不声称覆盖完整跨 Bot NATS 链路、所有 provider 或其他 CLI/OS 版本。
 
 ---
 

@@ -17,6 +17,14 @@ func (a *cliAdapter) GetStatus(ctx context.Context) (*AgentStatus, error) {
 	case "opencode":
 		helpArgs = []string{"run", "--help"}
 		required = []string{"--format", "--session", "--agent", "--standalone"}
+	case "pi", "omp":
+		helpArgs = []string{"--help"}
+		required = []string{"--print", "--mode", "json", "--model", "--session-dir"}
+		if a.product == "pi" {
+			required = append(required, "--session ")
+		} else {
+			required = append(required, "--resume")
+		}
 	default:
 		helpArgs = []string{"agent", "--help"}
 		required = []string{"--json", "--message", "--session-id", "--agent"}
@@ -56,6 +64,8 @@ func (a *cliAdapter) GetStatus(ctx context.Context) (*AgentStatus, error) {
 		// A credential listing cannot prove that a configured provider accepts
 		// those credentials; expose that limitation rather than claiming readiness.
 		return &AgentStatus{Healthy: true, Degraded: true, Detail: "native event schema and credential listing checked; provider connectivity and model execution not probed"}, nil
+	case "pi", "omp":
+		return &AgentStatus{Healthy: true, Degraded: true, Detail: "native JSONL print and session flags checked; authentication, provider connectivity, and model execution not probed"}, nil
 	default:
 		out, err := captureCommand(ctx, a.runCommand, "health", "--json")
 		if err != nil {
