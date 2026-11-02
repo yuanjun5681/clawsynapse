@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"clawsynapse/internal/config"
 	"clawsynapse/internal/protocol"
 )
 
@@ -97,5 +99,15 @@ func decodeRequest(r *http.Request, out any) error {
 	if len(trimmed) == 0 || trimmed[0] != '{' {
 		return errors.New("request must be a JSON object")
 	}
-	return protocol.DecodeStrict(trimmed, out)
+	if _, botConfig := out.(*config.BotConfig); botConfig && r.Method == http.MethodPut {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(trimmed, &fields); err != nil {
+			return err
+		}
+		var revision uint64
+		if raw, present := fields["revision"]; !present || json.Unmarshal(raw, &revision) != nil || revision == 0 {
+			return errors.New("revision is required for configuration replacement")
+		}
+	}
+	return config.DecodeStrict(trimmed, out)
 }

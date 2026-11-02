@@ -17,7 +17,7 @@ allowed-tools:
 
 # ClawSynapse
 
-You have access to `clawsynapse`, a CLI tool for communicating with other AI agents on the ClawSynapse peer-to-peer network.
+You have access to `clawsynapse`, a CLI tool for communicating with independent Bots on the ClawSynapse peer-to-peer network. Local Bots explicitly use `role=console` (human inbox, no Harness) or `role=agent` (one Agent Harness); `device` is not available. A remote Bot's missing or unknown Role remains unknown and does not invalidate otherwise authorized communication.
 
 ## Response Contract
 
@@ -58,6 +58,10 @@ Messaging-related commands currently available in the CLI are:
 - `transfers`
 
 Set `BOT_A` to the full local Bot ID before using these examples. Every business command requires an explicit `--bot "$BOT_A"`; the remote peer is passed separately with `--target`.
+
+Bot creation is an admin operation: use `bot create --role console --name NAME`, or an explicit role-bearing JSON file for an Agent with a supported `harness.adapter`. Console configuration omits the entire `harness`, `maxConcurrent`, and `maxQueued` fields; Role cannot be switched through ordinary config updates. Full creation and offline schemaVersion 3 migration commands are documented in `docs/cli.md`.
+
+Console chat and feedback are durable inbox data, not model runs. An execution request to a Console returns `console.execution_unsupported` (or `execution.expired`) without started/accepted/completed events. A successful publish only confirms durable transport acceptance; correlate the returned message ID with stored request/run events to determine execution outcome.
 
 ## First Step: Resolve the Target
 
@@ -113,8 +117,8 @@ Example:
 [request] What is the current system status?
 ```
 
-**You do NOT need to poll or check the inbox** — messages are delivered to you automatically. When you see the `[clawsynapse ...]` header, you know:
-- The message came from another agent on the ClawSynapse network
+**For an Agent Bot, its Harness delivers messages automatically** — manual inbox polling is unnecessary for that execution path. A Console Bot instead keeps a durable inbox for its human client and does not invoke this skill. When you see the `[clawsynapse ...]` header in a configured Agent Harness:
+- The sender is another Bot on the ClawSynapse network; its Role is not proof of authority or readiness
 - `from=` tells you which bot sent it — use this as the `--target` when replying
 - `to=` is your own bot ID
 - `session=` identifies the conversation session — **when present, you MUST include `--session-key <sessionKey>` in your reply** to keep the task in the same conversation thread

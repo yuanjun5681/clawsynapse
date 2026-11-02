@@ -261,6 +261,15 @@ func (m *model) syncConfigFields(data map[string]any) {
 	if data == nil || m.cfgState.editing {
 		return
 	}
+	if data["role"] == "console" {
+		fields := m.cfgState.fields[:0]
+		for _, field := range m.cfgState.fields {
+			if field.Key != "harness" && field.Key != "maxConcurrent" && field.Key != "maxQueued" {
+				fields = append(fields, field)
+			}
+		}
+		m.cfgState.fields = fields
+	}
 	for i := range m.cfgState.fields {
 		f := &m.cfgState.fields[i]
 		if f.Changed {

@@ -222,3 +222,197 @@ func TestManagerReturnsIndependentConfiguration(t *testing.T) {
 		t.Fatal("configuration view mutated server authorization")
 	}
 }
+
+func TestManagementCreateRequiresRoleAndApplicableFields(t *testing.T) {
+	a := testDaemon(t)
+	admin := adminToken(t, a)
+	for _, body := range []map[string]any{
+		{"displayName": "missing"},
+		{"displayName": "empty", "role": ""},
+		{"displayName": "null", "role": nil},
+		{"displayName": "device", "role": "device"},
+		{"displayName": "roles", "roles": []string{"console"}},
+		{"displayName": "null harness", "role": "console", "harness": nil},
+		{"displayName": "empty harness", "role": "console", "harness": map[string]any{}},
+		{"displayName": "budget", "role": "console", "maxConcurrent": 0},
+		{"displayName": "queue", "role": "console", "maxQueued": 0},
+		{"displayName": "no harness", "role": "agent"},
+		{"displayName": "no adapter", "role": "agent", "harness": map[string]any{}},
+		{"displayName": "legacy", "role": "agent", "harness": map[string]any{"adapter": "console"}},
+	} {
+		requireStatus(t, request(t, a, "POST", "/v2/bots", admin, body), 400)
+	}
+	if len(a.manager.List()) != 0 {
+		t.Fatal("invalid creation allocated a Bot identity")
+	}
+	for _, body := range []map[string]any{
+		{"displayName": "human", "role": "console"},
+		{"displayName": "executor", "role": "agent", "harness": map[string]any{"adapter": "default"}},
+	} {
+		response := request(t, a, "POST", "/v2/bots", admin, body)
+		requireStatus(t, response, 201)
+		var result types.APIResult
+		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		bot := result.Data["bot"].(map[string]any)
+		if bot["role"] != body["role"] {
+			t.Fatalf("management omitted Role: %#v", bot)
+		}
+		id := bot["botId"].(string)
+		// Defaults for new Bots must not become an implicit update CAS token.
+		requireStatus(t, request(t, a, "PUT", "/v2/bots/"+id+"/config", admin, body), 400)
+		health := request(t, a, "GET", "/v2/bots/"+id+"/health", botToken(t, a, id), nil)
+		requireStatus(t, health, 200)
+		if err := json.Unmarshal(health.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.Data["self"].(map[string]any)["role"] != body["role"] {
+			t.Fatal("scoped self metadata omitted Role")
+		}
+		if result.Data["adapter"].(map[string]any)["applicable"] != (body["role"] == "agent") {
+			t.Fatal("Harness applicability did not follow Role")
+		}
+	}
+}
+
+func TestConfigurationRoleIsImmutableInBothDirections(t *testing.T) {
+	for _, role := range []string{config.RoleConsole, config.RoleAgent} {
+		t.Run(role, func(t *testing.T) {
+			a := testDaemon(t)
+			cfg := config.DefaultBotConfigForRole(role)
+			cfg.DisplayName = role
+			before, err := a.manager.Create(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			original, _ := a.manager.Config(before.BotID)
+			changed := config.DefaultBotConfigForRole(config.RoleConsole)
+			if role == config.RoleConsole {
+				changed = config.DefaultBotConfigForRole(config.RoleAgent)
+			}
+			changed.Revision = original.Revision
+			changed.DisplayName = "attempted role switch"
+			if _, err := a.manager.Update(before.BotID, changed); err == nil {
+				t.Fatal("complete valid replacement changed Role")
+			}
+			after, _ := a.manager.Info(before.BotID)
+			if after != before {
+				t.Fatal("failed Role update changed identity, revision or Binding")
+			}
+			stored, _ := a.manager.Config(before.BotID)
+			if stored.Role != original.Role || stored.Revision != original.Revision || stored.BindingRevision != original.BindingRevision {
+				t.Fatal("failed Role update changed persistent configuration")
+			}
+		})
+	}
+}
+
+func TestStartupRejectsLegacyCatalogAndMixedBotFormat(t *testing.T) {
+	for _, legacyCatalog := range []bool{true, false} {
+		a := testDaemon(t)
+		id := newTestBot(t, a, "legacy")
+		if err := a.manager.Shutdown(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if legacyCatalog {
+			path := filepath.Join(a.manager.cfg.DataDir, "bots.json")
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw = bytes.Replace(raw, []byte(`"schemaVersion": 3`), []byte(`"schemaVersion": 2`), 1)
+			raw = bytes.Replace(raw, []byte(`"schemaVersion":3`), []byte(`"schemaVersion":2`), 1)
+			if err := os.WriteFile(path, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			path := filepath.Join(a.manager.botDir(id), "config.json")
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &fields); err != nil {
+				t.Fatal(err)
+			}
+			delete(fields, "role")
+			raw, err = json.Marshal(fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := newManager(a.manager.cfg, "test", nil); err == nil {
+			t.Fatal("normal startup accepted a legacy or mixed layout")
+		}
+	}
+}
+
+func TestConsoleFileRecordsAndAuthorizedBytesRemainReadableAcrossRestart(t *testing.T) {
+	a := testDaemon(t)
+	console, token, err := a.manager.BindWorkspace("files-desktop", "Human")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := newTestBot(t, a, "other")
+	source := filepath.Join(t.TempDir(), "received.txt")
+	const content = "durable human-readable bytes"
+	if err := os.WriteFile(source, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Seed an authorized durable file using the same admin import operation.
+	// No Harness or network runtime is necessary to exercise stopped-state reads.
+	entry, _ := a.manager.entry(console.BotID)
+	entry.mu.Lock()
+	handler, close, err := a.manager.offline(entry)
+	if err != nil {
+		entry.mu.Unlock()
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]string{"filePath": source})
+	imported := httptest.NewRecorder()
+	handler.ServeHTTP(imported, httptest.NewRequest("POST", "/transfer/import", bytes.NewReader(body)))
+	close()
+	entry.mu.Unlock()
+	requireStatus(t, imported, 201)
+	var result types.APIResult
+	if err := json.Unmarshal(imported.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	transferID := result.Data["transfer"].(map[string]any)["transferId"].(string)
+	listing := request(t, a, "GET", "/v2/bots/"+console.BotID+"/transfers", token, nil)
+	requireStatus(t, listing, 200)
+	if !strings.Contains(listing.Body.String(), transferID) || strings.Contains(listing.Body.String(), source) {
+		t.Fatal("Console file record missing or disclosed a local storage path")
+	}
+	filePath := "/v2/bots/" + console.BotID + "/transfer/" + transferID + "/file"
+	file := request(t, a, "GET", filePath, token, nil)
+	requireStatus(t, file, 200)
+	if file.Body.String() != content {
+		t.Fatal("Console cannot read authorized file bytes")
+	}
+	requireStatus(t, request(t, a, "GET", filePath, botToken(t, a, other), nil), 403)
+	requireStatus(t, request(t, a, "GET", "/v2/bots/"+other+"/transfer/"+transferID+"/file", botToken(t, a, other), nil), 404)
+	if err := a.manager.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := newManager(a.manager.cfg, "test", a.blobs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restored.Shutdown(context.Background()) })
+	handler, release, err := restored.Acquire(console.BotID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	file = httptest.NewRecorder()
+	handler.ServeHTTP(file, httptest.NewRequest("GET", "/transfer/"+transferID+"/file", nil))
+	requireStatus(t, file, 200)
+	if file.Body.String() != content {
+		t.Fatal("Console file bytes lost after reopen")
+	}
+}

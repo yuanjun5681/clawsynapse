@@ -72,6 +72,24 @@ func TestPrintResultHealthIncludesVersion(t *testing.T) {
 	}
 }
 
+func TestPrintConsoleHealthShowsRoleAndInapplicableHarness(t *testing.T) {
+	stdout := tempFile(t)
+	printHealthResult(stdout, map[string]any{
+		"self":    map[string]any{"role": "console"},
+		"nats":    map[string]any{"connected": true},
+		"adapter": map[string]any{"applicable": false, "healthy": false},
+	})
+	got := readFile(t, stdout)
+	for _, want := range []string{"role: console\n", "natsConnected: true\n", "harness: not applicable\n"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "adapterHealthy: false") {
+		t.Fatalf("console shown as unhealthy execution: %s", got)
+	}
+}
+
 func TestRunTransferSendPostsExpectedPayload(t *testing.T) {
 	client := &stubAPIClient{result: types.APIResult{OK: true, Code: "transfer.sent"}}
 	_, err := runTransfer(context.Background(), client, []string{

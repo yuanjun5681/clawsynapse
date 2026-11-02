@@ -36,6 +36,7 @@ const (
 )
 
 type Config struct {
+	Role                string       `json:"role,omitempty"`
 	APITokenPath        string       `json:"apiTokenPath"`
 	AllowRemoteAPI      bool         `json:"allowRemoteAPI"`
 	APITLSCertFile      string       `json:"apiTLSCertFile"`
@@ -97,21 +98,32 @@ func Validate(cfg Config) error {
 	if _, err := types.NormalizeLabels(cfg.Labels); err != nil {
 		return fmt.Errorf("labels: %w", err)
 	}
+	// An empty role is accepted only by the legacy single-Bot configuration
+	// model used by offline migration. New Bot configs validate role explicitly.
 	adapterName := strings.ToLower(strings.TrimSpace(cfg.AgentAdapter))
-	if adapterName == "" {
-		adapterName = defaultAgentAdapter
-	}
-	if adapterName != "console" && adapterName != "default" && adapterName != "openclaw" && adapterName != "opencode" && adapterName != "codex" && adapterName != "webhook" {
-		return errors.New("agent adapter must be one of: console|default|openclaw|opencode|codex|webhook")
-	}
-	if strings.TrimSpace(cfg.AgentAdapterTimeout) != "" {
-		d, err := time.ParseDuration(strings.TrimSpace(cfg.AgentAdapterTimeout))
-		if err != nil || d <= 0 {
-			return errors.New("agent adapter timeout must be a positive duration")
+	switch cfg.Role {
+	case RoleConsole:
+		if cfg.AgentAdapter != "" || cfg.AgentAdapterTimeout != "" || cfg.WebhookURL != "" || len(cfg.AgentAllowedIDs) != 0 {
+			return errors.New("console has no execution Harness configuration")
 		}
-	}
-	if adapterName == "webhook" && strings.TrimSpace(cfg.WebhookURL) == "" {
-		return errors.New("webhook url is required when agent adapter is webhook")
+	case "", RoleAgent:
+		if cfg.Role == "" && adapterName == "" {
+			adapterName = defaultAgentAdapter
+		}
+		if !supportedAgentAdapter(adapterName) && !(cfg.Role == "" && adapterName == "console") {
+			return errors.New("unsupported agent adapter")
+		}
+		if strings.TrimSpace(cfg.AgentAdapterTimeout) != "" {
+			d, err := time.ParseDuration(strings.TrimSpace(cfg.AgentAdapterTimeout))
+			if err != nil || d <= 0 {
+				return errors.New("agent adapter timeout must be a positive duration")
+			}
+		}
+		if adapterName == "webhook" && strings.TrimSpace(cfg.WebhookURL) == "" {
+			return errors.New("webhook url is required when agent adapter is webhook")
+		}
+	default:
+		return errors.New("role must be console or agent")
 	}
 	level := strings.ToLower(strings.TrimSpace(cfg.LogLevel))
 	if level != "debug" && level != "info" && level != "warn" && level != "error" {

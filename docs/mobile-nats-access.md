@@ -57,7 +57,7 @@ flowchart LR
 | ClawSynapse Daemon / Bot | daemon 托管多个独立 Bot；各 Bot 分别负责身份、发现、认证、信任与消息交换 |
 | Slack / Telegram 接入 | 平台消息收发、渠道账号绑定、平台会话与 Harness 会话映射 |
 
-一个 daemon 可以托管多个长期协作身份 Bot，每个 Bot 独立持有 Ed25519 密钥、DID、信任、消息、Session 映射和文件引用，并绑定一个 Harness 接入。Harness 内部 Agent、subagent 和 Session 不自动成为 Bot 或联系人；多个手机和渠道可访问经后端授权的 Bot，不需要分别部署 daemon。
+一个 daemon 可以托管多个长期协作身份 Bot，每个 Bot 独立持有 Ed25519 密钥、DID、信任、消息和文件引用。当前显式 Role 为 `console`／`agent`：只有 Agent 配置 Harness 和 Session 映射，Console 持久收件但不执行；`device` 尚不可创建。Harness 内部 Agent、subagent 和 Session 不自动成为 Bot 或联系人；多个手机和渠道可访问经后端授权的 Bot，不需要分别部署 daemon。此角色实现不代表本文移动接入方案已交付。
 
 `botId` 沿用 Ed25519 → `did:key` → `n1-<hash>` 算法，与 wire v2 `nodeId` 是同一值；此本地分层不改 `nodeId/from/to`、subject、签名或 consumer。信任按 Bot 而非 daemon 共享；A 信任 R 不授予 B 信任或文件权限。`agentId` 只作所选 Binding 内的受限路由提示，不等于 Agent 级/租户级授权。共享进程和同 OS 用户不构成强多租户沙箱。
 

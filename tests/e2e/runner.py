@@ -104,7 +104,7 @@ class Harness:
     def prepare_daemon(self, name):
         root = self.root / name
         root.mkdir(mode=0o700)
-        config = {"schemaVersion": 2, "dataDir": str(root),
+        config = {"schemaVersion": 3, "dataDir": str(root),
                   "localApiAddr": f"127.0.0.1:{free_port()}",
                   "adminTokenPath": str(root / "admin.token"),
                   "natsServers": [f"nats://127.0.0.1:{self.env['CLAWSYNAPSE_E2E_NATS_PORT']}"],
@@ -165,7 +165,7 @@ class Harness:
         binding = {"adapter": adapter, "timeout": f"{self.args.turn_timeout}s"}
         if adapter == "opencode":
             binding["model"] = self.args.model
-        body = {"displayName": name, "trustMode": "explicit", "trustAutoApprove": False,
+        body = {"displayName": name, "role": "agent", "trustMode": "explicit", "trustAutoApprove": False,
                 "heartbeatInterval": "1s", "announceTtl": "6s", "harness": binding,
                 "maxConcurrent": 1, "maxQueued": 2}
         bot = self.api(daemon, "POST", "/v2/bots", body, expected=201)["bot"]

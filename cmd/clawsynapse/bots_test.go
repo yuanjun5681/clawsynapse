@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -44,12 +45,119 @@ func TestFullBotIDDoesNotRequireAdminList(t *testing.T) {
 
 func TestBotCreateDoesNotStartOrSelectAnIdentity(t *testing.T) {
 	client := &stubAPIClient{result: types.APIResult{OK: true}}
-	if _, err := runBot(context.Background(), client, "", []string{"create", "--name", "new"}); err != nil {
+	if _, err := runBot(context.Background(), client, "", []string{"create", "--role", "agent", "--adapter", "default", "--name", "new"}); err != nil {
 		t.Fatal(err)
 	}
 	cfg, ok := client.payload.(config.BotConfig)
-	if !ok || cfg.DisplayName != "new" || cfg.Harness.Timeout == "" || client.method != "POST" || client.endpoint != "/v2/bots" {
+	if !ok || cfg.Role != config.RoleAgent || cfg.DisplayName != "new" || cfg.Harness == nil || cfg.Harness.Timeout == "" || client.method != "POST" || client.endpoint != "/v2/bots" {
 		t.Fatalf("unexpected create: %s %#v", client.endpoint, client.payload)
+	}
+}
+
+func TestBotCreateConsoleOmitsExecutionConfiguration(t *testing.T) {
+	client := &stubAPIClient{}
+	if _, err := runBot(context.Background(), client, "", []string{"create", "--role", "console", "--name", "inbox"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := client.payload.(config.BotConfig)
+	if cfg.Role != config.RoleConsole || cfg.Harness != nil || cfg.MaxConcurrent != 0 || cfg.MaxQueued != 0 {
+		t.Fatalf("console has execution configuration: %#v", cfg)
+	}
+}
+
+func TestBotCreateRejectsImplicitRoleAndAdapter(t *testing.T) {
+	for _, args := range [][]string{
+		{"create", "--name", "missing-role"},
+		{"create", "--role", "agent", "--name", "missing-adapter"},
+		{"create", "--role", "console", "--adapter", "default"},
+		{"create", "--role", "device", "--name", "unsupported"},
+	} {
+		client := &stubAPIClient{}
+		if _, err := runBot(context.Background(), client, "", args); err == nil || client.endpoint != "" {
+			t.Fatalf("invalid creation reached API: %v, %v", args, err)
+		}
+	}
+}
+
+func TestBotConfigFileRejectsInapplicableAndMissingFields(t *testing.T) {
+	for _, raw := range []string{
+		`{"displayName":"missing-role","harness":{"adapter":"default"}}`,
+		`{"displayName":"missing-adapter","role":"agent","harness":{}}`,
+		`{"displayName":"null-harness","role":"console","harness":null}`,
+		`{"displayName":"empty-harness","role":"console","harness":{}}`,
+		`{"displayName":"budget","role":"console","maxConcurrent":0}`,
+		`{"displayName":"queue","role":"console","maxQueued":null}`,
+		`{"displayName":"null-role","role":null}`,
+	} {
+		path := filepath.Join(t.TempDir(), "bot.json")
+		if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+			t.Fatal(err)
+		}
+		client := &stubAPIClient{}
+		if _, err := runBot(context.Background(), client, "", []string{"create", "--file", path}); err == nil || client.endpoint != "" {
+			t.Fatalf("invalid file reached API: %s, %v", raw, err)
+		}
+	}
+}
+
+func TestBotCreateFileAppliesRoleDefaultsWithoutInventingHarness(t *testing.T) {
+	for _, raw := range []string{
+		`{"displayName":"inbox","role":"console"}`,
+		`{"displayName":"worker","role":"agent","harness":{"adapter":"default"}}`,
+	} {
+		path := filepath.Join(t.TempDir(), "bot.json")
+		if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+			t.Fatal(err)
+		}
+		client := &stubAPIClient{}
+		if _, err := runBot(context.Background(), client, "", []string{"create", "--file", path}); err != nil {
+			t.Fatal(err)
+		}
+		cfg := client.payload.(config.BotConfig)
+		if cfg.Role == config.RoleConsole && cfg.Harness != nil {
+			t.Fatal("invented console harness")
+		}
+		if cfg.Role == config.RoleAgent && (cfg.Harness == nil || cfg.Harness.Timeout == "") {
+			t.Fatal("missing agent defaults")
+		}
+	}
+}
+
+func TestBotConvertRequiresExplicitSeparateDestination(t *testing.T) {
+	for _, args := range [][]string{
+		{"convert", "--file", "/source"},
+		{"convert", "--output", "/destination"},
+		{"convert", "--file", "/source", "--output", "/destination", "--data-dir", "/daemon"},
+		{"import", "--file", "/source", "--output", "/destination"},
+	} {
+		client := &stubAPIClient{}
+		if _, err := runBot(context.Background(), client, "", args); err == nil || client.endpoint != "" {
+			t.Fatalf("invalid offline conversion reached API: %v, %v", args, err)
+		}
+	}
+}
+
+func TestBotConvertUsesOfflineMigration(t *testing.T) {
+	root := t.TempDir()
+	client := &stubAPIClient{}
+	result, err := runBot(context.Background(), client, "", []string{
+		"convert", "--file", filepath.Join(root, "missing-source"), "--output", filepath.Join(root, "destination"),
+	})
+	if err == nil || result.Code != "bot.convert" || result.OK || client.endpoint != "" {
+		t.Fatalf("conversion bypassed offline converter: %#v, %v, %s", result, err, client.endpoint)
+	}
+}
+
+func TestMigrateRequiresRootAndExclusiveMode(t *testing.T) {
+	for _, args := range [][]string{
+		nil,
+		{"--recover"},
+		{"--data-dir", "/daemon", "--recover", "--legacy-config", "/legacy.yaml"},
+		{"--data-dir", "/daemon", "unexpected"},
+	} {
+		if err := runMigrate(args, &bytes.Buffer{}, &bytes.Buffer{}); err == nil {
+			t.Fatalf("invalid migration mode accepted: %v", args)
+		}
 	}
 }
 

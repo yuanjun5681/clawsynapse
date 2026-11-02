@@ -52,11 +52,17 @@ func Export(dataDir, botID, archivePath string) error {
 	if _, err := os.Lstat(archivePath); !errors.Is(err, os.ErrNotExist) {
 		return errors.New("export destination already exists or is inaccessible")
 	}
+	if err := CheckStartup(dataDir); err != nil {
+		return err
+	}
 	lock, err := store.Lock(filepath.Join(dataDir, "daemon.lock"))
 	if err != nil {
 		return err
 	}
 	defer lock.Close()
+	if err := CheckStartup(dataDir); err != nil {
+		return err
+	}
 	d, err := config.LoadDaemon([]string{"--data-dir", dataDir})
 	if err != nil {
 		return err
@@ -110,6 +116,12 @@ func Export(dataDir, botID, archivePath string) error {
 	if err := config.DecodeStrict(raw, &b); err != nil {
 		return err
 	}
+	if err := config.ValidateBot(b); err != nil {
+		return err
+	}
+	if err := validateBotState(sourceBot, botID, dataDir, dataDir, b); err != nil {
+		return err
+	}
 	effective := config.RuntimeConfig(d, b, botID)
 	b.NATSCredentialsFile = effective.NATSCredentialsFile
 	b.NATSTLSCAFile = effective.NATSTLSCAFile
@@ -121,7 +133,11 @@ func Export(dataDir, botID, archivePath string) error {
 	if err != nil {
 		return err
 	}
-	for name, path := range map[string]*string{"harness": &b.Harness.CredentialsFile, "nats-credentials": &b.NATSCredentialsFile, "nats-ca": &b.NATSTLSCAFile, "nats-cert": &b.NATSTLSCertFile, "nats-key": &b.NATSTLSKeyFile} {
+	credentials := map[string]*string{"nats-credentials": &b.NATSCredentialsFile, "nats-ca": &b.NATSTLSCAFile, "nats-cert": &b.NATSTLSCertFile, "nats-key": &b.NATSTLSKeyFile}
+	if b.Harness != nil {
+		credentials["harness"] = &b.Harness.CredentialsFile
+	}
+	for name, path := range credentials {
 		if *path == "" {
 			continue
 		}
@@ -151,11 +167,14 @@ func Export(dataDir, botID, archivePath string) error {
 	if err := blobs.ExportBot(botID, filepath.Join(stage, "content")); err != nil {
 		return err
 	}
+	if err := rewriteLocalPaths(filepath.Join(stage, "content", "transfers"), stage, archivePath, &m); err != nil {
+		return err
+	}
 	files, err := archiveInventory(stage)
 	if err != nil {
 		return err
 	}
-	manifest := archiveManifest{SchemaVersion: 2, BotID: botID, ArchiveRoot: archivePath, Files: files}
+	manifest := archiveManifest{SchemaVersion: 3, BotID: botID, ArchiveRoot: archivePath, Files: files}
 	if err := store.WriteJSONAtomic(filepath.Join(stage, "export.json"), manifest, 0o600); err != nil {
 		return err
 	}
@@ -198,7 +217,10 @@ func Import(archivePath, dataDir string) (string, error) {
 	if err := decodeManifest(raw, &manifest); err != nil {
 		return "", err
 	}
-	if manifest.SchemaVersion != 2 || !validBotID(manifest.BotID) || !filepath.IsAbs(manifest.ArchiveRoot) {
+	if manifest.SchemaVersion == 2 {
+		return "", errors.New("version 2 Bot export requires explicit bot convert before import")
+	}
+	if manifest.SchemaVersion != 3 || !validBotID(manifest.BotID) || !filepath.IsAbs(manifest.ArchiveRoot) {
 		return "", errors.New("invalid Bot export manifest")
 	}
 	if err := validateArchive(archivePath, manifest); err != nil {
@@ -212,6 +234,9 @@ func Import(archivePath, dataDir string) (string, error) {
 	if identity.DeriveBotID(identity.DeriveBotDID(id.PublicKey)) != manifest.BotID {
 		return "", errors.New("export identity does not match manifest")
 	}
+	if err := CheckStartup(dataDir); err != nil {
+		return "", err
+	}
 	if err := store.EnsurePrivateDir(dataDir); err != nil {
 		return "", err
 	}
@@ -220,6 +245,9 @@ func Import(archivePath, dataDir string) (string, error) {
 		return "", err
 	}
 	defer lock.Close()
+	if err := CheckStartup(dataDir); err != nil {
+		return "", err
+	}
 	d, err := config.LoadDaemon([]string{"--data-dir", dataDir})
 	if err != nil {
 		return "", err
@@ -247,8 +275,19 @@ func Import(archivePath, dataDir string) (string, error) {
 	if err := copyTree(sourceBot, stage, nil); err != nil {
 		return "", err
 	}
-	m := marker{SchemaVersion: 2, BotID: manifest.BotID, Mappings: []pathMapping{{Source: sourceBot, Destination: destination}, {Source: filepath.Join(manifest.ArchiveRoot, "bots", manifest.BotID), Destination: destination}}}
+	m := marker{SchemaVersion: 2, BotID: manifest.BotID, ArchiveOnly: true, Mappings: []pathMapping{{Source: sourceBot, Destination: destination}, {Source: filepath.Join(manifest.ArchiveRoot, "bots", manifest.BotID), Destination: destination}}}
 	if err := rewriteLocalPaths(stage, dataDir, dataDir, &m); err != nil {
+		return "", err
+	}
+	contentStage, err := os.MkdirTemp(dataDir, ".import-content-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(contentStage)
+	if err := copyTree(filepath.Join(archivePath, "content"), contentStage, nil); err != nil {
+		return "", err
+	}
+	if err := rewriteLocalPaths(filepath.Join(contentStage, "transfers"), dataDir, dataDir, &m); err != nil {
 		return "", err
 	}
 	raw, err = store.ReadFile(filepath.Join(stage, "config.json"))
@@ -259,8 +298,31 @@ func Import(archivePath, dataDir string) (string, error) {
 	if err := config.DecodeStrict(raw, &b); err != nil {
 		return "", err
 	}
+	if err := validateArchiveCredentials(b, destination); err != nil {
+		return "", err
+	}
 	if err := config.ValidateBot(b); err != nil {
 		return "", err
+	}
+	if err := validateBotState(stage, manifest.BotID, stage, destination, b); err != nil {
+		return "", err
+	}
+	if err := validateArchiveContent(stage, contentStage, manifest.BotID, b.FileQuotaBytes); err != nil {
+		return "", err
+	}
+	workspaceID, err := readWorkspaceClaim(stage)
+	if err != nil {
+		return "", err
+	}
+	if workspaceID != "" {
+		if b.Role != config.RoleConsole {
+			return "", errors.New("only Console Bots may claim workspaces")
+		}
+		for _, entry := range cat.Bots {
+			if entry.WorkspaceID == workspaceID {
+				return "", errors.New("exported workspace is already bound")
+			}
+		}
 	}
 	if err := newToken(filepath.Join(stage, "credentials", "api.token")); err != nil {
 		return "", err
@@ -278,7 +340,7 @@ func Import(archivePath, dataDir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := blobs.ImportBot(manifest.BotID, filepath.Join(archivePath, "content"), b.FileQuotaBytes); err != nil {
+	if err := blobs.ImportBot(manifest.BotID, contentStage, b.FileQuotaBytes); err != nil {
 		return "", err
 	}
 	// Registration is last: a failed import cannot become an active Bot.
@@ -296,7 +358,7 @@ func Import(archivePath, dataDir string) (string, error) {
 	} else if err != nil {
 		return "", err
 	}
-	cat.Bots = append(cat.Bots, botEntry{BotID: manifest.BotID, DesiredState: "stopped"})
+	cat.Bots = append(cat.Bots, botEntry{BotID: manifest.BotID, DesiredState: "stopped", WorkspaceID: workspaceID})
 	if err := store.WriteJSONAtomic(filepath.Join(dataDir, "bots.json"), cat, 0o600); err != nil {
 		return "", err
 	}
@@ -311,7 +373,7 @@ func validBotID(id string) bool {
 	return err == nil && strings.ToLower(id) == id
 }
 func loadCatalog(root string) (catalog, error) {
-	c := catalog{SchemaVersion: 2, Bots: []botEntry{}}
+	c := catalog{SchemaVersion: 3, Bots: []botEntry{}}
 	data, err := store.ReadFile(filepath.Join(root, "bots.json"))
 	if errors.Is(err, os.ErrNotExist) {
 		return c, nil
@@ -322,7 +384,7 @@ func loadCatalog(root string) (catalog, error) {
 	if err := config.DecodeStrict(data, &c); err != nil {
 		return c, err
 	}
-	if c.SchemaVersion != 2 || c.Bots == nil {
+	if c.SchemaVersion != 3 || c.Bots == nil {
 		return c, errors.New("invalid Bot catalog schema")
 	}
 	seen := map[string]bool{}

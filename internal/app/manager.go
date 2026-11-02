@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -39,6 +40,9 @@ type catalog struct {
 	SchemaVersion int             `json:"schemaVersion"`
 	Bots          []catalogRecord `json:"bots"`
 }
+
+var errBotConfigFormat = errors.New("unsupported Bot configuration format")
+
 type managedBot struct {
 	mu          sync.Mutex
 	info        api.BotInfo
@@ -57,7 +61,7 @@ type Manager struct {
 	version   string
 	bots      map[string]*managedBot
 	catalog   map[string]catalogRecord
-	bindings  map[string]config.HarnessBinding
+	bindings  map[string]*config.HarnessBinding
 	tokens    map[string][32]byte
 	blobs     *blob.Store
 	scheduler *adapter.Scheduler
@@ -66,7 +70,7 @@ type Manager struct {
 }
 
 func newManager(cfg config.DaemonConfig, version string, blobs *blob.Store) (*Manager, error) {
-	m := &Manager{cfg: cfg, version: version, bots: map[string]*managedBot{}, catalog: map[string]catalogRecord{}, bindings: map[string]config.HarnessBinding{}, tokens: map[string][32]byte{}, blobs: blobs, scheduler: adapter.NewScheduler(cfg.MaxConcurrent)}
+	m := &Manager{cfg: cfg, version: version, bots: map[string]*managedBot{}, catalog: map[string]catalogRecord{}, bindings: map[string]*config.HarnessBinding{}, tokens: map[string][32]byte{}, blobs: blobs, scheduler: adapter.NewScheduler(cfg.MaxConcurrent)}
 	path := filepath.Join(cfg.DataDir, "bots.json")
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -77,10 +81,10 @@ func newManager(cfg config.DaemonConfig, version string, blobs *blob.Store) (*Ma
 		if len(entries) != 0 {
 			return nil, errors.New("Bot catalog is missing while Bot data exists; restore the catalog before starting")
 		}
-		if err = store.WriteJSONAtomic(path, catalog{SchemaVersion: 2, Bots: []catalogRecord{}}, 0600); err != nil {
+		if err = store.WriteJSONAtomic(path, catalog{SchemaVersion: 3, Bots: []catalogRecord{}}, 0600); err != nil {
 			return nil, err
 		}
-		data = []byte(`{"schemaVersion":2,"bots":[]}`)
+		data = []byte(`{"schemaVersion":3,"bots":[]}`)
 	} else if err != nil {
 		return nil, err
 	}
@@ -88,7 +92,7 @@ func newManager(cfg config.DaemonConfig, version string, blobs *blob.Store) (*Ma
 	if err = protocol.DecodeStrictLimit(data, &c, 64<<20); err != nil {
 		return nil, fmt.Errorf("load Bot catalog: %w", err)
 	}
-	if c.SchemaVersion != 2 || c.Bots == nil {
+	if c.SchemaVersion != 3 || c.Bots == nil {
 		return nil, fmt.Errorf("invalid or unsupported Bot catalog")
 	}
 	workspaceIDs := make(map[string]bool)
@@ -112,6 +116,9 @@ func newManager(cfg config.DaemonConfig, version string, blobs *blob.Store) (*Ma
 		m.bots[rec.BotID] = b
 		m.catalog[rec.BotID] = rec
 		if err = m.loadEntry(b); err != nil {
+			if errors.Is(err, errBotConfigFormat) {
+				return nil, fmt.Errorf("Bot %s: %w", rec.BotID, err)
+			}
 			b.info.State = "failed"
 			b.info.Error = err.Error()
 		}
@@ -153,8 +160,25 @@ func (m *Manager) loadEntry(b *managedBot) error {
 	if err != nil {
 		return fmt.Errorf("load Bot config: %w", err)
 	}
+	// A schema-3 catalog cannot activate a mixed legacy Bot layout. Other
+	// damaged configuration remains an isolated failed Bot as before.
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(data, &fields) == nil && fields != nil {
+		if _, present := fields["role"]; !present {
+			return fmt.Errorf("%w: role is missing; run offline migration", errBotConfigFormat)
+		}
+		var legacy struct {
+			Adapter string `json:"adapter"`
+		}
+		if json.Unmarshal(fields["harness"], &legacy) == nil && legacy.Adapter == "console" {
+			return fmt.Errorf("%w: console Harness requires offline migration", errBotConfigFormat)
+		}
+		if _, present := fields["revision"]; !present {
+			return errors.New("persisted Bot configuration is missing revision")
+		}
+	}
 	var cfg config.BotConfig
-	if err = protocol.DecodeStrict(data, &cfg); err != nil {
+	if err = config.DecodeStrict(data, &cfg); err != nil {
 		return fmt.Errorf("parse Bot config: %w", err)
 	}
 	if err = config.ValidateBot(cfg); err != nil {
@@ -163,8 +187,12 @@ func (m *Manager) loadEntry(b *managedBot) error {
 	b.cfg = cfg
 	b.info.DisplayName = b.cfg.DisplayName
 	b.info.Revision = b.cfg.Revision
-	b.info.HarnessApplicable = b.cfg.Harness.Adapter != "console"
-	b.info.BindingRevision = b.cfg.BindingRevision
+	b.info.Role = b.cfg.Role
+	b.info.HarnessApplicable = b.cfg.Role == config.RoleAgent
+	b.info.BindingRevision = ""
+	if b.cfg.Role == config.RoleAgent {
+		b.info.BindingRevision = b.cfg.BindingRevision
+	}
 	id, err := identity.Load(filepath.Join(dir, "credentials", "identity.key"), filepath.Join(dir, "credentials", "identity.pub"))
 	if err != nil {
 		return fmt.Errorf("load identity: %w", err)
@@ -176,7 +204,7 @@ func (m *Manager) loadEntry(b *managedBot) error {
 	if err := m.validateWorkspaceBinding(b.info.BotID, b.workspaceID); err != nil {
 		return err
 	}
-	if b.workspaceID != "" && b.cfg.Harness.Adapter != "console" {
+	if b.workspaceID != "" && b.cfg.Role != config.RoleConsole {
 		return errors.New("workspace binding requires a Console Bot")
 	}
 	b.info.DID = did
@@ -251,10 +279,12 @@ func (m *Manager) Info(id string) (api.BotInfo, error) {
 	if r != nil {
 		defer b.refs.Done()
 		info.NetworkHealthy = r.bus.Status().Connected
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		status, err := r.harness.GetStatus(ctx)
-		info.HarnessHealthy = err == nil && status != nil && status.Healthy
+		if info.Role == config.RoleAgent && r.harness != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			status, err := r.harness.GetStatus(ctx)
+			info.HarnessHealthy = err == nil && status != nil && status.Healthy
+		}
 		b.mu.Lock()
 		if b.runtime == r && b.info.State == "running" {
 			b.info.NetworkHealthy = info.NetworkHealthy
@@ -267,7 +297,11 @@ func (m *Manager) Info(id string) (api.BotInfo, error) {
 func cloneConfig(cfg config.BotConfig) config.BotConfig {
 	cfg.Labels = maps.Clone(cfg.Labels)
 	cfg.DeliverablePrefixes = slices.Clone(cfg.DeliverablePrefixes)
-	cfg.Harness.AllowedAgentIDs = slices.Clone(cfg.Harness.AllowedAgentIDs)
+	if cfg.Harness != nil {
+		h := *cfg.Harness
+		h.AllowedAgentIDs = slices.Clone(h.AllowedAgentIDs)
+		cfg.Harness = &h
+	}
 	return cfg
 }
 func (m *Manager) Config(id string) (config.BotConfig, error) {
@@ -292,7 +326,7 @@ func (m *Manager) Authenticate(token string) (string, bool) {
 }
 func randomID() string { return rand.Text() }
 func (m *Manager) saveCatalogLocked() error {
-	c := catalog{SchemaVersion: 2, Bots: make([]catalogRecord, 0, len(m.catalog))}
+	c := catalog{SchemaVersion: 3, Bots: make([]catalogRecord, 0, len(m.catalog))}
 	for _, rec := range m.catalog {
 		c.Bots = append(c.Bots, rec)
 	}
@@ -324,15 +358,15 @@ func (m *Manager) desiredLocked(b *managedBot, desired string, archived bool) er
 	b.info.Archived = archived
 	return nil
 }
-func (m *Manager) checkBindingLocked(id string, h config.HarnessBinding) error {
-	if h.Adapter != "webhook" && h.Adapter != "openclaw" {
+func (m *Manager) checkBindingLocked(id string, h *config.HarnessBinding) error {
+	if h == nil || (h.Adapter != "webhook" && h.Adapter != "openclaw") {
 		return nil
 	}
 	if h.Instance == "" {
 		return api.Failure(400, "bot.binding_invalid", "shared-process Harness requires an explicit instance identifier")
 	}
 	for other, binding := range m.bindings {
-		if other != id && !m.catalog[other].Archived && binding.Adapter == h.Adapter && binding.Instance == h.Instance {
+		if other != id && binding != nil && !m.catalog[other].Archived && binding.Adapter == h.Adapter && binding.Instance == h.Instance {
 			return api.Failure(409, "bot.binding_shared", "Harness instance sharing cannot guarantee execution isolation")
 		}
 	}
@@ -343,7 +377,10 @@ func (m *Manager) Create(cfg config.BotConfig) (api.BotInfo, error) {
 		return api.BotInfo{}, api.Failure(400, "bot.config_invalid", "displayName is required when creating a Bot")
 	}
 	cfg.Revision = 1
-	cfg.BindingRevision = randomID()
+	cfg.BindingRevision = ""
+	if cfg.Role == config.RoleAgent {
+		cfg.BindingRevision = randomID()
+	}
 	if err := config.ValidateBot(cfg); err != nil {
 		return api.BotInfo{}, api.Failure(400, "bot.config_invalid", err.Error())
 	}
@@ -424,7 +461,7 @@ func (m *Manager) createLocked(cfg config.BotConfig, workspaceID string) (api.Bo
 		return api.BotInfo{}, err
 	}
 	m.bots[botID] = b
-	m.bindings[botID] = cfg.Harness
+	m.bindings[botID] = b.cfg.Harness
 	m.tokens[botID] = b.token
 	return b.info, nil
 }
@@ -470,9 +507,12 @@ func (m *Manager) Update(id string, cfg config.BotConfig) (api.BotInfo, error) {
 	if cfg.Revision != b.cfg.Revision {
 		return api.BotInfo{}, api.Failure(409, "bot.revision_conflict", "configuration revision changed")
 	}
+	if cfg.Role != b.cfg.Role {
+		return api.BotInfo{}, api.Failure(400, "bot.role_immutable", "Role cannot change after Bot creation")
+	}
 	// Binding identity is server controlled. A changed binding never revives old sessions.
 	cfg.BindingRevision = b.cfg.BindingRevision
-	if !reflect.DeepEqual(cfg.Harness, b.cfg.Harness) {
+	if cfg.Role == config.RoleAgent && !reflect.DeepEqual(cfg.Harness, b.cfg.Harness) {
 		cfg.BindingRevision = randomID()
 	}
 	cfg.Revision++
@@ -484,9 +524,6 @@ func (m *Manager) Update(id string, cfg config.BotConfig) (api.BotInfo, error) {
 	if m.closing {
 		return api.BotInfo{}, api.Failure(503, "daemon.stopping", "daemon is stopping")
 	}
-	if m.catalog[id].WorkspaceID != "" && !reflect.DeepEqual(cfg.Harness, b.cfg.Harness) {
-		return api.BotInfo{}, api.Failure(409, "workspace.binding_invalid", "a workspace Console Bot cannot be rebound to another Harness")
-	}
 	if err = m.checkBindingLocked(id, cfg.Harness); err != nil {
 		return api.BotInfo{}, err
 	}
@@ -494,11 +531,15 @@ func (m *Manager) Update(id string, cfg config.BotConfig) (api.BotInfo, error) {
 		return api.BotInfo{}, err
 	}
 	b.cfg = cloneConfig(cfg)
-	m.bindings[id] = cfg.Harness
+	m.bindings[id] = b.cfg.Harness
 	b.info.Revision = cfg.Revision
-	b.info.BindingRevision = cfg.BindingRevision
+	b.info.BindingRevision = ""
+	if cfg.Role == config.RoleAgent {
+		b.info.BindingRevision = cfg.BindingRevision
+	}
 	b.info.DisplayName = cfg.DisplayName
-	b.info.HarnessApplicable = cfg.Harness.Adapter != "console"
+	b.info.Role = cfg.Role
+	b.info.HarnessApplicable = cfg.Role == config.RoleAgent
 	// Configuration repair does not claim failed keys/state are repaired.
 	return b.info, nil
 }
@@ -606,7 +647,7 @@ func (m *Manager) start(b *managedBot) {
 		r.Close()
 	}
 	harnessHealthy := false
-	if err == nil {
+	if err == nil && cfg.Role == config.RoleAgent && r.harness != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		status, probeErr := r.harness.GetStatus(ctx)
 		cancel()

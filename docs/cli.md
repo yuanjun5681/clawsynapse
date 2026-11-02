@@ -5,7 +5,7 @@ title: "ClawSynapse CLI"
 
 # ClawSynapse CLI
 
-`clawsynapse` 通过本地 daemon HTTP API 管理 Bot 和业务；只有 init、迁移、离线 export/import 与服务/日志管理直接操作本机。仓库内可用 `go run ./cmd/clawsynapse` 替换下列 `clawsynapse`。
+`clawsynapse` 通过本地 daemon HTTP API 管理 Bot 和业务；只有 init、迁移、离线 export/import/convert 与服务/日志管理直接操作本机。仓库内可用 `go run ./cmd/clawsynapse` 替换下列 `clawsynapse`。
 
 ## 全局参数与凭据
 
@@ -35,15 +35,15 @@ clawsynapse --json bot create --name assistant-b --file /absolute/bot-b.json
 clawsynapse --json bots
 ```
 
-`init` 只创建 schemaVersion 2 的 daemon `config.json`，不创建默认 Bot、不迁移旧目录、不配置 Harness。终端可交互输入，非交互使用参数：`--config FILE`、`--data-dir ROOT`、`--nats-servers URLS`、`--local-api-addr ADDR`、`--log-level debug|info|warn|error`、`--log-format json|text`、`--overwrite`。已有文件非交互覆盖必须显式 `--overwrite`。不再支持 init 的 `--agent-adapter`、trust、gateway 或身份参数。daemon 配置修改后重启 daemon。
+`init` 只创建 schemaVersion 3 的 daemon `config.json`，不创建默认 Bot、不迁移旧目录、不配置 Role 或 Harness。终端可交互输入，非交互使用参数：`--config FILE`、`--data-dir ROOT`、`--nats-servers URLS`、`--local-api-addr ADDR`、`--log-level debug|info|warn|error`、`--log-format json|text`、`--overwrite`。已有文件非交互覆盖必须显式 `--overwrite`。不支持 init 的 `--agent-adapter`、trust、gateway 或身份参数。daemon 配置修改后重启 daemon。
 
-Bot 创建文件可只提供覆盖字段；例如 bot-a.json：
+Bot 创建文件必须显式提供 `role`；Agent 还必须显式提供 `harness.adapter`，其他适用字段按角色填充默认值。例如 bot-a.json：
 
 ```json
-{"displayName":"assistant-a","harness":{"adapter":"opencode","model":"zai-coding-plan/glm-5.3-flash","timeout":"10m"}}
+{"displayName":"assistant-a","role":"agent","harness":{"adapter":"opencode","model":"zai-coding-plan/glm-5.3-flash","timeout":"10m"}}
 ```
 
-bot-b.json 使用另一 displayName/model。模型必须在部署机器上真实可用，此示例不是模型验收声明。创建以 defaults 合并，生成独立密钥和 scoped token，返回 `data.bot.botId`；保存为 BOT_A/B。Bot 初始 stopped：
+bot-b.json 使用另一 displayName/model。模型必须在部署机器上真实可用，此示例不是模型验收声明。创建生成独立密钥和 scoped token，返回 `data.bot.botId`；保存为 BOT_A/B。Bot 初始 stopped：
 
 ```bash
 clawsynapse --bot "$BOT_A" bot start
@@ -70,16 +70,21 @@ clawsynapse --bot "$BOT_B" bot archive
 clawsynapse --bot "$BOT_B" bot restore
 ```
 
-`bot create --name NAME [--file FILE]` 要求显示名；`--name` 覆盖文件显示名。`bot config --file FILE` 不是 patch：提交完整 BotConfig 和当前 revision，成功递增；陈旧 revision 返回 409。Harness 变化自动生成 bindingRevision，切换工作区及会话，不复活旧产品 session。archive 保留数据，restore 回到 stopped，需显式 start。
+无文件创建使用 `bot create --name NAME --role console`，或 `bot create --name NAME --role agent --adapter ADAPTER`；不从 adapter 推断 Role，也不为 Agent 猜测 adapter。文件创建使用 `bot create --file FILE [--name NAME]`，Role/adapter 必须写在文件中，不能同时传 `--role`/`--adapter`；`--name` 覆盖显示名。`device` 尚不可创建。
 
-每个 Bot 配置 Harness adapter/model/timeout、信任、标签、执行上限和文件配额；daemon 只存共享资源设置。OpenClaw/Webhook 必须有明确、互不共享的 harness.instance。所有字段见 [operations.md](operations.md)。
+Console 文件示例为 `{"displayName":"inbox","role":"console"}`。Console 必须省略 `harness`（`null`、`{}` 也不允许）、`maxConcurrent` 和 `maxQueued`；保留公共信任、标签与文件配额。Console health 显示 `harness: not applicable`，不是执行故障。只有 Agent 配置 Harness adapter/model/timeout 和执行上限；OpenClaw/Webhook 必须有明确、互不共享的 harness.instance。所有字段见 [operations.md](operations.md)。
+
+`bot config --file FILE` 不是 patch：提交包含原 Role 的完整 BotConfig 和当前 revision，成功递增；陈旧 revision 返回 409。普通更新不能切换 Role。Agent Harness 变化自动生成 bindingRevision，切换工作区及会话，不复活旧产品 session；纯 schema 迁移保留原 Agent bindingRevision。archive 保留数据，restore 回到 stopped，需显式 start。
 
 ## 旧数据显式迁移与私有备份
 
-先停止旧 daemon（包括手工进程），保留旧配置和目录。不要先对旧目录运行 init --overwrite。迁移只接受明确旧配置：
+先停止 daemon（包括手工进程），保留旧配置和目录。不要先对旧目录运行 init --overwrite。版本 2 多 Bot 布局使用整体离线升级；旧单 Bot 配置使用显式 legacy 入口：
 
 ```bash
 clawsynapse service stop
+# schemaVersion 2 多 Bot 布局 → 3（包括 stopped/archived Bot）
+clawsynapse migrate --data-dir "$HOME/.clawsynapse"
+# 旧单 Bot YAML → schemaVersion 3；两种入口按实际源布局二选一
 clawsynapse migrate --legacy-config "$HOME/.clawsynapse/config.yaml" --data-dir "$HOME/.clawsynapse"
 # 输出保留原身份的完整 Bot ID；迁移后初始 stopped
 clawsynapsed --config "$HOME/.clawsynapse/config.json"
@@ -87,7 +92,7 @@ clawsynapse bots
 clawsynapse --bot "$MIGRATED_BOT" bot start
 ```
 
-`--data-dir` 可为原目录或单独空目录；源和目标不可嵌套。迁移持有目录/消息日志独占锁，保留原始字节、路径映射、校验清单与 migration marker；不在线猜测、合并目录或重建身份。原地迁移保留原目录备份；异地迁移保留源目录及备份数据。保留这些私有备份，勿将失败目录/marker 当垃圾删除。自动启动遇到旧布局会拒绝并要求显式迁移。
+旧单 Bot 迁移的 `--data-dir` 可为原目录或单独空目录；源和目标不可嵌套。版本 2 布局升级必须针对整个原 DataDir。迁移持有独占锁，保留原始数据与备份；不在线猜测、合并目录或重建身份。Agent 保留 bindingRevision、原生 Session 和工作目录；Console 删除旧 Harness/执行预算配置，但保留历史文件路径与授权引用。原地切换通过暂存、备份和持久 marker 提交，不能将多次重命名视为一次原子操作。未完成迁移拒绝正常启动，使用 `clawsynapse migrate --recover --data-dir ROOT` 显式恢复；恢复可重复执行，不清空 outbox、pending work 或 cursor。新布局已有写入后，不直接用旧备份覆盖新历史。
 
 停止目标 daemon 后可离线导出/导入 Bot：
 
@@ -97,6 +102,13 @@ clawsynapse bot import --data-dir /private/other-daemon --file /private/backups/
 ```
 
 `--file` 是私有 bundle **目录**，不是 JSON 配置或压缩包；export 必须用完整 --bot ID，import 从 bundle 获取身份。导出包含身份私钥、凭据、配置、持久状态和引用内容，按秘密管理。离线操作不使用 HTTP token 绕过目录锁；源/目标 daemon 必须停止。导入保留身份，不是复制成新的 Bot，不要同时启动同一身份的两份副本。
+
+普通 import 只接受 schemaVersion 3 bundle。旧版本 2 bundle 先显式转换，保留原包；目标必须是独立新目录，未知或更高版本拒绝：
+
+```bash
+clawsynapse bot convert --file /private/backups/bot-a-v2 --output /private/backups/bot-a-v3
+clawsynapse bot import --data-dir /private/other-daemon --file /private/backups/bot-a-v3
+```
 
 ## 业务命令
 

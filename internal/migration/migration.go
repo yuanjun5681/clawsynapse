@@ -56,6 +56,7 @@ type marker struct {
 	CreatedAt      string           `json:"createdAt"`
 	Mappings       []pathMapping    `json:"pathMappings"`
 	Inventory      []inventoryEntry `json:"inventory"`
+	ArchiveOnly    bool             `json:"-"`
 }
 
 // Migrate requires exclusive ownership of the legacy root and message journal.
@@ -101,6 +102,9 @@ func Migrate(legacy config.Config, target string) (string, error) {
 		return "", err
 	}
 	defer transactionLock.Close()
+	if err := CheckStartup(target); err != nil {
+		return "", err
+	}
 	sourceLock, err := store.Lock(filepath.Join(source, "daemon.lock"))
 	if err != nil {
 		return "", err
@@ -238,7 +242,7 @@ func Migrate(legacy config.Config, target string) (string, error) {
 	if err := copyCredentialPaths(stage, target, &d, &b, &m); err != nil {
 		return "", err
 	}
-	if legacy.WebhookAuthToken != "" {
+	if legacy.WebhookAuthToken != "" && b.Harness != nil {
 		b.Harness.CredentialsFile = filepath.Join(finalBot, "credentials", "harness.token")
 		if err := store.WriteAtomic(filepath.Join(botRoot, "credentials", "harness.token"), []byte(legacy.WebhookAuthToken+"\n"), 0o600); err != nil {
 			return "", err
@@ -295,7 +299,7 @@ func Migrate(legacy config.Config, target string) (string, error) {
 	if err := store.WriteJSONAtomic(filepath.Join(stage, "config.json"), d, 0o600); err != nil {
 		return "", err
 	}
-	if err := store.WriteJSONAtomic(filepath.Join(stage, "bots.json"), catalog{SchemaVersion: 2, Bots: []botEntry{{BotID: botID, DesiredState: "stopped"}}}, 0o600); err != nil {
+	if err := store.WriteJSONAtomic(filepath.Join(stage, "bots.json"), catalog{SchemaVersion: 3, Bots: []botEntry{{BotID: botID, DesiredState: "stopped"}}}, 0o600); err != nil {
 		return "", err
 	}
 	blobs, err := blob.New(stage, blob.Limits{MaxBytes: d.BlobMaxBytes, TempBytes: d.TempMaxBytes, WorkspaceBytes: d.WorkspaceMaxBytes})
@@ -526,6 +530,20 @@ func syncTree(root string) error {
 		if d.IsDir() {
 			dirs = append(dirs, p)
 		}
+		if !d.IsDir() {
+			f, err := store.OpenRegular(p)
+			if err != nil {
+				return err
+			}
+			syncErr := f.Sync()
+			closeErr := f.Close()
+			if syncErr != nil {
+				return syncErr
+			}
+			if closeErr != nil {
+				return closeErr
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -562,7 +580,11 @@ func splitConfig(c config.Config, target, binding string) (config.DaemonConfig, 
 	d.LogRotateMaxBackups = c.LogRotateMaxBackups
 	d.LogRotateMaxAgeDays = c.LogRotateMaxAgeDays
 	d.LogRotateCompress = c.LogRotateCompress
-	b := config.DefaultBotConfig()
+	role := config.RoleAgent
+	if c.AgentAdapter == "console" {
+		role = config.RoleConsole
+	}
+	b := config.DefaultBotConfigForRole(role)
 	b.BindingRevision = binding
 	b.DisplayName = c.DisplayName
 	b.Labels = c.Labels
@@ -572,7 +594,9 @@ func splitConfig(c config.Config, target, binding string) (config.DaemonConfig, 
 	b.AnnounceTTL = c.AnnounceTTL
 	b.AgentProduct = c.AgentProduct
 	b.AgentVersion = c.AgentVersion
-	b.Harness = config.HarnessBinding{Adapter: c.AgentAdapter, Timeout: c.AgentAdapterTimeout, WebhookURL: c.WebhookURL, AllowedAgentIDs: c.AgentAllowedIDs}
+	if role == config.RoleAgent {
+		b.Harness = &config.HarnessBinding{Adapter: c.AgentAdapter, Timeout: c.AgentAdapterTimeout, WebhookURL: c.WebhookURL, AllowedAgentIDs: c.AgentAllowedIDs}
+	}
 	b.DeliverablePrefixes = c.DeliverablePrefixes
 	b.TransferMaxFileSize = c.TransferMaxFileSize
 	b.TransferTTL = c.TransferTTL
@@ -744,6 +768,9 @@ func mapLocalPath(path, key, botRoot, stage, target string, m *marker) (string, 
 	local := strings.ToLower(key)
 	if local != "cwd" && !strings.Contains(local, "path") && !strings.Contains(local, "directory") {
 		return path, nil
+	}
+	if m.ArchiveOnly {
+		return "", fmt.Errorf("archive contains an external local reference: %s", path)
 	}
 	if _, err := os.Lstat(path); err != nil {
 		return "", fmt.Errorf("cannot preserve persisted local path %s: %w", path, err)

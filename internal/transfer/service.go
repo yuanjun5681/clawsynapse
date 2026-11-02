@@ -42,6 +42,7 @@ type Service struct {
 	trustMode    string
 	transferDir  string
 	workspace    string
+	inboxOnly    bool
 	blobs        *blob.Store
 	storageBotID string
 	quotaBytes   int64
@@ -65,7 +66,7 @@ func NewService(log *slog.Logger, peers *discovery.Registry, bus *natsbus.Client
 		log = slog.Default()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Service{log: log, peers: peers, bus: bus, messaging: msgSvc, botID: botID, identity: id, trustMode: trustMode, transferDir: cfg.TransferDir, workspace: cfg.Workspace, blobs: cfg.Blobs, storageBotID: cfg.BotID, quotaBytes: cfg.QuotaBytes, maxFileSize: maxFileSize, ttl: parseTTL(cfg.TTL), transfers: make(map[string]*TransferRecord), ctx: ctx, cancel: cancel}
+	return &Service{log: log, peers: peers, bus: bus, messaging: msgSvc, botID: botID, identity: id, trustMode: trustMode, transferDir: cfg.TransferDir, workspace: cfg.Workspace, inboxOnly: cfg.InboxOnly, blobs: cfg.Blobs, storageBotID: cfg.BotID, quotaBytes: cfg.QuotaBytes, maxFileSize: maxFileSize, ttl: parseTTL(cfg.TTL), transfers: make(map[string]*TransferRecord), ctx: ctx, cancel: cancel}
 }
 
 // ConfigurePersistence loads the authoritative durable grants before the Runtime
@@ -517,20 +518,26 @@ func (s *Service) notify(id string) (err error) {
 	rec, ok := s.transfers[id]
 	fn := s.onReceived
 	closing := s.closing
-	if !ok || rec.Direction != "inbound" || rec.NotificationState != "pending" || fn == nil || closing {
+	if !ok || rec.Direction != "inbound" || rec.NotificationState != "pending" || (fn == nil && !s.inboxOnly) || closing {
 		s.mu.Unlock()
 		return nil
 	}
 	copy := *rec
 	s.mu.Unlock()
-	path, err := s.blobs.Workspace(s.storageBotID, id, s.workspace)
-	if err != nil {
-		return err
+	path := ""
+	if !s.inboxOnly {
+		path, err = s.blobs.Workspace(s.storageBotID, id, s.workspace)
+		if err != nil {
+			return err
+		}
 	}
 	copy.LocalPath = ""
 	copy.NotificationState = "admitted"
 	if err := s.persist(&copy); err != nil {
 		return err
+	}
+	if s.inboxOnly {
+		return nil
 	}
 	copy.LocalPath = path
 	s.mu.Lock()

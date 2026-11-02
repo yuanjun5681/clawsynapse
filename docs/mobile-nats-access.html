@@ -115,7 +115,7 @@
 </tr>
 </tbody>
 </table></div>
-<p>一个 daemon 可以托管多个长期协作身份 Bot，每个 Bot 独立持有 Ed25519 密钥、DID、信任、消息、Session 映射和文件引用，并绑定一个 Harness 接入。Harness 内部 Agent、subagent 和 Session 不自动成为 Bot 或联系人；多个手机和渠道可访问经后端授权的 Bot，不需要分别部署 daemon。</p>
+<p>一个 daemon 可以托管多个长期协作身份 Bot，每个 Bot 独立持有 Ed25519 密钥、DID、信任、消息和文件引用。当前显式 Role 为 <code>console</code>／<code>agent</code>：只有 Agent 配置 Harness 和 Session 映射，Console 持久收件但不执行；<code>device</code> 尚不可创建。Harness 内部 Agent、subagent 和 Session 不自动成为 Bot 或联系人；多个手机和渠道可访问经后端授权的 Bot，不需要分别部署 daemon。此角色实现不代表本文移动接入方案已交付。</p>
 <p><code>botId</code> 沿用 Ed25519 → <code>did:key</code> → <code>n1-&lt;hash&gt;</code> 算法，与 wire v2 <code>nodeId</code> 是同一值；此本地分层不改 <code>nodeId/from/to</code>、subject、签名或 consumer。信任按 Bot 而非 daemon 共享；A 信任 R 不授予 B 信任或文件权限。<code>agentId</code> 只作所选 Binding 内的受限路由提示，不等于 Agent 级/租户级授权。共享进程和同 OS 用户不构成强多租户沙箱。</p>
 <h2 id="section-4">移动端连接流程</h2>
 <ol>

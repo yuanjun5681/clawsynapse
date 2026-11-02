@@ -207,7 +207,7 @@ func (m model) View() tea.View {
 			if i == m.botCursor {
 				marker = "> "
 			}
-			lines = append(lines, marker+bot.BotID+"  "+bot.DisplayName+"  "+bot.State)
+			lines = append(lines, marker+bot.BotID+"  "+bot.DisplayName+"  "+fallbackString(bot.Role, "unknown")+"  "+bot.State)
 		}
 		if len(m.bots) == 0 {
 			lines = append(lines, "No local Bots. Create one with clawsynapse bot create.")

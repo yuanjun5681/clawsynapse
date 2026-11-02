@@ -44,7 +44,7 @@ curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/script
   bash -s -- --daemon --nats-servers nats://127.0.0.1:4222
 ```
 
-首次安装创建 `~/.clawsynapse/config.json`（`schemaVersion: 2`），后续升级保留已有 v2 配置。Harness 选择属于各 Bot 的配置，不再使用安装参数 `--agent-adapter`。
+首次安装创建 `~/.clawsynapse/config.json`（`schemaVersion: 3`），已有版本 2 数据须先停止 daemon 并显式离线迁移，不在安装或启动时隐式转换。Role 与 Harness 选择属于各 Bot 的配置，不再使用安装参数 `--agent-adapter`。
 
 每个新 Bot 独立生成 Ed25519 密钥，派生 `did:key` 和 `botId = "n1-" + hex(sha256(did)[:16])`。名称、模型、Binding、启停和完整迁移不改变身份；已有密钥损坏时启动失败，不自动替换。wire v2 仍使用同值的 `nodeId/from/to`、既有 subject、签名与 consumer，不要求远端同步升级。
 
@@ -53,6 +53,7 @@ curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/script
 ```json
 {
   "displayName": "Bot A",
+  "role": "agent",
   "harness": {
     "adapter": "opencode",
     "model": "zai-coding-plan/glm-5.3-flash",
@@ -73,6 +74,16 @@ clawsynapse --bot <返回的完整-bot-id> bot start
 多个 Bot 可以使用同一 Harness 产品的独立绑定。业务命令始终显式选择 `--bot`，即使只有一个 Bot；完整 ID 或管理员可解析的无歧义 ID 前缀均可，不用公开名称路由。核心真实端到端验证已通过：macOS、Docker NATS 2.11.9、两个 OpenCode 2.2 Binding 使用 GLM 5.3 Flash，覆盖独立身份、权限/信任/备注隔离、原生 Session/工作目录及回复路由、有界并发、单 Bot 停止/恢复、Binding 切换、SIGKILL 后 admitted 任务不盲目重跑，以及共享实体的独立文件授权和可写副本。实际 CLI 迁移/导出恢复及 Go 测试、race、vet 检查也已通过；不代表所有平台、引擎和故障组合均已验证，详见[多 Bot 设计](./docs/multi-bot-daemon.md)。
 
 ## 升级
+
+版本 2 多 Bot 布局须先停止 daemon、备份完整 DataDir，再使用新 CLI 显式迁移：
+
+```bash
+clawsynapse service stop
+clawsynapse migrate --data-dir /absolute/path/to/daemon-root
+```
+
+迁移保留身份、信任、消息游标、Agent Binding 与 Session，Console 转为无 Harness 的 `role=console`。中断后先执行 `clawsynapse migrate --recover --data-dir /absolute/path/to/daemon-root`，再重启。旧版本 2 导出包须先用 `clawsynapse bot convert --file /path/to/old-bundle --output /path/to/new-bundle` 显式转换，原包不变。
+
 
 升级到最新版本时，直接再次执行同一个安装脚本：
 

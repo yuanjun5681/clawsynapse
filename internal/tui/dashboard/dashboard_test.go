@@ -406,7 +406,7 @@ func TestBuildConfigFromFieldsIncludesDisplayNameAndLabels(t *testing.T) {
 		}
 	}
 
-	cfg, err := buildBotConfigFromFields(fields, nil)
+	cfg, err := buildBotConfigFromFields(fields, map[string]any{"role": "console"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -33,6 +33,7 @@ type Server struct {
 
 type SelfInfo struct {
 	BotID               string
+	Role                string
 	DID                 string
 	IdentityFingerprint string
 	TrustMode           string

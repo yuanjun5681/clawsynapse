@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"clawsynapse/internal/api"
+	"clawsynapse/internal/config"
 	"clawsynapse/internal/identity"
 	"clawsynapse/pkg/types"
 )
@@ -720,6 +721,10 @@ func printHealthResult(stream *os.File, data map[string]any) {
 	if name, _ := self["displayName"].(string); name != "" {
 		fmt.Fprintf(stream, "displayName: %s\n", name)
 	}
+	role, _ := self["role"].(string)
+	if role != "" {
+		fmt.Fprintf(stream, "role: %s\n", role)
+	}
 	if labels := renderRawLabels(self["labels"]); labels != "" {
 		fmt.Fprintf(stream, "labels: %s\n", labels)
 	}
@@ -737,6 +742,10 @@ func printHealthResult(stream *os.File, data map[string]any) {
 	}
 	if status, _ := nats["status"].(string); status != "" {
 		fmt.Fprintf(stream, "natsStatus: %s\n", status)
+	}
+	if applicable, ok := adapter["applicable"].(bool); (ok && !applicable) || role == config.RoleConsole {
+		fmt.Fprintln(stream, "harness: not applicable")
+		return
 	}
 	if name, _ := adapter["name"].(string); name != "" {
 		fmt.Fprintf(stream, "adapter: %s\n", name)
@@ -997,8 +1006,8 @@ func printUsage(stderr *os.File) {
 	fmt.Fprintln(stderr, "  upgrade              check for or apply upgrades")
 	fmt.Fprintln(stderr, "  version              print version")
 	fmt.Fprintln(stderr, "  bots                 list local Bot identities")
-	fmt.Fprintln(stderr, "  bot                  create|get|config|start|stop|archive|restore|export|import")
-	fmt.Fprintln(stderr, "  migrate              explicitly migrate legacy configuration to daemon storage")
+	fmt.Fprintln(stderr, "  bot                  create|get|config|start|stop|archive|restore|export|import|convert")
+	fmt.Fprintln(stderr, "  migrate              offline schema upgrade, legacy migration or explicit --recover")
 	fmt.Fprintln(stderr, "  daemon               check daemon health without a Bot selection")
 	fmt.Fprintln(stderr, "  health               check selected Bot health")
 	fmt.Fprintln(stderr, "  peers                list connected peers")

@@ -221,7 +221,7 @@ figcaption{margin-top:8px;font:400 12.5px/1.6 var(--fang);color:var(--muted)}
 <section class="docsec" id="sec-s1">
 
 <h2 id="s1">1. 状态与结论</h2>
-<p><span data-notation="highlight">本文是<strong>待实现的设计方案</span></strong>，<span data-notation="underline">不代表当前程序已经支持多 Bot</span>。本文的配置结构、管理端点与命令均为建议；当前稳定契约仍以 <a href="./protocol.md">协议</a>、<a href="./api.md">本地 API</a> 和 <a href="./cli.md">CLI</a> 文档为准。</p>
+<p>本文 HTML 保留 2026-10-26 的历史设计快照，不作为当前配置或命令使用说明。多 Bot 与显式 Role 的当前实现契约见 <a href="./multi-bot-daemon.md">持续更新的设计文档</a>、<a href="./bot-roles.md">Bot Role</a>、<a href="./api.md">本地 API</a> 和 <a href="./cli.md">CLI</a>。当前持久布局为 schemaVersion 3，显式选择 <code>console</code>／<code>agent</code>；只有 Agent 装配 Harness，下文“每个 Bot 绑定 Harness”等原始表述仅是历史记录，不代表 Console 配置。</p>
 <p>指导思想：</p>
 <blockquote>Bot 是对外的协作身份，Harness 是背后的执行引擎。一个 daemon 可以托管多个 Bot，每个 Bot 绑定一个 Harness 接入。</blockquote>
 <p>主要决策：</p>

@@ -20,6 +20,7 @@ type BotInfo struct {
 	BotID             string `json:"botId"`
 	DID               string `json:"did,omitempty"`
 	DisplayName       string `json:"displayName"`
+	Role              string `json:"role"`
 	DesiredState      string `json:"desiredState"`
 	State             string `json:"state"`
 	Archived          bool   `json:"archived"`
@@ -130,7 +131,7 @@ func NewDaemonServer(cfg config.DaemonConfig, manager BotManager) (*DaemonServer
 		success(w, 200, "bots.list", map[string]any{"items": manager.List()})
 	})
 	mux.HandleFunc("POST /v2/bots", func(w http.ResponseWriter, r *http.Request) {
-		cfg := config.DefaultBotConfig()
+		var cfg config.BotConfig
 		if err := decodeRequest(r, &cfg); err != nil {
 			respondError(w, Failure(400, "invalid_argument", err.Error()))
 			return

@@ -26,14 +26,14 @@ func TestRunInitWritesDaemonOnlyConfig(t *testing.T) {
 	if err = config.DecodeStrict(raw, &cfg); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.SchemaVersion != 2 || cfg.DataDir != data || cfg.AdminTokenPath != filepath.Join(data, "admin.token") || len(cfg.NATSServers) != 2 {
+	if cfg.SchemaVersion != config.DaemonSchemaVersion || cfg.DataDir != data || cfg.AdminTokenPath != filepath.Join(data, "admin.token") || len(cfg.NATSServers) != 2 {
 		t.Fatalf("unexpected daemon config: %#v", cfg)
 	}
 	var fields map[string]json.RawMessage
 	if err = json.Unmarshal(raw, &fields); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"botId", "nodeId", "harness", "identityKeyPath", "trustMode", "agentAdapter", "transferDir"} {
+	for _, key := range []string{"botId", "nodeId", "role", "harness", "identityKeyPath", "trustMode", "agentAdapter", "transferDir"} {
 		if _, ok := fields[key]; ok {
 			t.Fatalf("init generated Bot field %q", key)
 		}
@@ -55,9 +55,10 @@ func TestRunInitWritesDaemonOnlyConfig(t *testing.T) {
 }
 
 func TestRunInitRejectsBotConfigurationFlags(t *testing.T) {
-	err := runInit([]string{"--agent-adapter", "opencode"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
-	if err == nil {
-		t.Fatal("daemon init accepted a Bot binding")
+	for _, args := range [][]string{{"--agent-adapter", "opencode"}, {"--role", "console"}} {
+		if err := runInit(args, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}); err == nil {
+			t.Fatalf("daemon init accepted Bot configuration: %v", args)
+		}
 	}
 }
 

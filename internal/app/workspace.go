@@ -98,12 +98,10 @@ func (m *Manager) BindWorkspace(workspaceID, displayName string) (api.BotInfo, s
 				return api.BotInfo{}, "", api.Failure(409, "workspace.binding_invalid", "workspace binding is missing or damaged; restore the catalog and original Bot data")
 			}
 		}
-		cfg := config.DefaultBotConfig()
+		cfg := config.DefaultBotConfigForRole(config.RoleConsole)
 		cfg.DisplayName = strings.TrimSpace(displayName)
-		cfg.Harness.Adapter = "console"
 		cfg.TrustMode = "explicit"
 		cfg.Labels = cfg.Labels.WithCaps([]string{"chat"})
-		cfg.BindingRevision = randomID()
 		info, err := m.createLocked(cfg, workspaceID)
 		if err != nil {
 			m.mu.Unlock()
@@ -118,7 +116,7 @@ func (m *Manager) BindWorkspace(workspaceID, displayName string) (api.BotInfo, s
 	invalid := func() (api.BotInfo, string, error) {
 		return api.BotInfo{}, "", api.Failure(409, "workspace.binding_invalid", "workspace Console Bot is unavailable; restore its original binding, identity and credential")
 	}
-	if bound.info.Archived || bound.info.State == "failed" || bound.cfg.Harness.Adapter != "console" || !bound.hasToken {
+	if bound.info.Archived || bound.info.State == "failed" || bound.cfg.Role != config.RoleConsole || !bound.hasToken {
 		return invalid()
 	}
 	if err := m.validateWorkspaceBinding(bound.info.BotID, workspaceID); err != nil {

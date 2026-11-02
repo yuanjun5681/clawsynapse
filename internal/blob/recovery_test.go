@@ -10,7 +10,7 @@ import (
 
 func registerRecoveryBot(t *testing.T, s *Store, bot string) {
 	t.Helper()
-	data, err := json.Marshal(map[string]any{"schemaVersion": 2, "bots": []any{map[string]any{"botId": bot, "desiredState": "stopped", "archived": true, "workspaceId": "desktop"}}})
+	data, err := json.Marshal(map[string]any{"schemaVersion": 3, "bots": []any{map[string]any{"botId": bot, "desiredState": "stopped", "archived": true, "workspaceId": "desktop"}}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -13,7 +13,7 @@ title: "ClawSynapse Integration"
 
 ## Agent Adapter
 
-daemon 为每个本地 Bot 独立构造 Harness 绑定和 `AgentAdapter`，收到发往该 Bot 的消息后只投递给它自己的执行入口。Bot 是通信联系人/身份，Harness 是本地执行实现；不同 Agent 产品实现该接口即可接入，不能把“共用同一产品”当作执行上下文可共享。
+daemon 为每个本地 Bot 构造独立通信 Runtime；只有 `role=agent` 装配 Harness 绑定和 `AgentAdapter`，收到任务后只投递给它自己的执行入口。`role=console` 持久收件，不构造空 Adapter、执行队列、探针或原生 Session。Bot 是通信联系人/身份，Agent Harness 是本地执行环境；不同 Agent 产品实现该接口即可接入，不能把“共用同一产品”当作执行上下文可共享。
 
 ```go
 type AgentAdapter interface {
@@ -107,18 +107,17 @@ CLI Adapter 将请求编码为 JSON prompt，不再拼接未转义的 `key=value
 
 | 适配器 | `harness.adapter` 值 | 说明 |
 |--------|-------------------------|------|
-| `ConsoleAdapter` | `console` | 真实持久 inbox；不调用模型、不 echo、不假称执行完成 |
 | `DefaultAdapter` | `default` | 内置默认，echo 回显，用于调试和测试 |
 | `OpenClawAdapter` | `openclaw` | 调用本地 OpenClaw CLI 投递消息 |
 | `OpenCodeAdapter` | `opencode` | 通过原生 JSONL 事件增量投递答案 |
 | `CodexAdapter` | `codex` | stdin prompt、原生 JSONL、明确 turn.completed 终态 |
 | `WebhookAdapter` | `webhook` | 通过 HTTP POST 将消息 JSON 转发到外部 URL |
 
-通过 admin API/CLI 配置每 Bot `harness.adapter`、`harness.timeout`（默认 10m）及可选 `harness.model`，不使用 daemon 环境变量/旧 YAML 的全局 adapter。Bot 配置变更必须先停止并以当前 revision CAS 更新，再显式启动。daemon 的 listener/NATS 默认值与资源预算在 schemaVersion 2 的 config.json，Bot 配置在 bots/{botId}/config.json，详见 operations。
+通过 admin API/CLI 创建时必须显式指定 `role`。Agent 必须显式提供 `harness.adapter`，`harness.timeout` 默认 10m，并可配置适用的 `harness.model`；不从 adapter 推断 Role、不使用 daemon 环境变量/旧 YAML 的全局 adapter。Bot 配置变更必须先停止并以当前 revision CAS 完整更新，保留原 Role，再显式启动。daemon 的 listener/NATS 默认值与资源预算在 schemaVersion 3 的 config.json，Bot 配置在 bots/{botId}/config.json，详见 operations。
 
-Console Bot 可通过 admin `POST /v2/workspaces/{workspaceId}/binding` 创建/恢复并取得其 scoped token。普通 `chat.message` 在签名、认证和信任校验后提交到该 Bot 的 `state/messages.jsonl`，仅完成 inbox 消费，不生成 `run.started/accepted/completed` 或答案；`run.*` 等反馈同样只入 journal，不进入模型或形成回复循环。`task.assign` 等执行请求明确以 `run.failed`、`payload.code="console.execution_unsupported"` 拒绝，不代表人工完成。出站聊天仍使用正常 publish/幂等键，来自执行 Bot 的答案可按消息 cursor 和 requestId/runId/seq 回放。
+Console Bot 可通过 admin `POST /v2/workspaces/{workspaceId}/binding` 创建/恢复并取得 scoped token；该入口固定创建 `role=console`，工作区绑定不是 Harness Binding。普通 `chat.message` 在签名、认证和信任校验后提交到该 Bot 的 `state/messages.jsonl`，仅完成 inbox 消费，不生成 Run 或答案；反馈同样只入 journal，不进入模型或形成回复循环。执行请求在持久收件后、执行 admission 前确定拒绝：未过期为 `run.failed`、`payload.code="console.execution_unsupported"`、`indeterminate=false`，过期沿用 `execution.expired`；不生成 started、accepted、答案或 completed，不占用 Harness 执行预算。终态与工作结果先持久提交，再由 outbox 发布，重复投递/重启使用原事件与幂等标识。历史已 admitted 执行仍按既有不确定性恢复，不伪装为从未执行。出站聊天仍使用正常 publish/幂等键，来自 Agent 的答案按 cursor 和 requestId/runId/seq 回放。
 
-Console 的 BotInfo 为 `harnessApplicable=false`；Bot health 的 `adapter.name="console"`、`applicable=false`、`healthy=false` 且 detail 明确 not applicable。网络健康单独观察，不要求本地 CLI/模型安装。Console 不接受 model、instance、webhookUrl、credentialsFile 或 allowedAgentIds；timeout 字段沿用统一配置格式，但不触发执行。
+Console 的 BotInfo 为 `harnessApplicable=false`；Bot health 的 adapter 为 `applicable=false`、`healthy=false` 且 detail 明确 not applicable。Console 配置必须省略整个 `harness`（含 `null`、`{}`）和 `maxConcurrent`/`maxQueued`，没有 timeout 等执行字段；网络健康单独观察，不要求本地 CLI/模型安装。文件接收、授权、配额与持久引用仍运行，本地 `transfer.received` 回调按角色分派，Console 不调用 Harness 或生成执行反馈；Agent 保留文件通知与工作副本契约。
 
 ### 真实原生执行绑定
 

@@ -14,6 +14,7 @@ import (
 type botInfo struct {
 	BotID       string `json:"botId"`
 	DisplayName string `json:"displayName"`
+	Role        string `json:"role"`
 	State       string `json:"state"`
 }
 type botsMsg struct {

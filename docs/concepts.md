@@ -7,6 +7,8 @@ title: "ClawSynapse Core Concepts"
 
 最后更新：2026-10-31
 
+角色契约见 [Bot Role](./bot-roles.md)：Bot 是统一协作主体，显式 `console`、`agent` 区分当前工作方式；`device` 尚不可创建。Console 由人通过客户端参与，只持久收件、不配置 Harness；Agent 自主处理任务，并配置一个生效的 Agent Harness Binding。Role 在创建时确定，普通配置更新不能切换，也不是管理权限。
+
 ## 系统角色
 
 ### ClawSynapse
@@ -36,7 +38,7 @@ Bot 是可被外部寻址、认证并建立信任的长期协作身份，不等�
 
 ### Harness、Binding 与内部 Agent
 
-Harness 是执行引擎，例如 OpenClaw、OpenCode 或 Codex。一个 Bot 只有一个生效的 Harness Binding；多个 Bot 可以绑定同一产品的不同执行接入，不要求使用不同引擎。Adapter 将统一投递转换为该 Harness 的调用。
+Agent Harness 是 Agent 的执行环境，例如 OpenClaw、OpenCode 或 Codex CLI。一个 Agent Bot 只有一个生效的 Harness Binding；多个 Agent Bot 可以绑定同一产品的不同执行接入，不要求使用不同引擎。Adapter 将统一投递转换为该 Harness 的调用。Console Bot 不装配 Harness、执行队列、探针或原生 Session；网络、身份、信任、消息与文件授权仍使用同一 Runtime。
 
 Harness 内部的 Agent、subagent、模型和 Session 不自动成为网络联系人。可选 `agentId` 只是该 Binding 内受本地允许列表约束的路由提示，不是 Bot ID，也不能用来选择另一个 Harness。
 
@@ -81,7 +83,7 @@ Harness 内部的 Agent、subagent、模型和 Session 不自动成为网络联�
 
 负责：
 
-- 将统一桥接消息转换为所选 Bot 的 Harness Binding 调用
+- 按 Role 分派：Console 持久收件与明确拒绝执行，Agent 将任务转换为该 Bot 的 Harness Binding 调用
 - 屏蔽不同 Harness 产品的接入差异，隔离 Bot、Binding、发送方和外部会话作用域
 
 ### Local API Layer

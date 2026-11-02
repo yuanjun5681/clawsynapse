@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"clawsynapse/internal/adapter"
+	"clawsynapse/internal/config"
 	"clawsynapse/internal/discovery"
 	"clawsynapse/internal/store"
 	"clawsynapse/pkg/types"
@@ -40,6 +41,7 @@ func TestHandleHealthIncludesAdapterStatus(t *testing.T) {
 		version:     "v0.3.2",
 		self: SelfInfo{
 			BotID:               "n1-localbotid0000000000000000000000",
+			Role:                config.RoleAgent,
 			DID:                 "did:key:z6MkexampleLocalDid",
 			IdentityFingerprint: "sha256:1234abcd5678ef90",
 			TrustMode:           "tofu",
@@ -97,8 +99,8 @@ func TestHandleHealthIncludesAdapterStatus(t *testing.T) {
 }
 
 func TestConsoleHealthReportsHarnessNotApplicable(t *testing.T) {
-	for _, harness := range []adapter.AgentAdapter{nil, adapter.ConsoleAdapter{}} {
-		srv := &Server{peers: discovery.NewRegistry(), adapter: harness, adapterName: "console"}
+	for _, adapterName := range []string{"", "openclaw"} {
+		srv := &Server{peers: discovery.NewRegistry(), adapter: stubAgentAdapter{status: &adapter.AgentStatus{Healthy: true}}, adapterName: adapterName, self: SelfInfo{Role: config.RoleConsole}}
 		rec := httptest.NewRecorder()
 		srv.handleHealth(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
 		var result types.APIResult
@@ -106,7 +108,7 @@ func TestConsoleHealthReportsHarnessNotApplicable(t *testing.T) {
 			t.Fatal(err)
 		}
 		status := result.Data["adapter"].(map[string]any)
-		if status["name"] != "console" || status["applicable"] != false || status["healthy"] != false || !strings.Contains(status["detail"].(string), "not applicable") {
+		if status["name"] != adapterName || status["applicable"] != false || status["healthy"] != false || !strings.Contains(status["detail"].(string), "not applicable") {
 			t.Fatalf("Console incorrectly advertises execution health: %#v", status)
 		}
 		if _, exists := status["error"]; exists {

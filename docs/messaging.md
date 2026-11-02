@@ -31,6 +31,8 @@ Bot 之间使用 NATS JetStream 持久 inbox，每条请求或事件是一个完
 
 ## 结构化请求与执行事件
 
+下图只描述 Agent Role 的执行路径；Console 的收件与拒绝见下方约定。
+
 ```mermaid
 sequenceDiagram
     participant A as Agent-1
@@ -58,12 +60,13 @@ sequenceDiagram
 - `run.accepted` 仅表示异步接纳，产品运行标识放在 `payload.adapterRunId`；后续结果依赖权威端查询。
 - 超时、取消或失败可能发生在副作用之后。`payload.indeterminate=true` 时不自动重新执行原动作。
 - run 事件不进入 LLM，也不产生反馈回复；Webhook 可以消费这些事件。
-- Console Bot 的 `chat.message` 与反馈只提交持久 inbox，不执行模型，不 echo 或生成虚构 completed；执行请求以 `console.execution_unsupported` 失败。它仍能正常发布聊天并接收执行 Bot 的 `run.*` 答案，Harness 健康为不适用，不能把它当作人工任务执行器。
+- Console Bot 的 `chat.message` 与反馈只提交持久 inbox，不执行模型、不创建虚假 Run、不 echo 或生成 completed。执行请求在公共校验和持久收件后、执行 admission 前拒绝：未过期为 `run.failed`、`payload.code="console.execution_unsupported"`、`indeterminate=false`；过期为 `execution.expired`。保留 requestId/runId/seq/Session 和签名关联，不发 started、accepted、答案或 completed，不占用 Bot/daemon Harness 预算。拒绝终态与工作结果先持久提交，再由 outbox 发布；重复投递/重启只恢复原事件。历史已 admitted 请求仍按不确定性恢复，不伪装为从未执行。Console 正常发布聊天并接收 Agent 答案，Harness 健康为不适用，不是人工任务执行器。
+- 文件传输属于公共通信：`transfer.available` 仍经过授权、配额及持久引用处理；本地 `transfer.received` 回调按 Role 分派。Console 只保存可恢复记录和授权引用，不调用 Harness、不生成执行反馈；桌面关闭不影响 daemon 收件，重开通过原 cursor 和文件读取 API 查看。Agent 保留文件通知与工作副本契约，不自动重放已 admitted 通知。
 
 ## 有界执行与会话
 
 - 每 Bot 保留固定串行工作分片，同发送方、Agent、会话进入同一分片，不相互越序；不同会话可能保守串行。
-- 每 Bot maxQueued/maxConcurrent 和 daemon maxConcurrent 有界。过载明确失败，排队后及等待预算后再次检查有效期与授权；配置不意味着无界 goroutine 或执行池。
+- 只有 Agent 的 maxQueued/maxConcurrent 与 daemon Harness maxConcurrent 用于有界执行；Console 不配置或占用这些执行资源。公共收件排序和文件限制不等同于执行队列。过载明确失败，排队后及等待预算后再次检查有效期与授权；配置不意味着无界 goroutine 或执行池。
 - 请求默认有效 10 分钟，最大 10 分钟；更短业务显式 expiresAt。已持久排队但过期的命令不启动 Harness。
 - LLM 产品会话按本地 Bot、bindingRevision、产品、发送方、目标 Agent 和会话键隔离；原生 CLI 使用各 Bot 绑定 workspace 作为 cwd，并传入该 Bot model。旧会话失效明确报错，不静默新建重跑。
 - daemon 关停取消在途执行，CLI runner 有界输出并管理进程树。显式 Bot stop 仅停止该 Bot；daemon 关闭保留 catalog desiredState，重启按它恢复。

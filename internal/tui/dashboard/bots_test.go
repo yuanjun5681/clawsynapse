@@ -92,7 +92,7 @@ func TestBotConfigEditsPreserveRevisionAndUneditedBinding(t *testing.T) {
 			fields[i].Value = "new"
 		}
 	}
-	cfg, err := buildBotConfigFromFields(fields, map[string]any{"revision": float64(7), "bindingRevision": "binding-a", "harness": map[string]any{"adapter": "opencode", "model": "free-model", "timeout": "1m"}, "displayName": "old"})
+	cfg, err := buildBotConfigFromFields(fields, map[string]any{"role": "agent", "revision": float64(7), "bindingRevision": "binding-a", "harness": map[string]any{"adapter": "opencode", "model": "free-model", "timeout": "1m"}, "displayName": "old"})
 	if err != nil {
 		t.Fatal(err)
 	}

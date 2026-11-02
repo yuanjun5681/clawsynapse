@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"clawsynapse/internal/adapter"
+	"clawsynapse/internal/config"
 	"clawsynapse/internal/discovery"
 	"clawsynapse/internal/identity"
 	"clawsynapse/internal/natsbus"
@@ -65,6 +66,7 @@ type Service struct {
 	identity            *identity.Identity
 	trustMode           string
 	deliverablePrefixes []string
+	role                string
 	handler             MessageHandler
 	transferHandler     TransferHandler
 	ctx                 context.Context
@@ -82,7 +84,7 @@ func NewService(log *slog.Logger, peers *discovery.Registry, bus *natsbus.Client
 		deliverablePrefixes = []string{"chat", "task"}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &Service{log: log, peers: peers, bus: bus, botID: botID, identity: id, trustMode: trustMode, deliverablePrefixes: append([]string(nil), deliverablePrefixes...), ctx: ctx, cancel: cancel}
+	s := &Service{log: log, peers: peers, bus: bus, botID: botID, identity: id, role: config.RoleAgent, trustMode: trustMode, deliverablePrefixes: append([]string(nil), deliverablePrefixes...), ctx: ctx, cancel: cancel}
 	for i := range s.wake {
 		s.wake[i] = make(chan struct{}, 1)
 	}
@@ -104,11 +106,38 @@ func (s *Service) SetStatePath(path string) error {
 	return nil
 }
 
+// SetRole selects business dispatch before the durable inbox starts. Console
+// persists passive traffic and rejects execution without an execution resource.
+func (s *Service) SetRole(role string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.started {
+		s.role = role
+	}
+}
+
 func (s *Service) SetMessageHandler(handler MessageHandler) {
 	s.mu.Lock()
 	s.handler = handler
 	s.mu.Unlock()
 }
+
+// HandleLocalNotification shares role dispatch with inbox deliveries. The file
+// module owns durable file records; Console never turns its callback into a Run.
+func (s *Service) HandleLocalNotification(msg IncomingMessage) error {
+	s.mu.Lock()
+	role, handler := s.role, s.handler
+	s.mu.Unlock()
+	if role == config.RoleConsole {
+		return nil
+	}
+	if handler == nil {
+		return errors.New("message handler unavailable")
+	}
+	_, err := handler.HandleMessage(msg)
+	return err
+}
+
 func (s *Service) SetTransferHandler(handler TransferHandler) {
 	s.mu.Lock()
 	s.transferHandler = handler
@@ -547,7 +576,7 @@ func (s *Service) handleInbox(subject string, data []byte) bool {
 		s.mu.Unlock()
 		return true
 	}
-	if s.limiter != nil && !isFeedbackType(env.Type) && env.Type != "transfer.available" &&
+	if s.role != config.RoleConsole && s.limiter != nil && !isFeedbackType(env.Type) && env.Type != "transfer.available" &&
 		isDeliverableType(env.Type, s.deliverablePrefixes) && s.journal.pendingCommands >= s.limiter.Capacity() {
 		s.mu.Unlock()
 		return false
@@ -555,7 +584,10 @@ func (s *Service) handleInbox(subject string, data []byte) bool {
 	item := StoredMessage{MessageEnvelope: env, Cursor: uint64(len(s.journal.inbox)) + 1}
 	record := journalRecord{Received: &item}
 	if env.Type == "transfer.available" || isDeliverableType(env.Type, s.deliverablePrefixes) || isFeedbackType(env.Type) {
-		record.Work = &admittedWork{Key: key, Message: env, State: "queued", RunID: randID()}
+		record.Work = &admittedWork{Key: key, Message: env, State: "queued"}
+		if !isFeedbackType(env.Type) && env.Type != "transfer.available" && (s.role != config.RoleConsole || env.Type != "chat.message") {
+			record.Work.RunID = randID()
+		}
 	}
 	err = s.journal.append(record)
 	s.mu.Unlock()
@@ -600,7 +632,7 @@ func (s *Service) work(shard int) {
 				break
 			}
 			if next.State == "admitted" {
-				if isFeedbackType(next.Message.Type) {
+				if isFeedbackType(next.Message.Type) || next.Message.Type == "transfer.available" {
 					if err := s.setWork(*next, "queued"); err != nil {
 						break
 					}
@@ -654,15 +686,18 @@ func (s *Service) deliver(work admittedWork) bool {
 		return false
 	}
 	s.mu.Lock()
-	handler, transfer := s.handler, s.transferHandler
+	handler, transfer, role := s.handler, s.transferHandler, s.role
 	s.mu.Unlock()
-	if passive, ok := handler.(interface{ InboxOnly(string) bool }); ok && passive.InboxOnly(env.Type) {
+	if role == config.RoleConsole && (feedback || env.Type == "chat.message") {
 		return s.setWork(work, "done") == nil
 	}
-	if !feedback && env.ExpiresAt <= time.Now().UnixMilli() {
+	if !feedback && env.Type != "transfer.available" && env.ExpiresAt <= time.Now().UnixMilli() {
 		return s.emit(&work, "run.failed", protocol.MessagePayload{Code: "execution.expired", Stage: "queue"}, "done") == nil
 	}
 	if env.Type == "transfer.available" {
+		if env.ExpiresAt <= time.Now().UnixMilli() {
+			return s.setWork(work, "done") == nil
+		}
 		if transfer == nil {
 			return false
 		}
@@ -674,6 +709,9 @@ func (s *Service) deliver(work admittedWork) bool {
 			return false
 		}
 		return s.setWork(work, "done") == nil
+	}
+	if role == config.RoleConsole {
+		return s.emit(&work, "run.failed", protocol.MessagePayload{Code: "console.execution_unsupported", Stage: "role"}, "done") == nil
 	}
 	if handler == nil {
 		return false

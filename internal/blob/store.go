@@ -282,6 +282,31 @@ func (s *Store) List(botID string) ([]Reference, error) {
 	defer s.mu.Unlock()
 	return s.references(botID)
 }
+
+// ValidateBotReferences verifies every authorized object without copying its data.
+// It is intended for offline migration validation, not a digest lookup interface.
+func (s *Store) ValidateBotReferences(botID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	refs, err := s.references(botID)
+	if err != nil {
+		return err
+	}
+	seen := make(map[string]int64, len(refs))
+	for _, ref := range refs {
+		if size, ok := seen[ref.Digest]; ok {
+			if size != ref.Size {
+				return errors.New("inconsistent immutable blob reference size")
+			}
+			continue
+		}
+		if err := verifyObject(s.objectPath(ref.Digest), ref.Digest, ref.Size); err != nil {
+			return err
+		}
+		seen[ref.Digest] = ref.Size
+	}
+	return nil
+}
 func (s *Store) Get(botID, id string) (Reference, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

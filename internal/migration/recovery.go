@@ -18,6 +18,9 @@ func Recover(target string) error {
 	if err != nil {
 		return err
 	}
+	if handled, err := recoverRoles(target); handled {
+		return err
+	}
 	if err := store.CheckPath(target); err != nil {
 		return err
 	}
@@ -53,7 +56,7 @@ func Recover(target string) error {
 			return err
 		}
 		if current.Status == "complete" && current.BotID == m.BotID {
-			return nil
+			return store.WriteJSONAtomic(target+".migration.json", current, 0o600)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -89,7 +92,14 @@ func Recover(target string) error {
 		return err
 	}
 	if _, err := os.Lstat(m.OriginalBackup); errors.Is(err, os.ErrNotExist) {
-		return nil
+		if _, err := os.Lstat(target); err != nil {
+			return fmt.Errorf("original migration root is unavailable: %w", err)
+		}
+		if _, err := os.Lstat(filepath.Join(target, "migration.json")); !errors.Is(err, os.ErrNotExist) {
+			return errors.New("migration backup is missing; restore the original before recovery")
+		}
+		m.Status = "rolled-back"
+		return store.WriteJSONAtomic(target+".migration.json", m, 0o600)
 	} else if err != nil {
 		return err
 	}

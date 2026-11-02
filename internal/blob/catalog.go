@@ -28,7 +28,7 @@ func (s *Store) validateRegisteredReferences() error {
 	if err := protocol.DecodeStrictLimit(data, &catalog, 64<<20); err != nil {
 		return fmt.Errorf("parse Bot catalog before collection: %w", err)
 	}
-	if catalog.SchemaVersion != 2 || catalog.Bots == nil {
+	if catalog.SchemaVersion != 3 || catalog.Bots == nil {
 		return errors.New("invalid Bot catalog before collection")
 	}
 	seen := make(map[string]bool, len(catalog.Bots))

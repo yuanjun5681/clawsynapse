@@ -87,12 +87,6 @@ func NewAdapterMessageHandler(agentAdapter adapter.AgentAdapter, timeout time.Du
 	return h
 }
 
-// Passive deliveries have already been persisted by the inbox admission path.
-func (h *AdapterMessageHandler) InboxOnly(messageType string) bool {
-	passive, ok := h.adapter.(interface{ InboxOnly(string) bool })
-	return ok && passive.InboxOnly(messageType)
-}
-
 func (h *AdapterMessageHandler) HandleMessage(msg IncomingMessage) (HandlerResult, error) {
 	if !h.acceptFeedback && isFeedbackType(msg.Type) {
 		return HandlerResult{}, nil

@@ -32,7 +32,7 @@ func testBlobStore(t *testing.T, root string, limits blob.Limits) *blob.Store {
 	}
 	catalog := filepath.Join(root, "bots.json")
 	if _, err := os.Stat(catalog); os.IsNotExist(err) {
-		if err := os.WriteFile(catalog, []byte(`{"schemaVersion":2,"bots":[]}`), 0600); err != nil {
+		if err := os.WriteFile(catalog, []byte(`{"schemaVersion":3,"bots":[]}`), 0600); err != nil {
 			t.Fatal(err)
 		}
 	} else if err != nil {
@@ -100,6 +100,44 @@ func TestTransferReferenceSurvivesRestartAndScopesAllOperations(t *testing.T) {
 	}
 	if _, err := restored.OpenFile(info.TransferID); !errors.Is(err, blob.ErrNotFound) {
 		t.Fatal("deleted grant remained usable")
+	}
+}
+
+func TestInboxOnlyReceivePersistsWithoutExecutionWorkspace(t *testing.T) {
+	root := t.TempDir()
+	blobs := testBlobStore(t, root, blob.Limits{WorkspaceBytes: 1})
+	createTestBot(t, root, "console")
+	cfg := TransferConfig{BotID: "console", Blobs: blobs, TransferDir: filepath.Join(root, "bots", "console", "transfers"), Workspace: filepath.Join(root, "bots", "console", "workspace"), QuotaBytes: 100, MaxFileSize: 1000, InboxOnly: true}
+	s := NewService(nil, nil, nil, nil, "console", nil, "open", cfg)
+	if err := s.ConfigurePersistence(); err != nil {
+		t.Fatal(err)
+	}
+	rec := &TransferRecord{TransferID: "console-file", Direction: "inbound", PeerBot: "sender", Status: "completed", NotificationState: "pending"}
+	if err := s.commit(rec, strings.NewReader("payload"), blob.WriteOptions{ExpectedSize: 7}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.notifyPending(); err != nil {
+		t.Fatal(err)
+	}
+	if got := readTransfer(t, s, rec.TransferID); got != "payload" {
+		t.Fatalf("received file inaccessible: %q", got)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restored := NewService(nil, nil, nil, nil, "console", nil, "open", cfg)
+	defer restored.Close()
+	if err := restored.ConfigurePersistence(); err != nil {
+		t.Fatal(err)
+	}
+	if state := restored.transfers[rec.TransferID].NotificationState; state != "admitted" {
+		t.Fatalf("passive notification not durably consumed: %q", state)
+	}
+	if err := restored.notifyPending(); err != nil {
+		t.Fatal(err)
+	}
+	if got := readTransfer(t, restored, rec.TransferID); got != "payload" {
+		t.Fatalf("received file lost after restart: %q", got)
 	}
 }
 func TestReceiveAdmissionIsDurableAndWorkspaceIsIndependent(t *testing.T) {

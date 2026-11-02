@@ -65,4 +65,6 @@ type TransferConfig struct {
 	Blobs       *blob.Store
 	Workspace   string
 	QuotaBytes  int64
+	// InboxOnly records received files without materializing an execution copy.
+	InboxOnly bool
 }

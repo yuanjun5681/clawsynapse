@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"clawsynapse/internal/api"
+	"clawsynapse/internal/config"
 	"clawsynapse/internal/store"
 	"clawsynapse/pkg/types"
 )
@@ -50,12 +51,16 @@ func TestWorkspaceBindingAtomicConcurrentReplayAndRestart(t *testing.T) {
 		if first.BotID == "" {
 			first = bot
 		}
-		if bot.BotID != first.BotID || bot.DID != first.DID || bot.BotID == ordinary || bot.HarnessApplicable || bot.HarnessHealthy {
+		if bot.BotID != first.BotID || bot.DID != first.DID || bot.BotID == ordinary || bot.Role != config.RoleConsole || bot.HarnessApplicable || bot.HarnessHealthy {
 			t.Fatal("binding reused a named identity or changed its Console identity")
 		}
 	}
 	if first.BotID == "" || len(a.manager.List()) != 2 {
 		t.Fatal("concurrent retries created duplicate identities")
+	}
+	console, err := a.manager.Config(first.BotID)
+	if err != nil || console.Harness != nil || console.MaxConcurrent != 0 || console.MaxQueued != 0 || console.BindingRevision != "" {
+		t.Fatalf("Console has execution configuration: %#v, %v", console, err)
 	}
 	before := botToken(t, a, first.BotID)
 	if err := a.manager.Shutdown(context.Background()); err != nil {
@@ -101,7 +106,8 @@ func TestWorkspaceBindingFailsClosedOnLostCredentialsAndArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg, _ := a.manager.Config(bot.BotID)
-	cfg.Harness.Adapter = "opencode"
+	cfg.Role = config.RoleAgent
+	cfg.Harness = &config.HarnessBinding{Adapter: "opencode"}
 	if _, err := a.manager.Update(bot.BotID, cfg); err == nil {
 		t.Fatal("workspace identity was rebound to an execution Harness")
 	}
@@ -128,7 +134,7 @@ func TestWorkspaceLostCatalogClaimAndUnregisteredCreationFailClosed(t *testing.T
 		if err := a.manager.Shutdown(context.Background()); err != nil {
 			t.Fatal(err)
 		}
-		c := catalog{SchemaVersion: 2, Bots: []catalogRecord{}}
+		c := catalog{SchemaVersion: 3, Bots: []catalogRecord{}}
 		if !removeRecord {
 			c.Bots = append(c.Bots, catalogRecord{BotID: bot.BotID, DesiredState: "stopped"})
 		}

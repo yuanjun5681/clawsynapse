@@ -5,7 +5,7 @@ title: "ClawSynapse API Reference"
 
 # ClawSynapse API Reference
 
-本地默认地址为 `http://127.0.0.1:18080`。daemon 使用 schemaVersion 2 的 `config.json`；配置、目录和迁移见 [operations.md](operations.md)，命令见 [cli.md](cli.md)。本地 HTTP API 与网络协议各自版本化：网络签名封套、subject 和 `from`/`to` 仍使用 [wire v2](protocol.md)，本地路由和字段不再使用 v1。
+本地默认地址为 `http://127.0.0.1:18080`。daemon 使用 schemaVersion 3 的 `config.json`；catalog 和 Bot 导出 manifest 同为版本 3，journal、Session 与 wire 不因 Role 升版。配置、目录和离线迁移见 [operations.md](operations.md)，命令见 [cli.md](cli.md)。本地 HTTP API 与网络协议各自版本化：网络签名封套、subject 和 `from`/`to` 仍使用 [wire v2](protocol.md)，本地路由和字段不再使用 v1。
 
 ## 访问与响应
 
@@ -41,19 +41,21 @@ title: "ClawSynapse API Reference"
 | `POST /v2/bots/{botId}/archive` | 200 `bot.archive` | `bot: BotInfo` |
 | `POST /v2/bots/{botId}/restore` | 200 `bot.restore` | `bot: BotInfo` |
 
-`BotInfo` 包含 `botId`, `did`, `displayName`, `desiredState`, `state`, `archived`, `revision`, `bindingRevision`, `networkHealthy`, `harnessHealthy`, `harnessApplicable`，失败时有 `error`。Console 的 `harnessApplicable=false`、`harnessHealthy=false` 表示不适用，而非执行故障；其他 adapter 为 applicable。catalog 列表不主动探测 Harness；读取单个运行 Bot 信息才查询网络/Harness 健康。daemon health 不等于任何模型任务已验收。
+`BotInfo` 包含 `botId`, `did`, `displayName`, `role`, `desiredState`, `state`, `archived`, `revision`, `bindingRevision`, `networkHealthy`, `harnessHealthy`, `harnessApplicable`，失败时有 `error`。Console 的 `harnessApplicable=false`、`harnessHealthy=false` 表示不适用，而非执行故障；Agent 的 Harness 为 applicable。catalog 列表不主动探测 Harness；读取单个运行 Agent 信息才查询 Harness 健康。daemon health 不等于任何模型任务已验收。
 
-创建接受 BotConfig，未提供字段使用默认值；`displayName` 必填。身份由新建 Ed25519 密钥派生，不能由调用方选择 botId。创建后为 stopped，不自动启动。示例：
+创建接受 BotConfig；必须显式提供单值 `role: "console"|"agent"`，缺失、空值、`null`、未知 Role、`roles[]` 与尚未实现的 `device` 均拒绝。`displayName` 必填。Console 必须省略 `harness`（含 `null`、`{}`）与执行预算 `maxConcurrent`/`maxQueued`；Agent 必须显式提供非空 `harness` 和受支持的 `harness.adapter`。先检查字段适用性，再按角色补齐其他默认值，不推断 Role 或 adapter。身份由新建 Ed25519 密钥派生，不能由调用方选择 botId。创建后为 stopped，不自动启动。Agent 示例：
 
 ```json
-{"displayName":"assistant-a","harness":{"adapter":"opencode","model":"zai-coding-plan/glm-5.3-flash","timeout":"10m"}}
+{"displayName":"assistant-a","role":"agent","harness":{"adapter":"opencode","model":"zai-coding-plan/glm-5.3-flash","timeout":"10m"}}
 ```
+
+Console 示例：`{"displayName":"inbox","role":"console"}`。Role 不是管理权限，所有角色仍受既有凭据、信任与文件授权约束。
 
 工作区绑定接受 `{"displayName":"Bot-A"}`；`workspaceId` 为客户端持久保存的 1–128 位 ASCII 字母、数字、`-` 或 `_`。首次创建独立 Console Bot（显式信任、stopped），在 catalog 中原子认领；同一工作区并发重试、响应丢失或 daemon 重启均返回同一身份及原 scoped token，不按名称/labels 复用 Bot，也不会因重试名称变化而改名。客户端应持久保存 workspaceId，使用 admin 启动并等待 Bot running，之后以 scoped token 查询/发布。响应 `Cache-Control: no-store`；不要记录或展示 token。
 
-绑定归档、失败、密钥/凭据/标记缺失或 catalog 认领丢失时返回 409 `workspace.binding_invalid`，不自动换钥或另建身份。恢复原数据后重试；归档须显式 restore。已绑定 Console 的 Harness 配置不可改绑（同样返回 409），普通 Bot 的配置 CAS 不变。工作区绑定仅 admin 可调用，scoped token 不可认领其他工作区。
+绑定归档、失败、密钥/凭据/标记缺失或 catalog 认领丢失时返回 409 `workspace.binding_invalid`，不自动换钥或另建身份。恢复原数据后重试；归档须显式 restore。工作区 Bot 固定为 `role=console`，不配置 Harness；工作区绑定不是 Harness Binding。工作区绑定仅 admin 可调用，scoped token 不可认领其他工作区。
 
-配置更新是**完整替换 + revision CAS**：先 GET `data.config`，修改后原样 PUT，必须提交当前 `revision`。运行/过渡中更新返回 409 `bot.must_stop`；revision 过期为 409 `bot.revision_conflict`。成功递增 revision；`bindingRevision` 由服务器控制，Harness 绑定变更会产生新绑定和独立工作区/产品会话。校验失败为 400 `bot.config_invalid`。完整字段、默认值见 operations。
+配置更新是**完整替换 + revision CAS**：先 GET `data.config`，修改后原样 PUT，必须提交当前 `revision` 和原 `role`。缺失 Role 或普通更新切换 Role 均拒绝，即使同时调整 Harness 也不允许。运行/过渡中更新返回 409 `bot.must_stop`；revision 过期为 409 `bot.revision_conflict`。成功递增 revision；Agent 的 `bindingRevision` 由服务器控制，Harness 绑定变更会产生新绑定和独立工作区/产品会话，纯 schema 迁移保留原修订。Console 不构造执行 Binding；旧 bindingRevision 可保留为历史文件路径元数据。校验失败为 400 `bot.config_invalid`。完整字段、默认值见 operations。
 
 生命周期请求无须 body。start/stop 是异步接纳，轮询 Bot 信息直到 running/stopped/failed；202 不表示已经就绪。状态有 `stopped|starting|running|stopping|failed|archived`。archive 必须先停止并等待，保留身份、状态、文件引用；restore 只恢复到 stopped。未知 Bot 为 404 `bot.not_found`；归档 Bot 启动为 409 `bot.archived`；冲突为 409 `bot.transition_conflict` / `bot.must_stop`。OpenClaw/Webhook 缺少明确 instance 为 400 `bot.binding_invalid`，未归档 Bot 共享同种 adapter 的 instance 为 409 `bot.binding_shared`。
 
@@ -88,7 +90,7 @@ title: "ClawSynapse API Reference"
 
 ### 发现、备注与信任
 
-`GET B/health` 返回 `data.self`（botId、did、version、identityFingerprint、trustMode、displayName、labels）、peersCount、nats（连接状态、连接/断连/重连时间、次数、消息/字节计数、lastError）、adapter（name、healthy、degraded、detail，可能有 error）。stopped 状态的网络/执行探针不可用，不伪装运行；HTTP 200 是查询成功，不保证 adapter healthy 或模型任务完成。
+`GET B/health` 返回 `data.self`（botId、did、role、version、identityFingerprint、trustMode、displayName、labels）、peersCount、nats（连接状态、连接/断连/重连时间、次数、消息/字节计数、lastError）、adapter（applicable、name、healthy、degraded、detail，可能有 error）。Console 为 `applicable=false`，没有 Harness 探针；不将 `healthy=false` 解释为执行故障。stopped 状态的网络/执行探针不可用，不伪装运行；HTTP 200 是查询成功，不保证 Harness healthy 或模型任务完成。
 
 本地身份字段使用 `botId`，目标参数为 `targetBot`；旧 `targetNode` 被严格解码拒绝。peer 的显示名与自报 `labels` 来自签名 discovery，但不授予权限。`GET peers` 支持重复 `label=key=value`（标量精确匹配）、`labelHas=key=value`（数组成员）、`name=substring`（显示名/本地别名，大小写不敏感）。
 

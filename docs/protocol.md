@@ -34,7 +34,7 @@ title: "ClawSynapse Protocol"
 
 本文档定义 ClawSynapse 的项目级协议约定，作为 daemon、CLI、control plane、SDK 与 UI 的统一接口基准。
 
-本地产品模型区分宿主 Daemon 和长期协作身份 Bot。每个 Bot 是独立的网络参与者；本文沿用 wire v2 的 `node` / `nodeId` 术语，均指 Bot 的网络身份，不指 daemon 或机器。`peer` 是当前本地 Bot 视角的对端 Bot。Harness 是 Bot 绑定的执行引擎，其内部 Agent 和 Session 不是新的网络身份。
+本地产品模型区分宿主 Daemon 和长期协作身份 Bot。每个 Bot 是独立的网络参与者；本文沿用 wire v2 的 `node` / `nodeId` 术语，均指 Bot 的网络身份，不指 daemon 或机器。`peer` 是当前本地 Bot 视角的对端 Bot。Agent Harness 是 Agent Role 的执行环境，Console 无 Harness；内部 Agent 和 Session 不是新的网络身份。本地 Role 不新增网络发现字段，缺失或未知的远端 Role 不被推断为 Agent，也不阻断既有合法通信。
 
 重点覆盖：
 
@@ -522,6 +522,7 @@ Bot ID 与签名在此仅作结构示意，不能直接用于实际验签。
 - 8 个串行工作分片，按发送方、会话及可选本地 agentId 排序；等待项持久化在本地 journal，不依赖内存队列容量，也不为每条消息启动 goroutine。执行前重新检查认证与信任；未知/尚未恢复认证的 Bot 等待，明确撤销的 Bot 不会执行。
 - 通用任务的 LLM 会话在接收 Bot、Binding 修订、发送方与原会话作用域内隔离；DSH 聊天以 `metadata.dsynapseChat.chatId` 建立 Bot 级单会话，聊天参与者只有 Bot。`agentId` 是 Binding 内允许列表约束的提示，不选择另一个 Bot/Harness。Webhook 保留会话键与事件关联字段。
 - `run.accepted` 只表示异步接纳，`payload.adapterRunId` 可用于业务端回查；`run.completed` 也不等于设备物理动作完成。
+- Console 的普通聊天与反馈只持久收件，不生成 Run。执行请求在认证、授权、去重及持久收件后、执行 admission 前直接确定拒绝：未过期返回 `run.failed`、`payload.code="console.execution_unsupported"`、`indeterminate=false`；已过期沿用 `execution.expired`。拒绝保留 requestId/runId/seq/Session 关联和签名，不发 started、accepted、答案或 completed，不占用 Harness 执行预算。终态先持久提交再由 outbox 发布；重复投递及重启重发原事件，不生成第二个终态。历史已 admitted 请求仍保留不确定性，不改写为确定拒绝。
 - 结果未知时 `run.failed.payload.indeterminate=true`，不能据此自动重跑。
 - 点对点收件箱使用文件存储的共享 JetStream `CLAWSYNAPSE_MESSAGES` stream，subject 为 `clawsynapse.msg.*.inbox`，Limits retention 默认 7 天。初始化不改写现有 stream 的其他 subject，也不清除其他 Bot 消息；不兼容的现有 stream 失败关闭。
 - 每 Bot 使用固定 durable pull consumer、explicit ACK。有效签名消息和待投递工作在本地 fsync 后才 ACK；重投按发送 Bot+消息 ID 去重。签名历史消息可归档，过期命令生成 execution.expired，而历史反馈仅作为数据消费。

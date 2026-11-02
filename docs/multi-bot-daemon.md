@@ -11,6 +11,8 @@ title: "单 Daemon 多 Bot 设计"
 
 本文记录单 daemon 多 Bot 的设计约束与长期验收标准。**实现已落地，核心真实端到端场景及自动化边界检查已通过。** Bot Manager、独立 Runtime、分层配置、作用域凭据、本地 `/v2` 路径、显式 CLI 选择、内容存储及迁移/导出均已实现；当前使用方法以 [协议](./protocol.md)、[本地 API](./api.md)、[CLI](./cli.md) 和 [运维](./operations.md) 为准。下文保留原设计要求，不将一次环境验证扩大为所有平台、引擎和故障组合的保证。
 
+角色契约：[Bot Role](./bot-roles.md) 已将配置明确为 `console`、`agent`，并保留不可创建的后续 `device` 方向；只有 Agent Role 配置 Agent Harness。当前布局为 schemaVersion 3，旧版本 2 必须显式离线迁移。下文的执行 Binding、队列和 Session 约束仅适用于 Agent；共享身份隔离、通信、生命周期与文件授权仍适用于所有 Bot。以下 2026-10-31 验证是历史证据，不是本轮 Role 变更的 smoke 或故障注入通过声明。
+
 2026-10-31 验证范围：
 
 - 真实环境为 macOS、Docker NATS 2.11.9、单 daemon 的 A/B 和独立外部 Bot R。A/B 使用**两个 OpenCode 2.2 Binding**，模型均为 `zai-coding-plan/glm-5.3-flash`；不是两个不同引擎。
@@ -21,15 +23,15 @@ title: "单 Daemon 多 Bot 设计"
 
 指导思想：
 
-> Bot 是对外的协作身份，Harness 是背后的执行引擎。一个 daemon 可以托管多个 Bot，每个 Bot 绑定一个 Harness 接入。
+> Bot 是对外的协作身份，Agent Harness 是 Agent 背后的执行环境。一个 daemon 可以托管多个 Bot；每个 Agent Bot 绑定一个 Harness，Console Bot 无 Harness。
 
 主要决策：
 
 1. `clawsynapsed` 是本地宿主进程，不是聊天身份，也不拥有代替所有 Bot 的公共网络身份。
-2. 每个 Bot 独立持有身份密钥、DID、信任关系、消息状态、执行会话与本地备注。
+2. 每个 Bot 独立持有身份密钥、DID、信任关系、消息状态与本地备注；Agent 另持有执行会话。
 3. 外部通过稳定 Bot 身份寻址；`displayName` 是公开名称，`localAlias` 是某个本地 Bot 对远端 Bot 的备注。
 4. Harness 内部的 Agent、执行配置与 Session 不成为聊天联系人。ClawSynapse 不定义具体 Harness 产品的内部模型。
-5. 每个 Bot 只有一个生效的 Harness 接入。多个 Bot 可以使用相同或不同产品；共享产品实例必须显式配置并满足隔离要求。
+5. 每个 Agent Bot 只有一个生效的 Harness 接入。多个 Agent Bot 可以使用相同或不同产品；共享产品实例必须显式配置并满足隔离要求。Console 不装配 Harness。
 6. 共享进程不等于共享信任。一个 Bot 的批准、撤销或执行故障，不应改变另一个 Bot 的业务状态。
 7. 首次实现采用每 Bot 独立 NATS 连接和运行上下文；共享管理入口，不先合并各 Bot 的发现、认证和消息状态。
 8. 文件实体由 daemon 的不可变内容存储按摘要去重；每 Bot 独立持有传输记录、文件引用与授权，执行时按需生成工作副本。
@@ -39,7 +41,7 @@ title: "单 Daemon 多 Bot 设计"
 | 实现入口 | 已落地的结构 | 验证边界 |
 |---|---|---|
 | `internal/app/daemon.go`、`manager.go`、`app.go` | daemon 管理独立 Bot Runtime、生命周期、根目录锁与各 Bot 运行状态 | 共同进程故障域不变，不是强多租户安全沙箱 |
-| `internal/config/daemon.go` | `schemaVersion: 2` daemon 配置与独立 Bot / Harness Binding 配置 | 不把身份作为可编辑配置字段 |
+| `internal/config/daemon.go` | `schemaVersion: 3` daemon 配置与显式 Role、可选 Harness 的 Bot 配置 | 不把身份作为可编辑配置字段；Role 普通更新不可切换 |
 | `internal/api/daemon.go`、`cmd/clawsynapse/bots.go` | 管理 token / Bot token 分域、显式 Bot 本地路径和 CLI 选择 | 不恢复旧 `/v1` 默认 Bot 转发 |
 | `internal/app/app.go`、`internal/messaging`、`internal/natsbus` | 每 Bot 独立身份、连接、Registry、信任、journal、consumer、Binding Session 与工作目录 | 保留已有持久 journal/outbox 与 wire v2，不退回纯内存收件箱 |
 | `internal/blob`、`internal/transfer` | 共享不可变实体与每 Bot 的持久引用、传输记录、工作副本 | 内容去重不是信任或跨 Bot 文件授权；边界恢复仍需逐项验收 |
@@ -52,7 +54,7 @@ title: "单 Daemon 多 Bot 设计"
 | Daemon | 托管多个 Bot 的本地进程，负责管理入口、配置与生命周期 |
 | Bot | 可被外部寻址、认证并建立信任的长期协作身份，不等同于机器或进程 |
 | Harness | 接收任务并执行工作的引擎；其内部组织方式不由 ClawSynapse 定义 |
-| Harness Binding | 一个 Bot 到一个本地执行接入的配置关系，不是聊天身份 |
+| Harness Binding | 一个 Agent Bot 到一个本地执行接入的配置关系，不是聊天身份；Console 无执行 Binding |
 | Adapter | 在执行 seam 上把统一投递转换为具体引擎调用的实现 |
 | Peer | 相对于当前本地 Bot 的已发现对端 Bot，不是另一个身份层级 |
 | Conversation | 产品层的交流上下文，可映射到执行 Session，但本身不是联系人 |
@@ -125,7 +127,7 @@ Bot Manager 的管理 Interface 围绕 `Create`、`List`、`Update`、`Start`、
 ### 5.1 配置分层
 
 - **daemon 配置**：HTTP listener、TLS、管理凭据路径、数据根目录、日志、NATS 默认连接参数、全局资源预算及内容存储容量/回收策略。
-- **Bot 配置**：公开名、标签、信任策略、一个 Harness Binding、执行超时、消息类型、文件限制、Bot 专属 NATS 凭据。
+- **Bot 配置**：显式 Role、公开名、标签、信任策略、消息类型、文件限制、Bot 专属 NATS 凭据；只有 Agent 配置一个 Harness Binding、执行超时与执行预算。
 - **Bot 管理目录**：已注册身份、期望状态、当前配置修订号与归档状态；不保存运行时对象。
 
 `botId` 从公钥派生，不是用户可编辑字段。目录名由派生 ID 决定，不接受公开名称或请求提供的任意路径。Webhook 等接入密钥使用受限凭据文件，不放进可回显的配置正文。

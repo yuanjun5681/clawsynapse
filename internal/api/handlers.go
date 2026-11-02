@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"clawsynapse/internal/config"
 	"clawsynapse/internal/messaging"
 	"clawsynapse/internal/protocol"
 	"clawsynapse/internal/store"
@@ -351,9 +352,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	adapterStatus := map[string]any{
 		"name":       s.adapterName,
 		"healthy":    false,
-		"applicable": s.adapterName != "console",
+		"applicable": s.self.Role == config.RoleAgent,
 	}
-	if s.adapterName == "console" {
+	if s.self.Role == config.RoleConsole {
 		adapterStatus["detail"] = "not applicable: console is a durable inbox, not an execution Harness"
 	} else if s.adapter == nil {
 		adapterStatus["error"] = "agent adapter unavailable"
@@ -379,6 +380,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		Data: map[string]any{
 			"self": map[string]any{
 				"botId":               s.self.BotID,
+				"role":                s.self.Role,
 				"did":                 s.self.DID,
 				"version":             s.version,
 				"identityFingerprint": s.self.IdentityFingerprint,

@@ -101,7 +101,7 @@ trap 'rm -f "$TMP_FILE"' EXIT
 	echo "clawsynapse bots"
 	echo '```'
 	echo
-	echo "The installer creates a schemaVersion 2 daemon config.json, not a Bot or identity."
+	echo "The installer creates a schemaVersion 3 daemon config.json, not a Bot or identity. Version 2 layouts require an explicit offline migration before starting the new daemon."
 	echo "Create Bots explicitly with \`clawsynapse bot create --file bot.json\`; use \`--bot <bot-id>\` for Bot-scoped commands."
 	echo "Legacy single-Bot installs must stop the old daemon, back up their state, and run \`clawsynapse migrate --legacy-config /path/to/config.yaml --data-dir /path/to/daemon-root\` before installing the daemon service."
 	echo

@@ -94,40 +94,42 @@ func NewRuntime(d config.DaemonConfig, b config.BotConfig, botID, version string
 		return nil, fmt.Errorf("load trust: %w", err)
 	}
 	r.messaging = messaging.NewService(r.log, peers, r.bus, botID, id, cfg.TrustMode, cfg.DeliverablePrefixes)
+	r.messaging.SetRole(b.Role)
 	if err = r.messaging.SetStatePath(filepath.Join(cfg.DataDir, "state", "messages.jsonl")); err != nil {
 		return nil, fmt.Errorf("open journal: %w", err)
 	}
-	r.limiter = scheduler.ForBot(botID, b.MaxConcurrent, b.MaxQueued)
-	r.messaging.SetExecutionLimiter(r.limiter)
-	sessionStore := store.NewFSStore(cfg.DataDir)
-	sessionStore.SessionDir = filepath.Join(cfg.DataDir, "sessions", b.BindingRevision)
-	r.harness, err = newAgentAdapter(cfg, b, botID, r.log, sessionStore)
-	if err != nil {
-		return nil, fmt.Errorf("create Harness: %w", err)
+	if b.Role == config.RoleAgent {
+		r.limiter = scheduler.ForBot(botID, b.MaxConcurrent, b.MaxQueued)
+		r.messaging.SetExecutionLimiter(r.limiter)
+		sessionStore := store.NewFSStore(cfg.DataDir)
+		sessionStore.SessionDir = filepath.Join(cfg.DataDir, "sessions", b.BindingRevision)
+		r.harness, err = newAgentAdapter(cfg, b, botID, r.log, sessionStore)
+		if err != nil {
+			return nil, fmt.Errorf("create Harness: %w", err)
+		}
+		timeout, err := resolveAgentAdapterTimeout(cfg)
+		if err != nil {
+			return nil, err
+		}
+		opts := []messaging.HandlerOption{messaging.WithExecutionLimiter(r.limiter)}
+		if cfg.AgentAdapter == "webhook" {
+			opts = append(opts, messaging.WithFeedbackDelivery())
+		}
+		r.messaging.SetMessageHandler(messaging.NewAdapterMessageHandler(r.harness, timeout, opts...))
 	}
-	timeout, err := resolveAgentAdapterTimeout(cfg)
-	if err != nil {
-		return nil, err
-	}
-	opts := []messaging.HandlerOption{messaging.WithExecutionLimiter(r.limiter)}
-	if cfg.AgentAdapter == "webhook" {
-		opts = append(opts, messaging.WithFeedbackDelivery())
-	}
-	handler := messaging.NewAdapterMessageHandler(r.harness, timeout, opts...)
-	r.messaging.SetMessageHandler(handler)
-	r.transfer = transfer.NewService(r.log, peers, r.bus, r.messaging, botID, id, cfg.TrustMode, transfer.TransferConfig{TransferDir: cfg.TransferDir, MaxFileSize: cfg.TransferMaxFileSize, TTL: cfg.TransferTTL, BotID: botID, Blobs: blobs, Workspace: filepath.Join(cfg.DataDir, "workspace", b.BindingRevision), QuotaBytes: b.FileQuotaBytes})
+	r.transfer = transfer.NewService(r.log, peers, r.bus, r.messaging, botID, id, cfg.TrustMode, transfer.TransferConfig{TransferDir: cfg.TransferDir, MaxFileSize: cfg.TransferMaxFileSize, TTL: cfg.TransferTTL, BotID: botID, Blobs: blobs, Workspace: filepath.Join(cfg.DataDir, "workspace", b.BindingRevision), QuotaBytes: b.FileQuotaBytes, InboxOnly: b.Role == config.RoleConsole})
 	if err = r.transfer.ConfigurePersistence(); err != nil {
 		return nil, fmt.Errorf("load transfers: %w", err)
 	}
 	r.messaging.SetTransferHandler(r.transfer.HandleTransferNotification)
 	r.transfer.OnReceived(func(rec transfer.TransferRecord) {
 		content, _ := json.Marshal(map[string]any{"transferId": rec.TransferID, "fileName": rec.FileName, "fileSize": rec.FileSize, "localPath": rec.LocalPath, "mimeType": rec.MimeType})
-		_, err := handler.HandleMessage(messaging.IncomingMessage{Context: r.ctx, MessageID: "transfer.received:" + rec.TransferID, Type: "transfer.received", From: rec.PeerBot, To: botID, Payload: protocol.MessagePayload{Input: content}, Metadata: rec.Metadata})
+		err := r.messaging.HandleLocalNotification(messaging.IncomingMessage{Context: r.ctx, MessageID: "transfer.received:" + rec.TransferID, Type: "transfer.received", From: rec.PeerBot, To: botID, Payload: protocol.MessagePayload{Input: content}, Metadata: rec.Metadata})
 		if err != nil {
 			r.log.Warn("file execution notification failed", "transferId", rec.TransferID, "error", err)
 		}
 	})
-	r.handler = api.NewBotHandler(peers, r.auth, r.trust, r.messaging, r.transfer, r.bus, r.harness, cfg.AgentAdapter, api.SelfInfo{BotID: botID, DID: did, IdentityFingerprint: identity.Fingerprint(id.PublicKey), TrustMode: cfg.TrustMode, DisplayName: cfg.DisplayName, Labels: cfg.Labels}, version, fs).Handler()
+	r.handler = api.NewBotHandler(peers, r.auth, r.trust, r.messaging, r.transfer, r.bus, r.harness, cfg.AgentAdapter, api.SelfInfo{BotID: botID, Role: b.Role, DID: did, IdentityFingerprint: identity.Fingerprint(id.PublicKey), TrustMode: cfg.TrustMode, DisplayName: cfg.DisplayName, Labels: cfg.Labels}, version, fs).Handler()
 	return r, nil
 }
 
@@ -167,9 +169,7 @@ func newAgentAdapter(cfg config.Config, b config.BotConfig, botID string, log *s
 		return nil, err
 	}
 	switch cfg.AgentAdapter {
-	case "console":
-		return adapter.ConsoleAdapter{}, nil
-	case "", "default":
+	case "default":
 		return adapter.NewDefaultAdapter(botID), nil
 	case "opencode":
 		return adapter.NewOpenCodeAdapter(adapter.OpenCodeConfig{BotID: botID, BindingRevision: b.BindingRevision, Workspace: workspace, Model: b.Harness.Model, Logger: log, SessionStore: fs, AllowAgentIDs: cfg.AgentAllowedIDs})

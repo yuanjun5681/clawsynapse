@@ -68,14 +68,14 @@ Common options:
 Daemon bootstrap options (no Bot is created):
   --nats-servers URLS
   --local-api-addr ADDR
-  --config PATH         Version 2 daemon JSON config (default: DATA_DIR/config.json)
+  --config PATH         Version 3 daemon JSON config (default: DATA_DIR/config.json)
   --data-dir PATH       Daemon state directory (default: ~/.clawsynapse)
   --log-level LEVEL
   --log-format FORMAT
 
-Existing version 2 configs are kept unchanged. Legacy single-Bot state must be
-migrated explicitly while the old daemon is stopped; it is never converted by
-this installer. Use --cli to install the migration command without starting a daemon.
+Existing configs are not implicitly migrated. Version 2 layouts and legacy
+single-Bot state must be migrated explicitly while the daemon is stopped.
+Use --cli to install the migration command without starting a daemon.
 
 Examples:
   Install CLI and daemon as a service:
@@ -496,7 +496,7 @@ initialize_daemon_config() {
         return 0
     fi
 
-    info "creating version 2 daemon config (no Bot or identity is created)"
+    info "creating version 3 daemon config (no Bot or identity is created)"
     if [ "$INSTALL_CLI" -eq 1 ]; then
         "$cli_path" init --config "$CONFIG_PATH" --data-dir "$DATA_DIR" \
             --nats-servers "$NATS_SERVERS" --local-api-addr "$LOCAL_API_ADDR" \

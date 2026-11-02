@@ -19,7 +19,11 @@ import (
 	"clawsynapse/pkg/types"
 )
 
-const DaemonSchemaVersion = 2
+const (
+	DaemonSchemaVersion = 3
+	RoleConsole         = "console"
+	RoleAgent           = "agent"
+)
 
 type DaemonConfig struct {
 	SchemaVersion       int      `json:"schemaVersion"`
@@ -63,47 +67,153 @@ type HarnessBinding struct {
 }
 
 type BotConfig struct {
-	Revision            uint64         `json:"revision"`
-	BindingRevision     string         `json:"bindingRevision"`
-	DisplayName         string         `json:"displayName"`
-	Labels              types.Labels   `json:"labels,omitempty"`
-	TrustMode           string         `json:"trustMode"`
-	TrustAutoApprove    bool           `json:"trustAutoApprove"`
-	HeartbeatInterval   string         `json:"heartbeatInterval"`
-	AnnounceTTL         string         `json:"announceTtl"`
-	AgentProduct        string         `json:"agentProduct"`
-	AgentVersion        string         `json:"agentVersion,omitempty"`
-	Harness             HarnessBinding `json:"harness"`
-	NATSCredentialsFile string         `json:"natsCredentialsFile,omitempty"`
-	NATSTLSCAFile       string         `json:"natsTLSCAFile,omitempty"`
-	NATSTLSCertFile     string         `json:"natsTLSCertFile,omitempty"`
-	NATSTLSKeyFile      string         `json:"natsTLSKeyFile,omitempty"`
-	NATSTLSServerName   string         `json:"natsTLSServerName,omitempty"`
-	DeliverablePrefixes []string       `json:"deliverablePrefixes"`
-	TransferMaxFileSize int64          `json:"transferMaxFileSize"`
-	TransferTTL         string         `json:"transferTtl"`
-	MaxConcurrent       int            `json:"maxConcurrent"`
-	MaxQueued           int            `json:"maxQueued"`
-	FileQuotaBytes      int64          `json:"fileQuotaBytes"`
+	Revision            uint64          `json:"revision"`
+	BindingRevision     string          `json:"bindingRevision"`
+	DisplayName         string          `json:"displayName"`
+	Role                string          `json:"role"`
+	Labels              types.Labels    `json:"labels,omitempty"`
+	TrustMode           string          `json:"trustMode"`
+	TrustAutoApprove    bool            `json:"trustAutoApprove"`
+	HeartbeatInterval   string          `json:"heartbeatInterval"`
+	AnnounceTTL         string          `json:"announceTtl"`
+	AgentProduct        string          `json:"agentProduct"`
+	AgentVersion        string          `json:"agentVersion,omitempty"`
+	Harness             *HarnessBinding `json:"harness,omitempty"`
+	NATSCredentialsFile string          `json:"natsCredentialsFile,omitempty"`
+	NATSTLSCAFile       string          `json:"natsTLSCAFile,omitempty"`
+	NATSTLSCertFile     string          `json:"natsTLSCertFile,omitempty"`
+	NATSTLSKeyFile      string          `json:"natsTLSKeyFile,omitempty"`
+	NATSTLSServerName   string          `json:"natsTLSServerName,omitempty"`
+	DeliverablePrefixes []string        `json:"deliverablePrefixes"`
+	TransferMaxFileSize int64           `json:"transferMaxFileSize"`
+	TransferTTL         string          `json:"transferTtl"`
+	MaxConcurrent       int             `json:"maxConcurrent,omitempty"`
+	MaxQueued           int             `json:"maxQueued,omitempty"`
+	FileQuotaBytes      int64           `json:"fileQuotaBytes"`
+}
+
+// MarshalJSON omits execution fields for Console while preserving an Agent's
+// explicit zero queue budget across persistence and full-replacement updates.
+func (b BotConfig) MarshalJSON() ([]byte, error) {
+	type botConfig BotConfig
+	if b.Role != RoleAgent {
+		return json.Marshal(botConfig(b))
+	}
+	return json.Marshal(struct {
+		botConfig
+		MaxConcurrent int `json:"maxConcurrent"`
+		MaxQueued     int `json:"maxQueued"`
+	}{botConfig: botConfig(b), MaxConcurrent: b.MaxConcurrent, MaxQueued: b.MaxQueued})
 }
 
 func DefaultDaemonConfig() DaemonConfig {
 	home, _ := os.UserHomeDir()
 	root := filepath.Join(home, ".clawsynapse")
-	return DaemonConfig{SchemaVersion: 2, DataDir: root, LocalAPIAddr: defaultLocalAPIAddr, AdminTokenPath: filepath.Join(root, "admin.token"), NATSServers: []string{defaultNATSServers}, LogLevel: defaultLogLevel, LogFormat: defaultLogFormat, LogRotateMaxSizeMB: defaultLogRotateMaxSizeMB, LogRotateMaxBackups: defaultLogRotateMaxBackups, LogRotateMaxAgeDays: defaultLogRotateMaxAgeDays, MaxConcurrent: 8, BlobMaxBytes: 10 << 30, TempMaxBytes: 1 << 30, WorkspaceMaxBytes: 10 << 30}
+	return DaemonConfig{SchemaVersion: DaemonSchemaVersion, DataDir: root, LocalAPIAddr: defaultLocalAPIAddr, AdminTokenPath: filepath.Join(root, "admin.token"), NATSServers: []string{defaultNATSServers}, LogLevel: defaultLogLevel, LogFormat: defaultLogFormat, LogRotateMaxSizeMB: defaultLogRotateMaxSizeMB, LogRotateMaxBackups: defaultLogRotateMaxBackups, LogRotateMaxAgeDays: defaultLogRotateMaxAgeDays, MaxConcurrent: 8, BlobMaxBytes: 10 << 30, TempMaxBytes: 1 << 30, WorkspaceMaxBytes: 10 << 30}
 }
 
+// DefaultBotConfig returns usable Agent defaults for in-process callers.
+// JSON inputs must still explicitly declare their role and Harness adapter.
 func DefaultBotConfig() BotConfig {
-	return BotConfig{Revision: 1, TrustMode: defaultTrustMode, HeartbeatInterval: defaultHeartbeatInterval.String(), AnnounceTTL: defaultAnnounceTTL.String(), AgentProduct: defaultAgentProduct, Labels: types.Labels{}.WithCaps([]string{"chat", "tools"}), Harness: HarnessBinding{Adapter: defaultAgentAdapter, Timeout: defaultAgentAdapterTimeout.String()}, DeliverablePrefixes: splitCSV(defaultDeliverablePrefixes), TransferMaxFileSize: defaultTransferMaxFileSize, TransferTTL: defaultTransferTTL, MaxConcurrent: 2, MaxQueued: 64, FileQuotaBytes: 1 << 30}
+	return DefaultBotConfigForRole(RoleAgent)
 }
 
-// DecodeStrict is shared by on-disk v2 configuration and local management.
+// DefaultBotConfigForRole leaves unsupported roles invalid for ValidateBot.
+func DefaultBotConfigForRole(role string) BotConfig {
+	b := BotConfig{Revision: 1, Role: role, TrustMode: defaultTrustMode, HeartbeatInterval: defaultHeartbeatInterval.String(), AnnounceTTL: defaultAnnounceTTL.String(), AgentProduct: defaultAgentProduct, Labels: types.Labels{}.WithCaps([]string{"chat", "tools"}), DeliverablePrefixes: splitCSV(defaultDeliverablePrefixes), TransferMaxFileSize: defaultTransferMaxFileSize, TransferTTL: defaultTransferTTL, FileQuotaBytes: 1 << 30}
+	if role == RoleAgent {
+		b.Harness = &HarnessBinding{Adapter: defaultAgentAdapter, Timeout: defaultAgentAdapterTimeout.String()}
+		b.MaxConcurrent = 2
+		b.MaxQueued = 64
+	} else if role == RoleConsole {
+		b.Labels = types.Labels{}.WithCaps([]string{"chat"})
+	}
+	return b
+}
+
+// UnmarshalJSON keeps nested management requests and ordinary JSON clients on
+// the same presence-aware contract as persisted configuration.
+func (b *BotConfig) UnmarshalJSON(data []byte) error {
+	return DecodeStrict(data, b)
+}
+
+// DecodeStrict is shared by on-disk configuration and local management.
+// Bot configuration is a complete replacement: validate field applicability
+// before choosing defaults, and never inherit values from the destination.
 func DecodeStrict(data []byte, v any) error {
-	return protocol.DecodeStrict(data, v)
+	b, ok := v.(*BotConfig)
+	if !ok {
+		return protocol.DecodeStrict(data, v)
+	}
+	if b == nil {
+		return errors.New("Bot config destination is nil")
+	}
+	var fields map[string]json.RawMessage
+	if err := protocol.DecodeStrict(data, &fields); err != nil {
+		return err
+	}
+	for name := range fields {
+		for _, canonical := range []string{"role", "harness", "maxConcurrent", "maxQueued"} {
+			if name != canonical && strings.EqualFold(name, canonical) {
+				return fmt.Errorf("use canonical field name %s", canonical)
+			}
+		}
+	}
+	var role string
+	if err := json.Unmarshal(fields["role"], &role); err != nil || (role != RoleConsole && role != RoleAgent) {
+		return errors.New("role must explicitly be console or agent")
+	}
+	// Scalar nulls must not leave default values intact. Optional collections
+	// may be null and are validated by their normal field constraints.
+	for name, raw := range fields {
+		if string(raw) == "null" && name != "labels" && name != "deliverablePrefixes" {
+			return fmt.Errorf("%s must not be null", name)
+		}
+	}
+	if role == RoleConsole {
+		for _, name := range []string{"harness", "maxConcurrent", "maxQueued"} {
+			if _, present := fields[name]; present {
+				return fmt.Errorf("%s is not applicable to console", name)
+			}
+		}
+	} else {
+		var harness map[string]json.RawMessage
+		if err := json.Unmarshal(fields["harness"], &harness); err != nil || len(harness) == 0 {
+			return errors.New("agent requires a non-empty harness object")
+		}
+		var adapter string
+		if err := json.Unmarshal(harness["adapter"], &adapter); err != nil || !supportedAgentAdapter(adapter) {
+			return errors.New("agent requires an explicit supported harness.adapter")
+		}
+		for name, raw := range harness {
+			if name != "adapter" && strings.EqualFold(name, "adapter") {
+				return errors.New("use canonical field name harness.adapter")
+			}
+			if string(raw) == "null" && name != "allowedAgentIds" {
+				return fmt.Errorf("harness.%s must not be null", name)
+			}
+		}
+	}
+	type botConfig BotConfig
+	decoded := botConfig(DefaultBotConfigForRole(role))
+	if err := protocol.DecodeStrict(data, &decoded); err != nil {
+		return err
+	}
+	*b = BotConfig(decoded)
+	return nil
+}
+
+func supportedAgentAdapter(adapter string) bool {
+	switch adapter {
+	case "default", "openclaw", "opencode", "codex", "webhook":
+		return true
+	default:
+		return false
+	}
 }
 
 func ValidateDaemon(d DaemonConfig) error {
-	if d.SchemaVersion != 2 {
+	if d.SchemaVersion != DaemonSchemaVersion {
 		return errors.New("unsupported daemon schemaVersion; explicit legacy migration is required")
 	}
 	if !filepath.IsAbs(d.DataDir) || filepath.Clean(d.DataDir) == string(filepath.Separator) {
@@ -173,24 +283,34 @@ func ValidateBot(b BotConfig) error {
 	if b.TrustMode != "open" && b.TrustMode != "tofu" && b.TrustMode != "explicit" {
 		return errors.New("trustMode must be open, tofu or explicit")
 	}
-	switch b.Harness.Adapter {
-	case "console", "default", "openclaw", "opencode", "codex", "webhook":
+	switch b.Role {
+	case RoleConsole:
+		if b.Harness != nil || b.MaxConcurrent != 0 || b.MaxQueued != 0 {
+			return errors.New("console must omit harness, maxConcurrent and maxQueued")
+		}
+	case RoleAgent:
+		if b.Harness == nil || !supportedAgentAdapter(b.Harness.Adapter) {
+			return errors.New("agent requires a supported Harness adapter")
+		}
+		if (b.Harness.Adapter == "default" || b.Harness.Adapter == "openclaw") && b.Harness.Model != "" {
+			return errors.New("OpenClaw does not support a per-call model override")
+		}
+		if b.MaxConcurrent <= 0 || b.MaxQueued < 0 {
+			return errors.New("invalid Bot execution limits")
+		}
+		if duration, err := time.ParseDuration(b.Harness.Timeout); err != nil || duration <= 0 {
+			return errors.New("harness.timeout must be a positive duration")
+		}
 	default:
-		return errors.New("unsupported Harness adapter")
+		return errors.New("role must be console or agent")
 	}
-	if (b.Harness.Adapter == "default" || b.Harness.Adapter == "openclaw") && b.Harness.Model != "" {
-		return errors.New("OpenClaw does not support a per-call model override")
-	}
-	if b.Harness.Adapter == "console" && (b.Harness.Model != "" || b.Harness.Instance != "" || b.Harness.WebhookURL != "" || b.Harness.CredentialsFile != "" || len(b.Harness.AllowedAgentIDs) != 0) {
-		return errors.New("console has no execution Harness configuration")
-	}
-	if b.MaxConcurrent <= 0 || b.MaxQueued < 0 || b.FileQuotaBytes <= 0 || b.TransferMaxFileSize <= 0 {
-		return errors.New("invalid Bot execution or storage limits")
+	if b.FileQuotaBytes <= 0 || b.TransferMaxFileSize <= 0 {
+		return errors.New("invalid Bot storage limits")
 	}
 	if b.TransferMaxFileSize > b.FileQuotaBytes {
 		return errors.New("transferMaxFileSize exceeds fileQuotaBytes")
 	}
-	for name, raw := range map[string]string{"heartbeatInterval": b.HeartbeatInterval, "announceTtl": b.AnnounceTTL, "transferTtl": b.TransferTTL, "harness.timeout": b.Harness.Timeout} {
+	for name, raw := range map[string]string{"heartbeatInterval": b.HeartbeatInterval, "announceTtl": b.AnnounceTTL, "transferTtl": b.TransferTTL} {
 		dur, err := time.ParseDuration(raw)
 		if err != nil || dur <= 0 {
 			return fmt.Errorf("%s must be a positive duration", name)
@@ -209,13 +329,17 @@ func ValidateBot(b BotConfig) error {
 			return errors.New("deliverable prefix is empty")
 		}
 	}
-	if b.Harness.Adapter == "webhook" {
+	if b.Harness != nil && b.Harness.Adapter == "webhook" {
 		u, err := url.Parse(b.Harness.WebhookURL)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
 			return errors.New("webhookUrl must be an HTTP(S) URL without credentials")
 		}
 	}
-	for _, p := range []string{b.Harness.CredentialsFile, b.NATSCredentialsFile, b.NATSTLSCAFile, b.NATSTLSCertFile, b.NATSTLSKeyFile} {
+	credentialsFile := ""
+	if b.Harness != nil {
+		credentialsFile = b.Harness.CredentialsFile
+	}
+	for _, p := range []string{credentialsFile, b.NATSCredentialsFile, b.NATSTLSCAFile, b.NATSTLSCertFile, b.NATSTLSKeyFile} {
 		if p != "" {
 			if !filepath.IsAbs(p) {
 				return errors.New("Bot credential paths must be absolute")
@@ -225,7 +349,7 @@ func ValidateBot(b BotConfig) error {
 			}
 		}
 	}
-	for _, p := range []string{b.Harness.CredentialsFile, b.NATSCredentialsFile, b.NATSTLSKeyFile} {
+	for _, p := range []string{credentialsFile, b.NATSCredentialsFile, b.NATSTLSKeyFile} {
 		if err := validatePrivateFile(p); err != nil {
 			return err
 		}
@@ -263,7 +387,11 @@ func RuntimeConfig(d DaemonConfig, b BotConfig, id string) Config {
 		}
 		return def
 	}
-	return Config{APITokenPath: filepath.Join(root, "credentials", "api.token"), AllowRemoteAPI: d.AllowRemoteAPI, APITLSCertFile: d.APITLSCertFile, APITLSKeyFile: d.APITLSKeyFile, Production: d.Production, NATSCredentialsFile: prefer(b.NATSCredentialsFile, d.NATSCredentialsFile), NATSTLSCAFile: prefer(b.NATSTLSCAFile, d.NATSTLSCAFile), NATSTLSCertFile: prefer(b.NATSTLSCertFile, d.NATSTLSCertFile), NATSTLSKeyFile: prefer(b.NATSTLSKeyFile, d.NATSTLSKeyFile), NATSTLSServerName: prefer(b.NATSTLSServerName, d.NATSTLSServerName), NATSServers: cloneStrings(d.NATSServers), LocalAPIAddr: d.LocalAPIAddr, DataDir: root, IdentityKeyPath: filepath.Join(root, "credentials", "identity.key"), IdentityPubPath: filepath.Join(root, "credentials", "identity.pub"), HeartbeatInterval: b.HeartbeatInterval, AnnounceTTL: b.AnnounceTTL, AgentProduct: b.AgentProduct, AgentVersion: b.AgentVersion, DisplayName: b.DisplayName, Labels: cloneLabels(b.Labels), TrustMode: b.TrustMode, TrustAutoApprove: b.TrustAutoApprove, AgentAdapter: b.Harness.Adapter, AgentAllowedIDs: cloneStrings(b.Harness.AllowedAgentIDs), AgentAdapterTimeout: b.Harness.Timeout, WebhookURL: b.Harness.WebhookURL, LogLevel: d.LogLevel, LogFormat: d.LogFormat, LogFilePath: d.LogFilePath, LogRotateMaxSizeMB: d.LogRotateMaxSizeMB, LogRotateMaxBackups: d.LogRotateMaxBackups, LogRotateMaxAgeDays: d.LogRotateMaxAgeDays, LogRotateCompress: d.LogRotateCompress, LogAddSource: d.LogAddSource, DeliverablePrefixes: cloneStrings(b.DeliverablePrefixes), TransferDir: filepath.Join(root, "transfers"), TransferMaxFileSize: b.TransferMaxFileSize, TransferTTL: b.TransferTTL}
+	var h HarnessBinding
+	if b.Harness != nil {
+		h = *b.Harness
+	}
+	return Config{Role: b.Role, APITokenPath: filepath.Join(root, "credentials", "api.token"), AllowRemoteAPI: d.AllowRemoteAPI, APITLSCertFile: d.APITLSCertFile, APITLSKeyFile: d.APITLSKeyFile, Production: d.Production, NATSCredentialsFile: prefer(b.NATSCredentialsFile, d.NATSCredentialsFile), NATSTLSCAFile: prefer(b.NATSTLSCAFile, d.NATSTLSCAFile), NATSTLSCertFile: prefer(b.NATSTLSCertFile, d.NATSTLSCertFile), NATSTLSKeyFile: prefer(b.NATSTLSKeyFile, d.NATSTLSKeyFile), NATSTLSServerName: prefer(b.NATSTLSServerName, d.NATSTLSServerName), NATSServers: cloneStrings(d.NATSServers), LocalAPIAddr: d.LocalAPIAddr, DataDir: root, IdentityKeyPath: filepath.Join(root, "credentials", "identity.key"), IdentityPubPath: filepath.Join(root, "credentials", "identity.pub"), HeartbeatInterval: b.HeartbeatInterval, AnnounceTTL: b.AnnounceTTL, AgentProduct: b.AgentProduct, AgentVersion: b.AgentVersion, DisplayName: b.DisplayName, Labels: cloneLabels(b.Labels), TrustMode: b.TrustMode, TrustAutoApprove: b.TrustAutoApprove, AgentAdapter: h.Adapter, AgentAllowedIDs: cloneStrings(h.AllowedAgentIDs), AgentAdapterTimeout: h.Timeout, WebhookURL: h.WebhookURL, LogLevel: d.LogLevel, LogFormat: d.LogFormat, LogFilePath: d.LogFilePath, LogRotateMaxSizeMB: d.LogRotateMaxSizeMB, LogRotateMaxBackups: d.LogRotateMaxBackups, LogRotateMaxAgeDays: d.LogRotateMaxAgeDays, LogRotateCompress: d.LogRotateCompress, LogAddSource: d.LogAddSource, DeliverablePrefixes: cloneStrings(b.DeliverablePrefixes), TransferDir: filepath.Join(root, "transfers"), TransferMaxFileSize: b.TransferMaxFileSize, TransferTTL: b.TransferTTL}
 }
 
 // LoadDaemon never reads a legacy config or Bot environment settings.
@@ -325,7 +453,7 @@ func LoadDaemon(args []string) (DaemonConfig, error) {
 		var header struct {
 			SchemaVersion int `json:"schemaVersion"`
 		}
-		if json.Unmarshal(data, &header) != nil || header.SchemaVersion != 2 {
+		if json.Unmarshal(data, &header) != nil || header.SchemaVersion != DaemonSchemaVersion {
 			return d, errors.New("legacy or incompatible config: run explicit migration")
 		}
 		if err := DecodeStrict(data, &d); err != nil {
@@ -355,7 +483,7 @@ func LoadDaemon(args []string) (DaemonConfig, error) {
 	}
 	fs := flag.NewFlagSet("clawsynapsed", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	fs.StringVar(&configPath, "config", configPath, "v2 daemon JSON config")
+	fs.StringVar(&configPath, "config", configPath, "v3 daemon JSON config")
 	for name, dst := range map[string]*string{"data-dir": &d.DataDir, "local-api-addr": &d.LocalAPIAddr, "admin-token-path": &d.AdminTokenPath, "api-tls-cert-file": &d.APITLSCertFile, "api-tls-key-file": &d.APITLSKeyFile, "nats-credentials-file": &d.NATSCredentialsFile, "nats-tls-ca-file": &d.NATSTLSCAFile, "nats-tls-cert-file": &d.NATSTLSCertFile, "nats-tls-key-file": &d.NATSTLSKeyFile, "nats-tls-server-name": &d.NATSTLSServerName, "log-level": &d.LogLevel, "log-format": &d.LogFormat, "log-file-path": &d.LogFilePath} {
 		fs.StringVar(dst, name, *dst, name)
 	}

@@ -30,6 +30,7 @@ For example, `bot.json` can bind this Bot to an installed OpenCode executable:
 ```json
 {
   "displayName": "assistant",
+  "role": "agent",
   "harness": {
     "adapter": "opencode",
     "timeout": "2m"
@@ -68,11 +69,23 @@ curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/script
   bash -s -- --daemon --nats-servers nats://127.0.0.1:4222 --local-api-addr 127.0.0.1:18080
 ```
 
-The installer uses `clawsynapse init` to create `~/.clawsynapse/config.json` with `schemaVersion: 2` on first daemon install. With `--data-dir DIR`, the default config path is `DIR/config.json`; `--config PATH` selects a separate path. Existing version 2 configs are kept unchanged and interactive installs skip their prompts. A daemon-only install uses a temporary matching CLI for initialization without installing it permanently.
+The installer uses `clawsynapse init` to create `~/.clawsynapse/config.json` with `schemaVersion: 3` on first daemon install. With `--data-dir DIR`, the default config path is `DIR/config.json`; `--config PATH` selects a separate path. Existing configs are not implicitly migrated: version 2 data requires an explicit offline layout upgrade before starting the new daemon. A daemon-only install uses a temporary matching CLI for initialization without installing it permanently.
 
 The installer has no Bot creation, adapter, trust, or identity flags. Configure those settings in a Bot JSON file and create the Bot explicitly. Each Bot's `did:key` and subject-safe Bot ID are derived from its own Ed25519 identity key.
 
 ## Upgrade
+
+### Migrate a version 2 multi-Bot layout
+
+Stop the daemon and back up its complete DataDir before using the new CLI:
+
+```bash
+clawsynapse service stop
+clawsynapse migrate --data-dir /absolute/path/to/daemon-root
+```
+
+This preserves identities, trust, journal cursors, Agent bindings and sessions. It converts Console Bots to `role=console` without a Harness. If interrupted, run `clawsynapse migrate --recover --data-dir /absolute/path/to/daemon-root` before restarting. Version 2 export bundles must first be converted with `clawsynapse bot convert --file /path/to/old-bundle --output /path/to/new-bundle`; the original bundle is retained.
+
 
 ### Migrate a legacy single-Bot install
 
@@ -170,7 +183,7 @@ Main config file:
 ~/.clawsynapse/config.json
 ```
 
-Create a daemon config, or explicitly replace an existing version 2 config after backing it up:
+Create a daemon config, or explicitly replace an existing version 3 config after backing it up (not a layout migration):
 
 ```bash
 clawsynapse init

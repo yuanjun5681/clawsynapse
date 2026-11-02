@@ -140,7 +140,7 @@ ClawSynapse 在 Harness 执行边界外负责：
 
 ### Daemon 与 Bot（wire Node）
 
-Daemon 是本地宿主进程，不是网络联系人。Bot 是长期对外协作身份，独立拥有 Ed25519 密钥、DID、信任、消息和文件引用；一个 daemon 可以托管多个 Bot，每个 Bot 只有一个生效的 Harness Binding。
+Daemon 是本地宿主进程，不是网络联系人。Bot 是长期对外协作身份，独立拥有 Ed25519 密钥、DID、信任、消息和文件引用；一个 daemon 可以托管多个 Bot。当前显式 Role 为 `console`／`agent`，只有 Agent Bot 持有一个生效的 Agent Harness Binding；Console 由人通过客户端参与，不配置 Harness。`device` 尚不可创建，详见 [Bot Role](./bot-roles.md)。
 
 `botId` 沿用 `did:key` 派生算法：`"n1-" + hex(sha256(did)[:16])`。它与 wire v2 的 `nodeId` 是同一个值，协议 seam 保留 `nodeId/from/to`、subject、签名和 durable consumer 契约。名称、模型、Binding、启停及完整迁移不改变身份。
 

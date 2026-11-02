@@ -19,7 +19,7 @@ func newTestStore(t *testing.T, limits Limits) *Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(s.root, "bots.json"), []byte(`{"schemaVersion":2,"bots":[]}`), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(s.root, "bots.json"), []byte(`{"schemaVersion":3,"bots":[]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	return s

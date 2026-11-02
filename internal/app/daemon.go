@@ -13,6 +13,7 @@ import (
 	"clawsynapse/internal/config"
 	"clawsynapse/internal/logging"
 	"clawsynapse/internal/messaging"
+	"clawsynapse/internal/migration"
 	"clawsynapse/internal/store"
 	"clawsynapse/internal/transfer"
 	"clawsynapse/internal/trust"
@@ -26,6 +27,9 @@ type App struct {
 }
 
 func NewDaemon(cfg config.DaemonConfig, version string) (_ *App, err error) {
+	if err = migration.CheckStartup(cfg.DataDir); err != nil {
+		return nil, err
+	}
 	if err = config.ValidateDaemon(cfg); err != nil {
 		return nil, err
 	}
@@ -45,6 +49,9 @@ func NewDaemon(cfg config.DaemonConfig, version string) (_ *App, err error) {
 			_ = lock.Close()
 		}
 	}()
+	if err = migration.CheckStartup(cfg.DataDir); err != nil {
+		return nil, err
+	}
 	for _, path := range []string{filepath.Join(cfg.DataDir, "bots"), filepath.Join(cfg.DataDir, "blobs")} {
 		if err = store.EnsurePrivateDir(path); err != nil {
 			return nil, err
@@ -133,6 +140,7 @@ func (m *Manager) offline(b *managedBot) (http.Handler, func(), error) {
 		return nil, nil, err
 	}
 	messages := messaging.NewService(slog.Default(), peers, nil, b.info.BotID, id, cfg.TrustMode, cfg.DeliverablePrefixes)
+	messages.SetRole(b.cfg.Role)
 	close := func() { messages.Close(); _ = lock.Close() }
 	if err = messages.SetStatePath(filepath.Join(cfg.DataDir, "state", "messages.jsonl")); err != nil {
 		close()
@@ -143,11 +151,11 @@ func (m *Manager) offline(b *managedBot) (http.Handler, func(), error) {
 		close()
 		return nil, nil, err
 	}
-	transfers := transfer.NewService(slog.Default(), peers, nil, messages, b.info.BotID, id, cfg.TrustMode, transfer.TransferConfig{TransferDir: cfg.TransferDir, MaxFileSize: cfg.TransferMaxFileSize, TTL: cfg.TransferTTL, BotID: b.info.BotID, Blobs: m.blobs, Workspace: filepath.Join(cfg.DataDir, "workspace", b.cfg.BindingRevision), QuotaBytes: b.cfg.FileQuotaBytes})
+	transfers := transfer.NewService(slog.Default(), peers, nil, messages, b.info.BotID, id, cfg.TrustMode, transfer.TransferConfig{TransferDir: cfg.TransferDir, MaxFileSize: cfg.TransferMaxFileSize, TTL: cfg.TransferTTL, BotID: b.info.BotID, Blobs: m.blobs, Workspace: filepath.Join(cfg.DataDir, "workspace", b.cfg.BindingRevision), QuotaBytes: b.cfg.FileQuotaBytes, InboxOnly: b.cfg.Role == config.RoleConsole})
 	if err = transfers.ConfigurePersistence(); err != nil {
 		close()
 		return nil, nil, err
 	}
-	handler := api.NewBotHandler(peers, nil, trusts, messages, transfers, nil, nil, b.cfg.Harness.Adapter, api.SelfInfo{BotID: b.info.BotID, DID: b.info.DID, TrustMode: b.cfg.TrustMode, DisplayName: b.cfg.DisplayName, Labels: b.cfg.Labels}, m.version, fs)
+	handler := api.NewBotHandler(peers, nil, trusts, messages, transfers, nil, nil, cfg.AgentAdapter, api.SelfInfo{BotID: b.info.BotID, Role: b.cfg.Role, DID: b.info.DID, TrustMode: b.cfg.TrustMode, DisplayName: b.cfg.DisplayName, Labels: b.cfg.Labels}, m.version, fs)
 	return handler.Handler(), func() { _ = transfers.Close(); close() }, nil
 }
