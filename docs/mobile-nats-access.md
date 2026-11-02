@@ -71,7 +71,7 @@ flowchart LR
 
 NATS 凭据不能作为“客户端已经获准执行所有业务操作”的证明。Harness 后端仍需校验会话访问权和操作权限，并将请求关联到服务器授权的身份，不能相信消息正文中自报的用户 ID。
 
-移动凭据代表用户/设备的移动入口权限，不是 Bot 的 Ed25519 身份、Bot 本地 HTTP token 或 daemon 管理凭据。后端必须将用户操作映射到其被授权的 Bot 与会话；不能让手机通过自报 `botId` 取得另一个 Bot 的身份或文件引用。Harness 调用本地 API 时使用对应 Bot 的作用域凭据及 `/v2/bots/{botId}/...`，不把管理 token 下发给设备。
+移动凭据代表用户/设备的移动入口权限，不是 Bot 的 Ed25519 身份或 Bot 本地 HTTP token。后端必须将用户操作映射到其被授权的 Bot 与会话；不能让手机通过自报 `botId` 取得另一个 Bot 的身份或文件引用。Harness 调用本地 API 时可使用对应 Bot 的作用域凭据及 `/v2/bots/{botId}/...`；daemon 仅监听 loopback，无 token 请求即可完整管理，本机任意进程均可如此调用，故 scoped token 不是本机进程隔离。不要向设备暴露或代理本地管理 API；跨设备通信使用 NATS。
 
 ## 消息 Interface
 

@@ -351,13 +351,6 @@ func Import(archivePath, dataDir string) (string, error) {
 	} else if err != nil {
 		return "", err
 	}
-	if _, err := os.Lstat(d.AdminTokenPath); errors.Is(err, os.ErrNotExist) {
-		if err := newToken(d.AdminTokenPath); err != nil {
-			return "", err
-		}
-	} else if err != nil {
-		return "", err
-	}
 	cat.Bots = append(cat.Bots, botEntry{BotID: manifest.BotID, DesiredState: "stopped", WorkspaceID: workspaceID})
 	if err := store.WriteJSONAtomic(filepath.Join(dataDir, "bots.json"), cat, 0o600); err != nil {
 		return "", err

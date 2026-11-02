@@ -179,7 +179,7 @@ clawsynapse --bot <local-bot-id> bot config --file bot-update.json
 clawsynapse --bot <local-bot-id> bot start
 ```
 
-daemon 管理凭据位于 `admin.token`；Harness 应使用 `bots/<botId>/credentials/api.token`，通过 `--token-file` 和完整 `--bot` 选择自己的业务身份。HTTP 业务路径为 `/v2/bots/{botId}/...`，发送目标为 `targetBot`；旧 `/v1` 单身份路径已移除。Bot token 不能修改配置/生命周期、管理其他 Bot 或导入宿主文件。
+daemon 只允许 loopback 管理，无需管理 token；CLI/桌面可直接创建和管理 Bot。本机任何进程都能省略 token 获得完整管理能力，不要将 API 代理/转发给不可信调用方。`bots/<botId>/credentials/api.token` 仅作为可选细粒度业务凭据，配合 `--token-file` 和完整 `--bot` 使用；显式使用时不能修改配置/生命周期、管理其他 Bot 或导入宿主文件，错误 token 仍失败，但不构成本机进程隔离。远端地址（包括 HTTPS）均拒绝，跨设备 Bot 通过 NATS 通信，Bot 间身份、签名、认证和信任不变。HTTP 业务路径为 `/v2/bots/{botId}/...`，发送目标为 `targetBot`；旧 `/v1` 单身份路径已移除。
 
 信任、备注、消息、执行 Session 和文件引用各自隔离。同宿主不默认互信或共享文件授权；共享 blob 仅减少物理存储，Harness 使用独立工作副本。多 Bot 不是强多租户安全沙箱。
 

@@ -156,15 +156,14 @@ func TestWorkspaceLostCatalogClaimAndUnregisteredCreationFailClosed(t *testing.T
 
 func TestWorkspaceBindingHTTPAuthorizationValidationAndCapabilities(t *testing.T) {
 	a := testDaemon(t)
-	admin := adminToken(t, a)
 	path := "/v2/workspaces/desktop/binding"
 	for _, body := range []any{map[string]string{}, map[string]string{"displayName": " "}, map[string]string{"displayName": "Bot-A", "token": "not-accepted"}} {
-		requireStatus(t, request(t, a, "POST", path, admin, body), 400)
+		requireStatus(t, request(t, a, "POST", path, "", body), 400)
 	}
 	for _, workspace := range []string{"bad.id", "bad%20id"} {
-		requireStatus(t, request(t, a, "POST", "/v2/workspaces/"+workspace+"/binding", admin, map[string]string{"displayName": "Bot-A"}), 400)
+		requireStatus(t, request(t, a, "POST", "/v2/workspaces/"+workspace+"/binding", "", map[string]string{"displayName": "Bot-A"}), 400)
 	}
-	response := request(t, a, "POST", path, admin, map[string]string{"displayName": "Bot-A"})
+	response := request(t, a, "POST", path, "", map[string]string{"displayName": "Bot-A"})
 	requireStatus(t, response, 200)
 	if response.Header().Get("Cache-Control") != "no-store" {
 		t.Fatal("credential response may be cached")
@@ -174,13 +173,13 @@ func TestWorkspaceBindingHTTPAuthorizationValidationAndCapabilities(t *testing.T
 		t.Fatal(err)
 	}
 	token, ok := result.Data["token"].(string)
-	if !ok || token == "" || token == admin {
-		t.Fatal("workspace credential is missing or administrative")
+	if !ok || token == "" {
+		t.Fatal("workspace scoped credential is missing")
 	}
 	requireStatus(t, request(t, a, "POST", path, token, map[string]string{"displayName": "Bot-A"}), 403)
 	bot := result.Data["bot"].(map[string]any)
 	requireStatus(t, request(t, a, "GET", "/v2/bots/"+bot["botId"].(string)+"/messages", token, nil), 200)
-	health := request(t, a, "GET", "/v2/health", admin, nil)
+	health := request(t, a, "GET", "/v2/health", "", nil)
 	requireStatus(t, health, 200)
 	if err := json.Unmarshal(health.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)

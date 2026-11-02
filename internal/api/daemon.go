@@ -2,12 +2,12 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -76,7 +76,7 @@ type DaemonServer struct {
 }
 
 func NewDaemonServer(cfg config.DaemonConfig, manager BotManager) (*DaemonServer, error) {
-	if err := config.ValidateAPIListener(cfg.LocalAPIAddr, cfg.AllowRemoteAPI, cfg.APITLSCertFile, cfg.APITLSKeyFile); err != nil {
+	if err := config.ValidateAPIListener(cfg.LocalAPIAddr, cfg.APITLSCertFile, cfg.APITLSKeyFile); err != nil {
 		return nil, err
 	}
 	if cfg.APITLSCertFile != "" {
@@ -84,11 +84,6 @@ func NewDaemonServer(cfg config.DaemonConfig, manager BotManager) (*DaemonServer
 			return nil, fmt.Errorf("load API TLS certificate: %w", err)
 		}
 	}
-	token, err := ensureToken(cfg.AdminTokenPath)
-	if err != nil {
-		return nil, err
-	}
-	expected := sha256.Sum256([]byte(token))
 	s := &DaemonServer{cfg: cfg}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v2/health", func(w http.ResponseWriter, r *http.Request) {
@@ -203,15 +198,17 @@ func NewDaemonServer(cfg config.DaemonConfig, manager BotManager) (*DaemonServer
 	})
 	s.server = &http.Server{Addr: cfg.LocalAPIAddr, ReadHeaderTimeout: 5 * time.Second, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12}}
 	s.server.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		header := r.Header.Get("Authorization")
-		provided := strings.TrimPrefix(header, "Bearer ")
-		actual := sha256.Sum256([]byte(provided))
-		admin := strings.HasPrefix(header, "Bearer ") && subtle.ConstantTimeCompare(expected[:], actual[:]) == 1
-		scope, valid := "", false
-		if !admin && strings.HasPrefix(header, "Bearer ") {
-			scope, valid = manager.Authenticate(provided)
+		if !localRequest(r) {
+			respondError(w, Failure(403, "forbidden", "local API requires a loopback peer, host, and origin"))
+			return
 		}
-		if !admin && !valid {
+		headers := r.Header.Values("Authorization")
+		scoped := len(headers) != 0
+		scope, valid := "", false
+		if scoped && len(headers) == 1 && strings.HasPrefix(headers[0], "Bearer ") {
+			scope, valid = manager.Authenticate(strings.TrimPrefix(headers[0], "Bearer "))
+		}
+		if scoped && !valid {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			respondError(w, Failure(401, "unauthorized", "bearer authentication required"))
 			return
@@ -220,7 +217,7 @@ func NewDaemonServer(cfg config.DaemonConfig, manager BotManager) (*DaemonServer
 			respondError(w, Failure(503, "daemon.stopping", "daemon is stopping"))
 			return
 		}
-		if !admin {
+		if scoped {
 			// Scoped credentials may inspect their identity and business state, never configuration or lifecycle.
 			parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 			if len(parts) < 3 || parts[0] != "v2" || parts[1] != "bots" || parts[2] != scope {
@@ -247,6 +244,45 @@ func NewDaemonServer(cfg config.DaemonConfig, manager BotManager) (*DaemonServer
 		mux.ServeHTTP(w, r)
 	})
 	return s, nil
+}
+
+// Validate the actual connection and authority, never proxy-supplied headers.
+func localRequest(r *http.Request) bool {
+	peer, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(peer)
+	if ip == nil || !ip.IsLoopback() || !loopbackAuthority(r.Host) {
+		return false
+	}
+	if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+		return false
+	}
+	origins := r.Header.Values("Origin")
+	if len(origins) == 0 {
+		return true
+	}
+	if len(origins) != 1 {
+		return false
+	}
+	origin, err := url.Parse(origins[0])
+	return err == nil && (origin.Scheme == "http" || origin.Scheme == "https") &&
+		origin.User == nil && origin.Path == "" && origin.RawQuery == "" &&
+		origin.Fragment == "" && loopbackAuthority(origin.Host)
+}
+
+func loopbackAuthority(authority string) bool {
+	host := authority
+	if strings.Contains(authority, ":") {
+		var err error
+		host, _, err = net.SplitHostPort(authority)
+		if err != nil {
+			host = strings.TrimPrefix(strings.TrimSuffix(authority, "]"), "[")
+		}
+	}
+	ip := net.ParseIP(host)
+	return strings.EqualFold(host, "localhost") || (ip != nil && ip.IsLoopback())
 }
 func (s *DaemonServer) Handler() http.Handler { return s.server.Handler }
 func (s *DaemonServer) Start() error {

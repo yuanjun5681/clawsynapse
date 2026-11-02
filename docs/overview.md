@@ -70,8 +70,9 @@ Harness <-> Bot A/B hosted by Local Daemon <-> NATS <-> Remote Bot <-> Harness
 - 一个本地 `clawsynapsed` 宿主，托管零个或多个 Bot；daemon 本身不是联系人
 - 每个 Bot 一个生效的 Harness Binding；多个 Bot 可以使用同一产品的不同接入
 - 每个 Bot 独立的 Ed25519 身份、NATS 连接、信任、消息、执行 Session 与文件引用
-- Harness、CLI 或 Skill 通过 `/v2/bots/{botId}/...` 和相应作用域凭据接入；业务命令显式指定 `--bot`
-- Bot 通过共享 NATS Server 跨设备或同宿主通信；同宿主不默认互信，也不自动授予文件权限
+- Harness、CLI 或 Skill 通过 `/v2/bots/{botId}/...` 接入；业务命令显式指定 `--bot`，可选携带相应作用域凭据
+- daemon 仅允许 loopback，无 token 本机请求可管理所有 Bot；任何本机进程都能省略 token，因此 scoped token 不是本机进程隔离，也不应将 API 代理/转发给不可信调用方
+- Bot 通过共享 NATS Server 跨设备或同宿主通信，不支持远程 daemon 管理；Bot 间签名、认证与信任不变，同宿主不默认互信，也不自动授予文件权限
 
 ## 核心原则
 

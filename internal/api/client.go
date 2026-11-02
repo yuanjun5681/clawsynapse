@@ -27,7 +27,7 @@ type Client struct {
 
 type ClientOption func(*Client)
 
-// WithTokenFile selects a private bearer token file; it never enables anonymous requests.
+// WithTokenFile selects an optional private Bot-scoped bearer token file.
 func WithTokenFile(path string) ClientOption {
 	return func(c *Client) { c.tokenPath = path }
 }
@@ -54,9 +54,8 @@ func NewClient(baseURL string, timeout time.Duration, options ...ClientOption) *
 	for _, option := range options {
 		option(c)
 	}
-	// Explicit credentials never depend on (or borrow credentials from) the
-	// workstation's daemon configuration.
-	if strings.TrimSpace(baseURL) != "" && c.tokenPath != "" {
+	// Explicit endpoints do not depend on workstation daemon configuration.
+	if strings.TrimSpace(baseURL) != "" && strings.Contains(baseURL, "://") {
 		return c
 	}
 	cfg, err := config.LoadDaemon(nil)
@@ -70,13 +69,6 @@ func NewClient(baseURL string, timeout time.Duration, options ...ClientOption) *
 	}
 	if strings.TrimSpace(baseURL) == "" || (!strings.Contains(baseURL, "://") && normalizeBaseURL(baseURL) == normalizeBaseURL(cfg.LocalAPIAddr)) {
 		c.baseURL = configuredURL
-	}
-	if c.tokenPath == "" {
-		if c.baseURL != configuredURL {
-			c.configErr = fmt.Errorf("an explicit --token-file is required for a different daemon endpoint")
-		} else {
-			c.tokenPath = cfg.AdminTokenPath
-		}
 	}
 	return c
 }
@@ -122,17 +114,21 @@ func (c *Client) do(ctx context.Context, method, endpoint string, payload any) (
 			return types.APIResult{}, fmt.Errorf("request is outside selected Bot scope")
 		}
 	}
-	token, err := readToken(c.tokenPath)
-	if err != nil {
-		return types.APIResult{}, err
+	token := ""
+	if c.tokenPath != "" {
+		var err error
+		token, err = readToken(c.tokenPath)
+		if err != nil {
+			return types.APIResult{}, err
+		}
 	}
 	u, err := url.Parse(c.baseURL)
 	if err != nil || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
 		return types.APIResult{}, fmt.Errorf("invalid local API URL")
 	}
 	ip := net.ParseIP(u.Hostname())
-	if u.Scheme != "https" && !(u.Scheme == "http" && (strings.EqualFold(u.Hostname(), "localhost") || (ip != nil && ip.IsLoopback()))) {
-		return types.APIResult{}, fmt.Errorf("non-loopback API client requires HTTPS")
+	if (u.Scheme != "http" && u.Scheme != "https") || !(strings.EqualFold(u.Hostname(), "localhost") || (ip != nil && ip.IsLoopback())) {
+		return types.APIResult{}, fmt.Errorf("local API URL must use a loopback host")
 	}
 	var body *bytes.Reader
 	if payload == nil {
@@ -152,7 +148,9 @@ func (c *Client) do(ctx context.Context, method, endpoint string, payload any) (
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

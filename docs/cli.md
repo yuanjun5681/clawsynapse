@@ -12,24 +12,24 @@ title: "ClawSynapse CLI"
 全局参数放在命令前：
 
 ```bash
-clawsynapse --api-addr 127.0.0.1:18080 --token-file "$HOME/.clawsynapse/admin.token" --json bots
+clawsynapse --api-addr 127.0.0.1:18080 --json bots
 clawsynapse --bot "$BOT_A" --timeout 10s peers
 ```
 
-- `--api-addr`：daemon endpoint，默认从本地 daemon 配置读取（默认 127.0.0.1:18080）。
-- `--token-file`：该 endpoint 的私有凭据文件；默认读取本机 daemon 配置中的 adminTokenPath。非默认 endpoint 必须明确提供匹配凭据，不能假设本机 token 授权远端。
-- `--bot`：业务命令必填，本地完整 Bot ID 或无歧义前缀；即便只有一个 Bot 也不默认选择。前缀解析需要 admin 权限调用 bots 列表；使用 Bot scoped token 时必须使用完整 `n1-` + 32 位小写十六进制 ID。
+- `--api-addr`：仅限 loopback 的 daemon endpoint，默认从本地 daemon 配置读取（默认 127.0.0.1:18080）。远端地址即使使用 HTTPS 也拒绝。
+- `--token-file`：可选 Bot scoped 凭据文件；默认不读取或发送 token，本机管理无需凭据。显式提供错误 token 会失败，不会匿名回退。
+- `--bot`：业务命令必填，本地完整 Bot ID 或无歧义前缀；即便只有一个 Bot 也不默认选择。前缀解析调用 bots 列表；显式使用 Bot scoped token 时无此权限，必须使用完整 `n1-` + 32 位小写十六进制 ID。
 - `--timeout`：HTTP 请求超时，默认 5s；不是远端模型执行超时。
-- `--json`：输出 APIResult JSON。没有凭据时明确失败，不匿名降级；远端必须是可信 HTTPS，客户端不跟随重定向。
+- `--json`：输出 APIResult JSON。客户端不跟随重定向。
 
-admin token 可管理所有 Bot。`bots/{botId}/credentials/api.token` 只授权该 Bot 的业务和身份查询，不能执行 bots、bot config、生命周期或宿主文件导入。`--bot` 选择本地发起者，`--target` 是远端 Bot ID，二者不能混用。HTTP API 没有 v1 别名或默认 Bot，详见 [api.md](api.md)。
+本机任何进程均可不带 token 管理所有 Bot。`bots/{botId}/credentials/api.token` 是可选的细粒度业务凭据；显式使用它时仅授权该 Bot 的业务和身份查询，不能执行 bots、bot config、生命周期或宿主文件导入，但省略 token 即恢复完整本机管理能力，因此不提供本机进程隔离。不要将 API 代理/转发给不可信调用方。`--bot` 选择本地发起者，`--target` 是远端 Bot ID，二者不能混用。跨设备通信通过 NATS，Bot 间签名、认证与信任不变；不支持远程 daemon 管理。HTTP API 没有 v1 别名或默认 Bot，详见 [api.md](api.md)。
 
 ## 初始化 daemon 与两个 Bot
 
 ```bash
 clawsynapse init --nats-servers nats://127.0.0.1:4222
 clawsynapsed --config "$HOME/.clawsynapse/config.json"
-# 另一个终端：使用 admin 凭据创建两份独立配置和身份
+# 另一个终端：无需 token，直接创建两份独立配置和身份
 clawsynapse --json bot create --name assistant-a --file /absolute/bot-a.json
 clawsynapse --json bot create --name assistant-b --file /absolute/bot-b.json
 clawsynapse --json bots
@@ -139,7 +139,7 @@ CLI publish 是文本快捷入口，只支持 `--target`、`--type`、`--agent`�
 ## 文件导入、发送、读取与删除引用
 
 ```bash
-# admin 从宿主机导入，只给 BOT_A 建立引用
+# 本机不带 token 从宿主机导入，只给 BOT_A 建立引用
 clawsynapse --bot "$BOT_A" --json transfer import --file /absolute/host/report.pdf
 # 使用返回 transferId；授权引用转发，无须获知 blob 路径
 clawsynapse --bot "$BOT_A" transfer forward --id "$TRANSFER_ID" --target "$PEER"
@@ -165,7 +165,7 @@ curl --fail -H "Authorization: Bearer $(cat "$TOKEN_FILE")" \
 
 `version` 输出 CLI 版本，`clawsynapsed --version` 输出 daemon 版本。`service status|start|stop|restart` 管理整个 daemon（macOS launchd / Linux systemd），不是单 Bot 生命周期。`logs [--lines 200] [--follow]` 读取 daemon 日志，默认 `~/.clawsynapse/log/clawsynapsed.log`，兼容平台旧日志回退。
 
-`dashboard` 提供终端监控视图；显式 `--bot` 选择业务对象，`--token-file` 匹配 endpoint。使用 scoped token 不会获得 catalog/配置管理权。实际验收已覆盖从运行 Bot A 切换到 stopped 的另一 Bot 时清除原消息/缓存；这不等于所有平台和视图穷举验收，真实模型与第三方 CLI 版本兼容仍按部署组合确认。
+`dashboard` 提供终端监控视图；显式 `--bot` 选择业务对象，默认无需 token。`--token-file` 仅用于可选 Bot scoped 调用，使用时不会获得 catalog/配置管理权。实际验收已覆盖从运行 Bot A 切换到 stopped 的另一 Bot 时清除原消息/缓存；这不等于所有平台和视图穷举验收，真实模型与第三方 CLI 版本兼容仍按部署组合确认。
 
 ### Upgrade
 

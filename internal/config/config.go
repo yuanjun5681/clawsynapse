@@ -38,7 +38,6 @@ const (
 type Config struct {
 	Role                string       `json:"role,omitempty"`
 	APITokenPath        string       `json:"apiTokenPath"`
-	AllowRemoteAPI      bool         `json:"allowRemoteAPI"`
 	APITLSCertFile      string       `json:"apiTLSCertFile"`
 	APITLSKeyFile       string       `json:"apiTLSKeyFile"`
 	Production          bool         `json:"production"`
@@ -298,7 +297,6 @@ func LoadFromOS(args []string) (Config, error) {
 	fs.SetOutput(io.Discard)
 	var (
 		apiTokenPath        = fs.String("api-token-path", merged.APITokenPath, "local API bearer token file")
-		allowRemoteAPI      = fs.Bool("allow-remote-api", merged.AllowRemoteAPI, "explicitly allow non-loopback HTTPS API")
 		apiTLSCertFile      = fs.String("api-tls-cert-file", merged.APITLSCertFile, "API TLS certificate file")
 		apiTLSKeyFile       = fs.String("api-tls-key-file", merged.APITLSKeyFile, "API TLS private key file")
 		production          = fs.Bool("production", merged.Production, "require authenticated TLS NATS and non-open trust")
@@ -424,7 +422,6 @@ func LoadFromOS(args []string) (Config, error) {
 
 	cfg := Config{
 		APITokenPath:        *apiTokenPath,
-		AllowRemoteAPI:      *allowRemoteAPI,
 		APITLSCertFile:      *apiTLSCertFile,
 		APITLSKeyFile:       *apiTLSKeyFile,
 		Production:          *production,

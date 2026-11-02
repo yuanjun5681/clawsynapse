@@ -1,9 +1,9 @@
+# Legacy single-Bot migration input; current daemons use schemaVersion 3 config.json.
 natsServers:
   - nats://127.0.0.1:4222
 localApiAddr: 127.0.0.1:18080
-# All local API routes require the generated private bearer token file.
+# Legacy Bot-scoped API credential path; local daemon management needs no token.
 apiTokenPath: ""
-allowRemoteAPI: false
 apiTLSCertFile: ""
 apiTLSKeyFile: ""
 # Production requires tls:// or wss:// NATS URLs and credentials or mutual TLS.

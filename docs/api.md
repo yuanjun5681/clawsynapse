@@ -9,11 +9,11 @@ title: "ClawSynapse API Reference"
 
 ## 访问与响应
 
-所有路由要求 `Authorization: Bearer <token>`。缺失/错误为 **401** `unauthorized`，权限不足为 **403** `forbidden`。
+daemon 只监听 loopback；无 `Authorization` 的本机请求可完整管理所有 Bot，不需要管理员凭据。显式提交错误或格式非法的 token 返回 **401** `unauthorized`，Bot scoped token 权限不足返回 **403** `forbidden`。
 
-- daemon 首次启动生成 `DataDir/admin.token`（0600），路径由 `adminTokenPath` 配置；它可以管理所有 Bot。
-- 每个 Bot 有独立 `DataDir/bots/{botId}/credentials/api.token`（0600）。它只能读取自己的 Bot 信息、查询和操作自己的业务状态，不能列举 daemon/Bot catalog、读取或修改配置、管理生命周期、导入宿主机文件，也不能访问其他 Bot。
-- 不把凭据放入 URL、配置 JSON、日志或版本库。远端 API 必须显式启用 `allowRemoteAPI` 并配置 TLS 证书/私钥；客户端拒绝远端明文和重定向。
+- 每个 Bot 仍有独立 `DataDir/bots/{botId}/credentials/api.token`（0600）。显式使用它时，只能读取自己的 Bot 信息、查询和操作自己的业务状态，不能列举 daemon/Bot catalog、读取或修改配置、管理生命周期、导入宿主机文件，也不能访问其他 Bot。
+- 作用域凭据是可选的细粒度调用方式，不是本机进程隔离：任何本机进程都能省略 token 取得完整管理能力。不要将本地 API 代理或转发给不可信调用方。
+- 不把 Bot 凭据放入 URL、配置 JSON、日志或版本库。客户端拒绝所有非 loopback endpoint（包括 HTTPS）及重定向；跨设备 Bot 通信使用 NATS，不是远程 daemon 管理。Bot 间身份、签名、认证与信任检查不变。
 - HTTP 路径必须包含完整 Bot ID；没有默认 Bot、无 Bot 路径或 `/v1/*` 兼容别名。未知路由为 404，方法不匹配为 405。
 - JSON body 最多 256 KiB，必须是单个对象；未知字段、重复键、非法编码、尾随对象返回 400 `invalid_argument`。
 
@@ -25,7 +25,7 @@ title: "ClawSynapse API Reference"
 
 `message` 是可选的人类可读说明，`code` 为机器码，`ts` 为 Unix 毫秒。未分类内部故障为 500 `daemon.failed`。daemon 关停时拒绝写入，返回 503 `daemon.stopping`。
 
-## daemon 管理（仅 admin）
+## daemon 管理（本机无 token）
 
 | 方法与路径 | 成功状态 / code | data |
 |---|---|---|
@@ -51,9 +51,9 @@ title: "ClawSynapse API Reference"
 
 Console 示例：`{"displayName":"inbox","role":"console"}`。Role 不是管理权限，所有角色仍受既有凭据、信任与文件授权约束。
 
-工作区绑定接受 `{"displayName":"Bot-A"}`；`workspaceId` 为客户端持久保存的 1–128 位 ASCII 字母、数字、`-` 或 `_`。首次创建独立 Console Bot（显式信任、stopped），在 catalog 中原子认领；同一工作区并发重试、响应丢失或 daemon 重启均返回同一身份及原 scoped token，不按名称/labels 复用 Bot，也不会因重试名称变化而改名。客户端应持久保存 workspaceId，使用 admin 启动并等待 Bot running，之后以 scoped token 查询/发布。响应 `Cache-Control: no-store`；不要记录或展示 token。
+工作区绑定接受 `{"displayName":"Bot-A"}`；`workspaceId` 为客户端持久保存的 1–128 位 ASCII 字母、数字、`-` 或 `_`。首次创建独立 Console Bot（显式信任、stopped），在 catalog 中原子认领；同一工作区并发重试、响应丢失或 daemon 重启均返回同一身份及原 scoped token，不按名称/labels 复用 Bot，也不会因重试名称变化而改名。客户端应持久保存 workspaceId，以无 token 的本机管理请求启动并等待 Bot running，之后可选用 scoped token 查询/发布。响应 `Cache-Control: no-store`；不要记录或展示 token。
 
-绑定归档、失败、密钥/凭据/标记缺失或 catalog 认领丢失时返回 409 `workspace.binding_invalid`，不自动换钥或另建身份。恢复原数据后重试；归档须显式 restore。工作区 Bot 固定为 `role=console`，不配置 Harness；工作区绑定不是 Harness Binding。工作区绑定仅 admin 可调用，scoped token 不可认领其他工作区。
+绑定归档、失败、密钥/凭据/标记缺失或 catalog 认领丢失时返回 409 `workspace.binding_invalid`，不自动换钥或另建身份。恢复原数据后重试；归档须显式 restore。工作区 Bot 固定为 `role=console`，不配置 Harness；工作区绑定不是 Harness Binding。工作区绑定通过无 token 的本机管理请求调用，显式 scoped token 不可认领其他工作区。
 
 配置更新是**完整替换 + revision CAS**：先 GET `data.config`，修改后原样 PUT，必须提交当前 `revision` 和原 `role`。缺失 Role 或普通更新切换 Role 均拒绝，即使同时调整 Harness 也不允许。运行/过渡中更新返回 409 `bot.must_stop`；revision 过期为 409 `bot.revision_conflict`。成功递增 revision；Agent 的 `bindingRevision` 由服务器控制，Harness 绑定变更会产生新绑定和独立工作区/产品会话，纯 schema 迁移保留原修订。Console 不构造执行 Binding；旧 bindingRevision 可保留为历史文件路径元数据。校验失败为 400 `bot.config_invalid`。完整字段、默认值见 operations。
 
@@ -81,7 +81,7 @@ Console 示例：`{"displayName":"inbox","role":"console"}`。Role 不是管理�
 | GET | `B/messages` | 200 `msg.recent` 或 `msg.replay` |
 | GET | `B/requests/{messageId}` | 200 `msg.request` |
 | POST | `B/transfer/send` | 200 `transfer.sent` |
-| POST | `B/transfer/import` | 201 `transfer.imported`；仅 admin |
+| POST | `B/transfer/import` | 201 `transfer.imported`；本机管理，不带 scoped token |
 | GET | `B/transfers` | 200 `transfer.list`；`data.items` |
 | GET | `B/transfer/{transferId}` | 200 `transfer.detail`；`data.transfer` |
 | GET | `B/transfer/{transferId}/file` | 200 文件字节，不是 APIResult |
@@ -124,7 +124,7 @@ Console 示例：`{"displayName":"inbox","role":"console"}`。Role 不是管理�
 文件字节按内容去重，但授权依据是所选 Bot 持久文件引用；知道 checksum、transferId 或其他 Bot 的记录不授予读取/转发权限。列表和详情不返回全局 blob 路径。所有操作必须走 Bot-qualified 路径：
 
 1. Bot workspace 内文件：`POST B/transfer/send`，body `{"targetBot":"n1-…","filePath":"report.pdf","mimeType":"application/pdf","metadata":{"taskId":"task-1"}}`。路径必须在当前 Bot/绑定 workspace 内，不能用其他 Bot 或任意宿主路径。
-2. 宿主文件：admin 调用 `POST B/transfer/import`，body `{"filePath":"/absolute/host/report.pdf"}`。成功返回 `data.transfer`，为该 Bot 建立持久引用；scoped credential 返回 403。
+2. 宿主文件：本机无 token 调用 `POST B/transfer/import`，body `{"filePath":"/absolute/host/report.pdf"}`。成功返回 `data.transfer`，为该 Bot 建立持久引用；显式 scoped credential 返回 403。
 3. 已授权引用：`POST B/transfer/{transferId}/forward`，body `{"targetBot":"n1-…"}`（可选 mimeType/metadata）。接收方获得自己的引用，不共享来源 Bot 的授权。
 4. 查看：GET transfers/transfer；记录包括 transferId、方向、文件名/大小、MIME、checksum、状态、时间和 metadata。按 Bot 持久化，重启后可查询。
 5. 读取：`GET B/transfer/{transferId}/file` 返回 `application/octet-stream`，`Cache-Control: no-store`、`X-Content-Type-Options: nosniff`。未知/未授权引用为 404 `transfer.not_found`；已授权但字节缺失/损坏为 500 `transfer.file_unavailable`。
@@ -148,4 +148,4 @@ result, err := c.Post(ctx, "/publish", map[string]any{
 })
 ```
 
-`WithBot` 将业务相对路径限定到 `/v2/bots/{botId}`，并拒绝越过所选 Bot 作用域。daemon 管理使用不带 WithBot、持有 admin 凭据的客户端和明确 `/v2/*` 路径。客户端自动处理 JSON；HTTP >=400 返回 error，并保留 APIResult。自定义 endpoint 必须显式匹配 `WithTokenFile`；不能假设本机凭据适用于远端 daemon。
+`WithBot` 将业务相对路径限定到 `/v2/bots/{botId}`，并拒绝越过所选 Bot 作用域。daemon 管理使用不带 WithBot、不配置 token 的客户端和明确 `/v2/*` 路径。客户端自动处理 JSON；HTTP >=400 返回 error，并保留 APIResult。`WithTokenFile` 只用于可选 Bot scoped 调用，不自动读取管理员凭据。所有 endpoint 必须是 loopback；远端 HTTPS 也不支持。

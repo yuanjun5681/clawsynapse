@@ -59,7 +59,7 @@ Daemon
 
 Role 在创建时确定，初期不提供普通配置编辑中的 Role 切换。更换 Agent Bot 的模型或 Harness 仍属于执行配置更新，不改变 Role 与 Bot 身份。
 
-Role 不是权限：Console 不天然拥有管理权限，Agent 不天然获得任务执行授权，Device 不允许任意对端控制。继续由现有凭据作用域、认证、信任与实际执行端检查决定授权。
+Role 不是权限：Agent 不天然获得任务执行授权，Device 不允许任意对端控制。网络业务继续由认证、信任与实际执行端检查决定授权。daemon 仅提供 loopback 管理，无 token 的本机请求可管理任何 Role 的 Bot；显式 Bot scoped token 仍限制调用范围，但本机任意进程都能省略 token，因此不构成本机进程隔离。
 
 ## 4. 配置表达
 

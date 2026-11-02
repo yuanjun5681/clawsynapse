@@ -21,6 +21,8 @@ title: "单 Daemon 多 Bot 设计"
 - 实际 CLI 迁移、导出和导入验证保留原 ID、消息游标、信任、备注、自定义密钥/传输目录及无法重建来源的旧文件，备份及恢复后的引用实体可读。OpenCode 完成事件兼容性问题已修复，真实执行终态已验证。
 - `go test ./...`、`go test -race ./...` 和 `go vet ./...` 已通过，自动化测试补充权限、状态、资源限制和恢复等边界行为。下文 17 项仍作为持续验收标准；不声称已对每个崩溃指令点、所有文件并发/回收交错、每个平台或其他 Harness 引擎执行穷举故障注入。
 
+上述为当时凭据模型下的历史验证，不代表当前匿名策略：现在仅允许 loopback，本机无 token 请求可以完整管理，显式 Bot scoped token 仍受范围限制；本机任意进程可省略 token，因此不是本机进程隔离。
+
 指导思想：
 
 > Bot 是对外的协作身份，Agent Harness 是 Agent 背后的执行环境。一个 daemon 可以托管多个 Bot；每个 Agent Bot 绑定一个 Harness，Console Bot 无 Harness。
@@ -42,7 +44,7 @@ title: "单 Daemon 多 Bot 设计"
 |---|---|---|
 | `internal/app/daemon.go`、`manager.go`、`app.go` | daemon 管理独立 Bot Runtime、生命周期、根目录锁与各 Bot 运行状态 | 共同进程故障域不变，不是强多租户安全沙箱 |
 | `internal/config/daemon.go` | `schemaVersion: 3` daemon 配置与显式 Role、可选 Harness 的 Bot 配置 | 不把身份作为可编辑配置字段；Role 普通更新不可切换 |
-| `internal/api/daemon.go`、`cmd/clawsynapse/bots.go` | 管理 token / Bot token 分域、显式 Bot 本地路径和 CLI 选择 | 不恢复旧 `/v1` 默认 Bot 转发 |
+| `internal/api/daemon.go`、`cmd/clawsynapse/bots.go` | 本机无 token 管理、可选 Bot scoped token、显式 Bot 本地路径和 CLI 选择 | 不恢复旧 `/v1` 默认 Bot 转发；不开放远程管理 |
 | `internal/app/app.go`、`internal/messaging`、`internal/natsbus` | 每 Bot 独立身份、连接、Registry、信任、journal、consumer、Binding Session 与工作目录 | 保留已有持久 journal/outbox 与 wire v2，不退回纯内存收件箱 |
 | `internal/blob`、`internal/transfer` | 共享不可变实体与每 Bot 的持久引用、传输记录、工作副本 | 内容去重不是信任或跨 Bot 文件授权；边界恢复仍需逐项验收 |
 | `internal/migration` | 显式离线旧布局迁移，以及包含引用实体的单 Bot 私有导出/导入 | 不自动迁移、不自动换钥；代码落地不等于所有迁移恢复用例已验证 |
@@ -126,7 +128,7 @@ Bot Manager 的管理 Interface 围绕 `Create`、`List`、`Update`、`Start`、
 
 ### 5.1 配置分层
 
-- **daemon 配置**：HTTP listener、TLS、管理凭据路径、数据根目录、日志、NATS 默认连接参数、全局资源预算及内容存储容量/回收策略。
+- **daemon 配置**：仅 loopback 的 HTTP listener、可选本机 TLS、数据根目录、日志、NATS 默认连接参数、全局资源预算及内容存储容量/回收策略。
 - **Bot 配置**：显式 Role、公开名、标签、信任策略、消息类型、文件限制、Bot 专属 NATS 凭据；只有 Agent 配置一个 Harness Binding、执行超时与执行预算。
 - **Bot 管理目录**：已注册身份、期望状态、当前配置修订号与归档状态；不保存运行时对象。
 
@@ -139,7 +141,6 @@ Bot Manager 的管理 Interface 围绕 `Create`、`List`、`Update`、`Start`、
 ```text
 ~/.clawsynapse/
   config.json                  daemon 配置
-  admin.token                  daemon 管理凭据
   bots.json                    持久 Bot 管理目录
   daemon.lock                  宿主独占锁
   blobs/
@@ -262,18 +263,18 @@ Bot 网络在线和 Harness 可执行分别报告。单个 Harness 探测失败�
 
 ## 8. 本地管理与访问权限
 
-### 8.1 两类凭据
+### 8.1 本机管理与可选作用域调用
 
-| 凭据 | 权限 |
+| 调用方式 | 权限 |
 |---|---|
-| daemon 管理凭据 | 创建、列出、配置和管理所有本地 Bot；可明确选择 Bot 进行管理操作 |
-| Bot 作用域凭据 | 只访问一个指定 Bot 的身份、对端、消息、请求、信任和传输操作；不能管理其他 Bot 或改变绑定 |
+| 本机无 token 请求 | 创建、列出、配置和管理所有本地 Bot；可明确选择 Bot 进行管理操作 |
+| 显式 Bot 作用域凭据 | 只访问一个指定 Bot 的身份、对端、消息、请求、信任和传输操作；不能列 catalog、管理生命周期、导入宿主文件、管理其他 Bot 或改变绑定 |
 
-每个凭据在服务器端绑定权限与 Bot ID，不能由请求正文自报作用域。现有全局管理 token 不分发给 Harness。Bot 凭据轮换只改变本地访问权限，不改变 Ed25519 身份。
+每个 Bot 凭据在服务器端绑定权限与 Bot ID，不能由请求正文自报作用域。错误 token 仍拒绝；无管理员凭据的生成、读取或分发。Bot 凭据轮换不改变 Ed25519 身份。
 
-HTTP listener 继续遵守默认 loopback、远程显式开启、TLS 和请求大小限制。配置读取须去除密钥与 token。日志中不能记录 Authorization。
+HTTP listener 强制 loopback，客户端拒绝所有远端地址（包括 HTTPS），本机 TLS 可选；保留请求大小限制。配置读取须去除密钥与 token。日志中不能记录 Authorization。跨设备 Bot 通信走 NATS，Bot 间身份、签名、认证和信任逻辑不变。
 
-同 OS 用户能够读取同一进程拥有的凭据文件，因此此处提供的是管理 Interface 的最小权限，不是对恶意同用户进程的安全隔离。
+任何本机进程均可省略 token 取得完整管理能力；scoped token 只是主动选择的细粒度调用约束，不是本机进程或多租户安全隔离。不要将 API 代理/转发给不可信调用方。
 
 ### 8.2 建议 HTTP Interface
 
@@ -339,7 +340,7 @@ TUI 区分本地 Bot 列表和当前 Bot 的远端 Peers；页面持续显示当
 3. 将旧全局配置拆为 daemon 配置和一个 Bot 配置。保留原身份、公开名、信任策略及 Adapter 绑定。
 4. 在暂存布局完整迁移信任、待审批、重放、备注、消息 journal/outbox、游标、执行 Session 和传输状态。接收文件经实际内容校验后导入共享内容存储，重复内容只导入一次，并为原 Bot 持久建立各自传输记录和授权引用。现有传输索引仅在内存中，迁移工具需结合可用记录、文件名与持久通知重建；无法确定的来源标为未知，不伪造授权历史，也不丢弃未能关联的文件。自定义目录与密钥路径必须纳入清单，不只迁移默认目录。检查持久绝对路径并明确重写映射；需维持 Harness 路径的文件转为该 Bot 的独立工作副本，不指向全局实体。单独迁移/导出 Bot 时，打包所有被引用实体并在目标端校验后重建引用。
 5. 原子发布新布局及管理目录，以迁移完成标记作为提交点。原数据备份不删除；提交前崩溃可重试，未提交的新目录不得启动。
-6. 生成新的管理员/Bot 作用域凭据，旧单 Bot token 不自动升级为新的全局管理权限。更新 Harness、CLI、TUI 与其他本地调用方的路径及凭据。
+6. 保留或建立 Bot 作用域凭据，不建立管理员凭据。更新 Harness、CLI、TUI 与其他本地调用方的 Bot 路径；本机管理直接无 token 调用。已有旧凭据文件保留，不以删除文件完成切换。
 7. 新 daemon 启动原 Bot，继续使用相同网络 ID、inbox 和 durable consumer。已接纳未完成任务遵循当前不确定恢复语义，不自动重做。
 
 本地 `/v1` 单 Bot 业务入口在切换时移除，不保留默认 Bot 转发兼容层；新旧配置不能混用。此次是本地管理契约切换，不要求远端 Bot 同时升级网络协议。

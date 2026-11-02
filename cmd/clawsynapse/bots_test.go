@@ -34,12 +34,12 @@ func TestResolveBotRequiresExplicitSelectionEvenWithOneBot(t *testing.T) {
 	}
 }
 
-func TestFullBotIDDoesNotRequireAdminList(t *testing.T) {
+func TestFullBotIDDoesNotRequireCatalogAccess(t *testing.T) {
 	client := &stubAPIClient{}
 	id := "n1-" + strings.Repeat("a", 32)
 	got, err := resolveBot(context.Background(), client, id)
 	if err != nil || got != id || client.endpoint != "" {
-		t.Fatalf("full identity resolution used admin privileges: %q %v", got, err)
+		t.Fatalf("full identity resolution requested the catalog: %q %v", got, err)
 	}
 }
 

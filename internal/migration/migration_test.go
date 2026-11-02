@@ -103,12 +103,16 @@ func TestMigrationPreservesIdentityCustomPathsAndState(t *testing.T) {
 	if state.SessionID != "engine-session" || state.CWD != filepath.Join(botRoot, "peers") {
 		t.Fatalf("session not preserved: %#v", state)
 	}
-	token, err := os.ReadFile(filepath.Join(target, "admin.token"))
-	if err != nil {
-		t.Fatal(err)
+	if _, err := os.Stat(filepath.Join(target, "admin.token")); !os.IsNotExist(err) {
+		t.Fatalf("migration created an administrator credential: %v", err)
 	}
-	if string(token) == "legacy-admin-must-not-upgrade" {
-		t.Fatal("old token gained administrator authority")
+	token, err := os.ReadFile(c.APITokenPath)
+	if err != nil || string(token) != "legacy-admin-must-not-upgrade" {
+		t.Fatalf("migration changed the original credential: %v", err)
+	}
+	token, err = os.ReadFile(filepath.Join(botRoot, "credentials", "api.token"))
+	if err != nil || len(bytes.TrimSpace(token)) < 32 || string(token) == "legacy-admin-must-not-upgrade" {
+		t.Fatalf("migration did not create an independent Bot credential: %v", err)
 	}
 	if _, err := config.LoadDaemon([]string{"--data-dir", target}); err != nil {
 		t.Fatal(err)
@@ -186,6 +190,14 @@ func TestCompleteBotExportImportAndDuplicateConflict(t *testing.T) {
 	}
 	if imported != botID {
 		t.Fatal("import changed identity")
+	}
+	if _, err := os.Stat(filepath.Join(destination, "admin.token")); !os.IsNotExist(err) {
+		t.Fatalf("import created administrator credential: %v", err)
+	}
+	sourceToken := mustRead(t, filepath.Join(source, "bots", botID, "credentials", "api.token"))
+	importedToken := mustRead(t, filepath.Join(destination, "bots", botID, "credentials", "api.token"))
+	if len(bytes.TrimSpace(importedToken)) < 32 || bytes.Equal(sourceToken, importedToken) {
+		t.Fatal("import did not rotate Bot scoped credential")
 	}
 	if _, err := Import(bundle, destination); err == nil {
 		t.Fatal("duplicate identity import succeeded")

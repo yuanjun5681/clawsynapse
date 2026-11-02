@@ -204,7 +204,6 @@ func writeInitConfig(cfg initConfig) error {
 func daemonInitConfig(cfg initConfig) config.DaemonConfig {
 	d := config.DefaultDaemonConfig()
 	d.DataDir = cfg.DataDir
-	d.AdminTokenPath = filepath.Join(cfg.DataDir, "admin.token")
 	d.NATSServers = splitCSVList(cfg.NATSServers)
 	d.LocalAPIAddr = cfg.LocalAPIAddr
 	d.LogLevel = cfg.LogLevel

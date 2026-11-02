@@ -92,18 +92,19 @@ Harness 内部的 Agent、subagent、模型和 Session 不自动成为网络联�
 
 - 给 Harness、Skill 或本地工具提供显式 Bot 作用域入口
 - daemon 管理使用 `/v2/health`、`/v2/bots`；业务使用 `/v2/bots/{botId}/...`
-- 管理凭据可管理本地 Bot；Bot 凭据仅能访问其绑定身份的业务操作，不能配置、启停或管理其他 Bot
+- 仅 loopback，无 token 的本机请求可管理全部 Bot；显式使用 Bot 凭据时仅能访问其绑定身份的业务操作，不能配置、启停或管理其他 Bot
 
 ## 本地调用边界
 
 Harness 通过所绑定 Bot 的本地 API 接入网络层：
 
-- 私钥不暴露给 Harness；给 Harness 的是 Bot 作用域凭据，不是 daemon 管理 token
+- 私钥不暴露给 Harness；可选提供 Bot 作用域凭据进行细粒度调用，没有 daemon 管理 token
 - CLI 业务命令必须显式指定 `--bot <botId>`，即使只有一个 Bot 也不隐式选择
 - 认证、验签、重放保护和业务状态按 Bot 隔离；同宿主不共享信任或文件授权
-- 同进程、同 OS 用户仍是共同故障域，不是强多租户安全沙箱
+- 任何本机进程都能省略 token 完整管理；scoped token 不构成本机进程隔离，多 Bot 不是强多租户安全沙箱。不要将 API 代理/转发给不可信调用方
 - 共享 `blobs/` 只按内容去重，授权来自该 Bot 的持久文件引用；知道摘要不代表可读取
 - Harness 获得按 Bot/Binding 隔离的可写工作副本，不获得全局实体路径；备份/导出须包含所有被引用实体，仅复制 Bot 目录不完整
+- 客户端拒绝远端 endpoint（包括 HTTPS）；跨设备 Bot 通信通过 NATS，Bot 间认证、信任与签名检查不变
 
 ## 对端目录
 

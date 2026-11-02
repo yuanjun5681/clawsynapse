@@ -130,13 +130,11 @@ func loadConfigValues(path string, required bool) (configValues, error) {
 		LogFormat:           strings.TrimSpace(cfg.LogFormat),
 	}
 	var securityFlags struct {
-		AllowRemoteAPI *bool `yaml:"allowRemoteAPI"`
-		Production     *bool `yaml:"production"`
+		Production *bool `yaml:"production"`
 	}
 	if err := yaml.Unmarshal(data, &securityFlags); err != nil {
 		return configValues{}, fmt.Errorf("parse security config: %w", err)
 	}
-	values.allowRemoteSet = securityFlags.AllowRemoteAPI != nil
 	values.productionSet = securityFlags.Production != nil
 	if cfg.LogRotateMaxSizeMB != nil {
 		values.LogRotateMaxSizeMB = *cfg.LogRotateMaxSizeMB
@@ -231,7 +229,6 @@ func loadValuesFromMap(values map[string]string) (configValues, error) {
 	cfg := configValues{
 		SecurityValues: SecurityValues{
 			APITokenPath:        strings.TrimSpace(values["API_TOKEN_PATH"]),
-			AllowRemoteAPI:      parseBoolValue(values["ALLOW_REMOTE_API"]),
 			APITLSCertFile:      strings.TrimSpace(values["API_TLS_CERT_FILE"]),
 			APITLSKeyFile:       strings.TrimSpace(values["API_TLS_KEY_FILE"]),
 			Production:          parseBoolValue(values["PRODUCTION"]),
@@ -240,7 +237,6 @@ func loadValuesFromMap(values map[string]string) (configValues, error) {
 			NATSTLSCertFile:     strings.TrimSpace(values["NATS_TLS_CERT_FILE"]),
 			NATSTLSKeyFile:      strings.TrimSpace(values["NATS_TLS_KEY_FILE"]),
 			NATSTLSServerName:   strings.TrimSpace(values["NATS_TLS_SERVER_NAME"]),
-			allowRemoteSet:      strings.TrimSpace(values["ALLOW_REMOTE_API"]) != "",
 			productionSet:       strings.TrimSpace(values["PRODUCTION"]) != "",
 		},
 		NATSServers:         splitCSV(values["NATS_SERVERS"]),

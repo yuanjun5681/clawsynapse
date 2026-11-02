@@ -106,7 +106,6 @@ class Harness:
         root.mkdir(mode=0o700)
         config = {"schemaVersion": 3, "dataDir": str(root),
                   "localApiAddr": f"127.0.0.1:{free_port()}",
-                  "adminTokenPath": str(root / "admin.token"),
                   "natsServers": [f"nats://127.0.0.1:{self.env['CLAWSYNAPSE_E2E_NATS_PORT']}"],
                   "maxConcurrent": 2, "logLevel": "debug", "logFormat": "json"}
         path = root / "config.json"
@@ -123,18 +122,18 @@ class Harness:
         assert not any(arg.startswith("--auto") for arg in command)
         self.processes[name] = subprocess.Popen(command, cwd=spec["root"], env=self.env,
                                                  stdout=log, stderr=log, start_new_session=True)
-        self.eventually(lambda: (spec["root"] / "admin.token").exists() and self.api(name, "GET", "/v2/health"),
+        self.eventually(lambda: self.api(name, "GET", "/v2/health"),
                         f"daemon {name} health")
 
-    def token(self, daemon, bot=None):
+    def token(self, daemon, bot):
         root = self.daemons[daemon]["root"]
-        path = root / "admin.token" if bot is None else root / "bots" / bot / "credentials" / "api.token"
+        path = root / "bots" / bot / "credentials" / "api.token"
         return path.read_text().strip()
 
-    def api(self, daemon, method, path, body=None, token="admin", raw=False, expected=200):
+    def api(self, daemon, method, path, body=None, token=None, raw=False, expected=200):
         headers = {"Content-Type": "application/json"}
         if token is not None:
-            headers["Authorization"] = "Bearer " + (self.token(daemon) if token == "admin" else token)
+            headers["Authorization"] = "Bearer " + token
         request = urllib.request.Request(self.daemons[daemon]["url"] + path, method=method,
                                          data=None if body is None else json.dumps(body).encode(), headers=headers)
         try:
@@ -155,8 +154,7 @@ class Harness:
         return self.api(daemon, method, f"/v2/bots/{bot}/{suffix}", body, **kwargs)
 
     def cli(self, daemon, *args, bot=None, check=True):
-        command = [self.args.cli_bin, "--api-addr", self.daemons[daemon]["url"], "--token-file",
-                   str(self.daemons[daemon]["root"] / "admin.token"), "--json"]
+        command = [self.args.cli_bin, "--api-addr", self.daemons[daemon]["url"], "--json"]
         if bot is not None:
             command += ["--bot", bot]
         return self.command(*command, *args, check=check, timeout=25)
@@ -290,7 +288,9 @@ class Harness:
         assert self.api("main", "GET", "/v2/health")["version"]
         self.passed("independent A/B identities, scoped credentials, and daemon version")
 
-        self.api("main", "GET", "/v2/health", token=None, expected=401)
+        self.api("main", "GET", "/v2/health", token=None)
+        self.api("main", "GET", "/v2/bots", token=None)
+        self.api("main", "GET", "/v2/health", token="invalid-token", expected=401)
         scoped = self.token("main", A)
         self.api("main", "GET", "/v2/bots", token=scoped, expected=403)
         self.api("main", "GET", f"/v2/bots/{B}", token=scoped, expected=403)
@@ -300,7 +300,7 @@ class Harness:
         assert self.cli("main", "health", check=False).returncode != 0
         result = json.loads(self.cli("main", "health", bot=A[:12]).stdout)
         assert result["data"]["self"]["botId"] == A
-        self.passed("anonymous and cross-Bot access denied; CLI requires explicit unambiguous Bot")
+        self.passed("anonymous local management; invalid and scoped cross-Bot access denied; explicit CLI Bot selection")
 
         self.trust("remote", R, "main", A)
         self.eventually(lambda: self.peer("main", B, R), "B discovers external R")

@@ -19,7 +19,6 @@ func testDaemon(t *testing.T) *App {
 	t.Helper()
 	d := config.DefaultDaemonConfig()
 	d.DataDir = t.TempDir()
-	d.AdminTokenPath = filepath.Join(d.DataDir, "admin.token")
 	d.LocalAPIAddr = "127.0.0.1:0"
 	d.NATSServers = []string{"nats://127.0.0.1:1"}
 	a, err := NewDaemon(d, "test-version")
@@ -55,18 +54,14 @@ func request(t *testing.T, a *App, method, path, token string, body any) *httpte
 		}
 	}
 	r := httptest.NewRequest(method, path, bytes.NewReader(raw))
-	r.Header.Set("Authorization", "Bearer "+token)
+	r.RemoteAddr = "127.0.0.1:12345"
+	r.Host = "127.0.0.1:18080"
+	if token != "" {
+		r.Header.Set("Authorization", "Bearer "+token)
+	}
 	w := httptest.NewRecorder()
 	a.api.Handler().ServeHTTP(w, r)
 	return w
-}
-func adminToken(t *testing.T, a *App) string {
-	t.Helper()
-	token, err := loadPrivateToken(a.manager.cfg.AdminTokenPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return token
 }
 func botToken(t *testing.T, a *App, id string) string {
 	t.Helper()
@@ -105,10 +100,12 @@ func TestBotCreationIdentityAndCredentialIsolation(t *testing.T) {
 	requireStatus(t, request(t, a, "POST", "/v2/bots/"+first+"/transfer/import", token, map[string]string{"filePath": "/etc/passwd"}), 403)
 	requireStatus(t, request(t, a, "GET", "/v2/bots/"+first+"/messages", token, nil), 200)
 	requireStatus(t, request(t, a, "POST", "/v2/bots/"+first+"/publish", token, map[string]string{"targetBot": second, "message": "stopped"}), 409)
-	admin := adminToken(t, a)
-	requireStatus(t, request(t, a, "GET", "/v2/bots/n1-missing", admin, nil), 404)
-	requireStatus(t, request(t, a, "GET", "/v1/peers", admin, nil), 404)
-	requireStatus(t, request(t, a, "POST", "/v2/publish", admin, map[string]string{"targetBot": second, "message": "unselected"}), 404)
+	requireStatus(t, request(t, a, "GET", "/v2/health", "", nil), 200)
+	requireStatus(t, request(t, a, "GET", "/v2/bots", "", nil), 200)
+	requireStatus(t, request(t, a, "GET", "/v2/health", "invalid-token", nil), 401)
+	requireStatus(t, request(t, a, "GET", "/v2/bots/n1-missing", "", nil), 404)
+	requireStatus(t, request(t, a, "GET", "/v1/peers", "", nil), 404)
+	requireStatus(t, request(t, a, "POST", "/v2/publish", "", map[string]string{"targetBot": second, "message": "unselected"}), 404)
 	if _, err := NewDaemon(a.manager.cfg, "test"); err == nil {
 		t.Fatal("second daemon acquired same root")
 	}
@@ -198,7 +195,7 @@ func TestCorruptBotFailsWithoutReplacingIdentityOrOtherBotState(t *testing.T) {
 		t.Fatal("failed start replaced identity")
 	}
 	requireStatus(t, request(t, a, "GET", "/v2/bots/"+good+"/messages", botToken(t, a, good), nil), 200)
-	requireStatus(t, request(t, a, "GET", "/v2/bots", adminToken(t, a), nil), 200)
+	requireStatus(t, request(t, a, "GET", "/v2/bots", "", nil), 200)
 	other, _ := a.manager.Info(good)
 	if other.State != "stopped" {
 		t.Fatal("another Bot state changed")
@@ -225,7 +222,6 @@ func TestManagerReturnsIndependentConfiguration(t *testing.T) {
 
 func TestManagementCreateRequiresRoleAndApplicableFields(t *testing.T) {
 	a := testDaemon(t)
-	admin := adminToken(t, a)
 	for _, body := range []map[string]any{
 		{"displayName": "missing"},
 		{"displayName": "empty", "role": ""},
@@ -240,7 +236,7 @@ func TestManagementCreateRequiresRoleAndApplicableFields(t *testing.T) {
 		{"displayName": "no adapter", "role": "agent", "harness": map[string]any{}},
 		{"displayName": "legacy", "role": "agent", "harness": map[string]any{"adapter": "console"}},
 	} {
-		requireStatus(t, request(t, a, "POST", "/v2/bots", admin, body), 400)
+		requireStatus(t, request(t, a, "POST", "/v2/bots", "", body), 400)
 	}
 	if len(a.manager.List()) != 0 {
 		t.Fatal("invalid creation allocated a Bot identity")
@@ -249,7 +245,7 @@ func TestManagementCreateRequiresRoleAndApplicableFields(t *testing.T) {
 		{"displayName": "human", "role": "console"},
 		{"displayName": "executor", "role": "agent", "harness": map[string]any{"adapter": "default"}},
 	} {
-		response := request(t, a, "POST", "/v2/bots", admin, body)
+		response := request(t, a, "POST", "/v2/bots", "", body)
 		requireStatus(t, response, 201)
 		var result types.APIResult
 		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
@@ -261,7 +257,7 @@ func TestManagementCreateRequiresRoleAndApplicableFields(t *testing.T) {
 		}
 		id := bot["botId"].(string)
 		// Defaults for new Bots must not become an implicit update CAS token.
-		requireStatus(t, request(t, a, "PUT", "/v2/bots/"+id+"/config", admin, body), 400)
+		requireStatus(t, request(t, a, "PUT", "/v2/bots/"+id+"/config", "", body), 400)
 		health := request(t, a, "GET", "/v2/bots/"+id+"/health", botToken(t, a, id), nil)
 		requireStatus(t, health, 200)
 		if err := json.Unmarshal(health.Body.Bytes(), &result); err != nil {

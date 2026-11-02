@@ -29,10 +29,8 @@ type DaemonConfig struct {
 	SchemaVersion       int      `json:"schemaVersion"`
 	DataDir             string   `json:"dataDir"`
 	LocalAPIAddr        string   `json:"localApiAddr"`
-	AdminTokenPath      string   `json:"adminTokenPath"`
 	APITLSCertFile      string   `json:"apiTLSCertFile,omitempty"`
 	APITLSKeyFile       string   `json:"apiTLSKeyFile,omitempty"`
-	AllowRemoteAPI      bool     `json:"allowRemoteAPI"`
 	NATSServers         []string `json:"natsServers"`
 	NATSCredentialsFile string   `json:"natsCredentialsFile,omitempty"`
 	NATSTLSCAFile       string   `json:"natsTLSCAFile,omitempty"`
@@ -109,7 +107,7 @@ func (b BotConfig) MarshalJSON() ([]byte, error) {
 func DefaultDaemonConfig() DaemonConfig {
 	home, _ := os.UserHomeDir()
 	root := filepath.Join(home, ".clawsynapse")
-	return DaemonConfig{SchemaVersion: DaemonSchemaVersion, DataDir: root, LocalAPIAddr: defaultLocalAPIAddr, AdminTokenPath: filepath.Join(root, "admin.token"), NATSServers: []string{defaultNATSServers}, LogLevel: defaultLogLevel, LogFormat: defaultLogFormat, LogRotateMaxSizeMB: defaultLogRotateMaxSizeMB, LogRotateMaxBackups: defaultLogRotateMaxBackups, LogRotateMaxAgeDays: defaultLogRotateMaxAgeDays, MaxConcurrent: 8, BlobMaxBytes: 10 << 30, TempMaxBytes: 1 << 30, WorkspaceMaxBytes: 10 << 30}
+	return DaemonConfig{SchemaVersion: DaemonSchemaVersion, DataDir: root, LocalAPIAddr: defaultLocalAPIAddr, NATSServers: []string{defaultNATSServers}, LogLevel: defaultLogLevel, LogFormat: defaultLogFormat, LogRotateMaxSizeMB: defaultLogRotateMaxSizeMB, LogRotateMaxBackups: defaultLogRotateMaxBackups, LogRotateMaxAgeDays: defaultLogRotateMaxAgeDays, MaxConcurrent: 8, BlobMaxBytes: 10 << 30, TempMaxBytes: 1 << 30, WorkspaceMaxBytes: 10 << 30}
 }
 
 // DefaultBotConfig returns usable Agent defaults for in-process callers.
@@ -212,6 +210,29 @@ func supportedAgentAdapter(adapter string) bool {
 	}
 }
 
+// DecodePersistedDaemon imports daemon JSON written before local management
+// stopped using administrator tokens and remote-listener opt-ins. Only those
+// obsolete fields are discarded; strict decoding still rejects other mistakes.
+// Loading does not rewrite files or alter the configured listener address.
+func DecodePersistedDaemon(data []byte, d *DaemonConfig) error {
+	var fields map[string]json.RawMessage
+	if err := protocol.DecodeStrict(data, &fields); err != nil {
+		return err
+	}
+	_, hadToken := fields["adminTokenPath"]
+	_, hadRemote := fields["allowRemoteAPI"]
+	if !hadToken && !hadRemote {
+		return protocol.DecodeStrict(data, d)
+	}
+	delete(fields, "adminTokenPath")
+	delete(fields, "allowRemoteAPI")
+	cleaned, err := json.Marshal(fields)
+	if err != nil {
+		return err
+	}
+	return protocol.DecodeStrict(cleaned, d)
+}
+
 func ValidateDaemon(d DaemonConfig) error {
 	if d.SchemaVersion != DaemonSchemaVersion {
 		return errors.New("unsupported daemon schemaVersion; explicit legacy migration is required")
@@ -222,10 +243,7 @@ func ValidateDaemon(d DaemonConfig) error {
 	if err := store.CheckPath(d.DataDir); err != nil {
 		return err
 	}
-	if d.AdminTokenPath == "" {
-		return errors.New("adminTokenPath is required")
-	}
-	if err := ValidateAPIListener(d.LocalAPIAddr, d.AllowRemoteAPI, d.APITLSCertFile, d.APITLSKeyFile); err != nil {
+	if err := ValidateAPIListener(d.LocalAPIAddr, d.APITLSCertFile, d.APITLSKeyFile); err != nil {
 		return err
 	}
 	if len(d.NATSServers) == 0 {
@@ -253,7 +271,7 @@ func ValidateDaemon(d DaemonConfig) error {
 	if err := ValidateSecurity(c); err != nil {
 		return err
 	}
-	for _, p := range []string{d.AdminTokenPath, d.APITLSCertFile, d.APITLSKeyFile, d.NATSCredentialsFile, d.NATSTLSCAFile, d.NATSTLSCertFile, d.NATSTLSKeyFile, d.LogFilePath} {
+	for _, p := range []string{d.APITLSCertFile, d.APITLSKeyFile, d.NATSCredentialsFile, d.NATSTLSCAFile, d.NATSTLSCertFile, d.NATSTLSKeyFile, d.LogFilePath} {
 		if p != "" {
 			if !filepath.IsAbs(p) {
 				return errors.New("daemon file paths must be absolute")
@@ -263,7 +281,7 @@ func ValidateDaemon(d DaemonConfig) error {
 			}
 		}
 	}
-	for _, p := range []string{d.AdminTokenPath, d.APITLSKeyFile, d.NATSCredentialsFile, d.NATSTLSKeyFile} {
+	for _, p := range []string{d.APITLSKeyFile, d.NATSCredentialsFile, d.NATSTLSKeyFile} {
 		if err := validatePrivateFile(p); err != nil {
 			return err
 		}
@@ -391,7 +409,7 @@ func RuntimeConfig(d DaemonConfig, b BotConfig, id string) Config {
 	if b.Harness != nil {
 		h = *b.Harness
 	}
-	return Config{Role: b.Role, APITokenPath: filepath.Join(root, "credentials", "api.token"), AllowRemoteAPI: d.AllowRemoteAPI, APITLSCertFile: d.APITLSCertFile, APITLSKeyFile: d.APITLSKeyFile, Production: d.Production, NATSCredentialsFile: prefer(b.NATSCredentialsFile, d.NATSCredentialsFile), NATSTLSCAFile: prefer(b.NATSTLSCAFile, d.NATSTLSCAFile), NATSTLSCertFile: prefer(b.NATSTLSCertFile, d.NATSTLSCertFile), NATSTLSKeyFile: prefer(b.NATSTLSKeyFile, d.NATSTLSKeyFile), NATSTLSServerName: prefer(b.NATSTLSServerName, d.NATSTLSServerName), NATSServers: cloneStrings(d.NATSServers), LocalAPIAddr: d.LocalAPIAddr, DataDir: root, IdentityKeyPath: filepath.Join(root, "credentials", "identity.key"), IdentityPubPath: filepath.Join(root, "credentials", "identity.pub"), HeartbeatInterval: b.HeartbeatInterval, AnnounceTTL: b.AnnounceTTL, AgentProduct: b.AgentProduct, AgentVersion: b.AgentVersion, DisplayName: b.DisplayName, Labels: cloneLabels(b.Labels), TrustMode: b.TrustMode, TrustAutoApprove: b.TrustAutoApprove, AgentAdapter: h.Adapter, AgentAllowedIDs: cloneStrings(h.AllowedAgentIDs), AgentAdapterTimeout: h.Timeout, WebhookURL: h.WebhookURL, LogLevel: d.LogLevel, LogFormat: d.LogFormat, LogFilePath: d.LogFilePath, LogRotateMaxSizeMB: d.LogRotateMaxSizeMB, LogRotateMaxBackups: d.LogRotateMaxBackups, LogRotateMaxAgeDays: d.LogRotateMaxAgeDays, LogRotateCompress: d.LogRotateCompress, LogAddSource: d.LogAddSource, DeliverablePrefixes: cloneStrings(b.DeliverablePrefixes), TransferDir: filepath.Join(root, "transfers"), TransferMaxFileSize: b.TransferMaxFileSize, TransferTTL: b.TransferTTL}
+	return Config{Role: b.Role, APITokenPath: filepath.Join(root, "credentials", "api.token"), APITLSCertFile: d.APITLSCertFile, APITLSKeyFile: d.APITLSKeyFile, Production: d.Production, NATSCredentialsFile: prefer(b.NATSCredentialsFile, d.NATSCredentialsFile), NATSTLSCAFile: prefer(b.NATSTLSCAFile, d.NATSTLSCAFile), NATSTLSCertFile: prefer(b.NATSTLSCertFile, d.NATSTLSCertFile), NATSTLSKeyFile: prefer(b.NATSTLSKeyFile, d.NATSTLSKeyFile), NATSTLSServerName: prefer(b.NATSTLSServerName, d.NATSTLSServerName), NATSServers: cloneStrings(d.NATSServers), LocalAPIAddr: d.LocalAPIAddr, DataDir: root, IdentityKeyPath: filepath.Join(root, "credentials", "identity.key"), IdentityPubPath: filepath.Join(root, "credentials", "identity.pub"), HeartbeatInterval: b.HeartbeatInterval, AnnounceTTL: b.AnnounceTTL, AgentProduct: b.AgentProduct, AgentVersion: b.AgentVersion, DisplayName: b.DisplayName, Labels: cloneLabels(b.Labels), TrustMode: b.TrustMode, TrustAutoApprove: b.TrustAutoApprove, AgentAdapter: h.Adapter, AgentAllowedIDs: cloneStrings(h.AllowedAgentIDs), AgentAdapterTimeout: h.Timeout, WebhookURL: h.WebhookURL, LogLevel: d.LogLevel, LogFormat: d.LogFormat, LogFilePath: d.LogFilePath, LogRotateMaxSizeMB: d.LogRotateMaxSizeMB, LogRotateMaxBackups: d.LogRotateMaxBackups, LogRotateMaxAgeDays: d.LogRotateMaxAgeDays, LogRotateCompress: d.LogRotateCompress, LogAddSource: d.LogAddSource, DeliverablePrefixes: cloneStrings(b.DeliverablePrefixes), TransferDir: filepath.Join(root, "transfers"), TransferMaxFileSize: b.TransferMaxFileSize, TransferTTL: b.TransferTTL}
 }
 
 // LoadDaemon never reads a legacy config or Bot environment settings.
@@ -456,14 +474,14 @@ func LoadDaemon(args []string) (DaemonConfig, error) {
 		if json.Unmarshal(data, &header) != nil || header.SchemaVersion != DaemonSchemaVersion {
 			return d, errors.New("legacy or incompatible config: run explicit migration")
 		}
-		if err := DecodeStrict(data, &d); err != nil {
+		if err := DecodePersistedDaemon(data, &d); err != nil {
 			return d, fmt.Errorf("daemon config: %w", err)
 		}
 	} else if explicit || !errors.Is(err, os.ErrNotExist) {
 		return d, err
 	}
 	// Only explicitly daemon-scoped environment variables are read.
-	stringsEnv := map[string]*string{"DATA_DIR": &d.DataDir, "LOCAL_API_ADDR": &d.LocalAPIAddr, "ADMIN_TOKEN_PATH": &d.AdminTokenPath, "API_TLS_CERT_FILE": &d.APITLSCertFile, "API_TLS_KEY_FILE": &d.APITLSKeyFile, "NATS_CREDENTIALS_FILE": &d.NATSCredentialsFile, "NATS_TLS_CA_FILE": &d.NATSTLSCAFile, "NATS_TLS_CERT_FILE": &d.NATSTLSCertFile, "NATS_TLS_KEY_FILE": &d.NATSTLSKeyFile, "NATS_TLS_SERVER_NAME": &d.NATSTLSServerName, "LOG_LEVEL": &d.LogLevel, "LOG_FORMAT": &d.LogFormat, "LOG_FILE_PATH": &d.LogFilePath}
+	stringsEnv := map[string]*string{"DATA_DIR": &d.DataDir, "LOCAL_API_ADDR": &d.LocalAPIAddr, "API_TLS_CERT_FILE": &d.APITLSCertFile, "API_TLS_KEY_FILE": &d.APITLSKeyFile, "NATS_CREDENTIALS_FILE": &d.NATSCredentialsFile, "NATS_TLS_CA_FILE": &d.NATSTLSCAFile, "NATS_TLS_CERT_FILE": &d.NATSTLSCertFile, "NATS_TLS_KEY_FILE": &d.NATSTLSKeyFile, "NATS_TLS_SERVER_NAME": &d.NATSTLSServerName, "LOG_LEVEL": &d.LogLevel, "LOG_FORMAT": &d.LogFormat, "LOG_FILE_PATH": &d.LogFilePath}
 	for name, dst := range stringsEnv {
 		if v, ok := os.LookupEnv("CLAWSYNAPSE_" + name); ok {
 			*dst = v
@@ -472,7 +490,7 @@ func LoadDaemon(args []string) (DaemonConfig, error) {
 	if v, ok := os.LookupEnv("CLAWSYNAPSE_NATS_SERVERS"); ok {
 		d.NATSServers = splitCSV(v)
 	}
-	for name, dst := range map[string]*bool{"ALLOW_REMOTE_API": &d.AllowRemoteAPI, "PRODUCTION": &d.Production} {
+	for name, dst := range map[string]*bool{"PRODUCTION": &d.Production} {
 		if v, ok := os.LookupEnv("CLAWSYNAPSE_" + name); ok {
 			parsed, e := strconv.ParseBool(v)
 			if e != nil {
@@ -484,12 +502,11 @@ func LoadDaemon(args []string) (DaemonConfig, error) {
 	fs := flag.NewFlagSet("clawsynapsed", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&configPath, "config", configPath, "v3 daemon JSON config")
-	for name, dst := range map[string]*string{"data-dir": &d.DataDir, "local-api-addr": &d.LocalAPIAddr, "admin-token-path": &d.AdminTokenPath, "api-tls-cert-file": &d.APITLSCertFile, "api-tls-key-file": &d.APITLSKeyFile, "nats-credentials-file": &d.NATSCredentialsFile, "nats-tls-ca-file": &d.NATSTLSCAFile, "nats-tls-cert-file": &d.NATSTLSCertFile, "nats-tls-key-file": &d.NATSTLSKeyFile, "nats-tls-server-name": &d.NATSTLSServerName, "log-level": &d.LogLevel, "log-format": &d.LogFormat, "log-file-path": &d.LogFilePath} {
+	for name, dst := range map[string]*string{"data-dir": &d.DataDir, "local-api-addr": &d.LocalAPIAddr, "api-tls-cert-file": &d.APITLSCertFile, "api-tls-key-file": &d.APITLSKeyFile, "nats-credentials-file": &d.NATSCredentialsFile, "nats-tls-ca-file": &d.NATSTLSCAFile, "nats-tls-cert-file": &d.NATSTLSCertFile, "nats-tls-key-file": &d.NATSTLSKeyFile, "nats-tls-server-name": &d.NATSTLSServerName, "log-level": &d.LogLevel, "log-format": &d.LogFormat, "log-file-path": &d.LogFilePath} {
 		fs.StringVar(dst, name, *dst, name)
 	}
 	servers := strings.Join(d.NATSServers, ",")
 	fs.StringVar(&servers, "nats-servers", servers, "NATS URLs")
-	fs.BoolVar(&d.AllowRemoteAPI, "allow-remote-api", d.AllowRemoteAPI, "allow remote HTTPS management")
 	fs.BoolVar(&d.Production, "production", d.Production, "require secure NATS")
 	fs.BoolVar(&d.CheckConfig, "check-config", false, "print validated configuration without writing files")
 	fs.BoolVar(&d.LogAddSource, "log-add-source", d.LogAddSource, "include source")
@@ -509,7 +526,6 @@ func LoadDaemon(args []string) (DaemonConfig, error) {
 	}
 	d.NATSServers = splitCSV(servers)
 	d.ConfigPath = configPath
-	originalDefault := DefaultDaemonConfig().AdminTokenPath
 	d.DataDir, err = expandPath(d.DataDir)
 	if err != nil {
 		return d, err
@@ -518,10 +534,7 @@ func LoadDaemon(args []string) (DaemonConfig, error) {
 	if err != nil {
 		return d, err
 	}
-	if d.AdminTokenPath == "" || d.AdminTokenPath == originalDefault {
-		d.AdminTokenPath = filepath.Join(d.DataDir, "admin.token")
-	}
-	for _, p := range []*string{&d.AdminTokenPath, &d.APITLSCertFile, &d.APITLSKeyFile, &d.NATSCredentialsFile, &d.NATSTLSCAFile, &d.NATSTLSCertFile, &d.NATSTLSKeyFile, &d.LogFilePath} {
+	for _, p := range []*string{&d.APITLSCertFile, &d.APITLSKeyFile, &d.NATSCredentialsFile, &d.NATSTLSCAFile, &d.NATSTLSCertFile, &d.NATSTLSKeyFile, &d.LogFilePath} {
 		if *p != "" {
 			*p, err = expandPath(*p)
 			if err != nil {

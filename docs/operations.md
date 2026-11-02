@@ -49,7 +49,7 @@ daemon 共享一个 HTTP listener、catalog、内容存储、日志和全局执�
 
 start/stop 先持久化 desiredState，再异步转换 starting/running/stopping/stopped；API 202 只是接纳，需轮询。显式 stop 持久化 stopped；daemon 退出保留原 desiredState，重启恢复期望 running 的 Bot。archive 必须等待停止，保留全部状态及文件引用，restore 回 stopped，不自动 start。管理接口及 revision CAS 见 [api.md](api.md)。
 
-桌面工作区使用 admin `POST /v2/workspaces/{workspaceId}/binding`，一次 catalog 原子写入同时注册新 Console 和工作区；重试只交付原 Bot 的 scoped token，不替换普通既有身份。对应 Bot 私有 `workspace-binding.json` 与 catalog 交叉校验。绑定失效/归档、密钥或 api.token 丢失均 fail closed；恢复原 0600 文件与一致性 catalog 后重试，不删除目录“重新初始化”。若创建在 catalog 提交前中断，未注册目录保留为 recoveryIssues，匹配的工作区标记阻止重试另建身份；先人工对照一致性备份恢复原认领，不能按 displayName 猜测接管。
+桌面工作区通过无 token 的本机请求 `POST /v2/workspaces/{workspaceId}/binding`，一次 catalog 原子写入同时注册新 Console 和工作区；重试只交付原 Bot 的 scoped token，不替换普通既有身份。对应 Bot 私有 `workspace-binding.json` 与 catalog 交叉校验。绑定失效/归档、密钥或 api.token 丢失均 fail closed；恢复原 0600 文件与一致性 catalog 后重试，不删除目录“重新初始化”。若创建在 catalog 提交前中断，未注册目录保留为 recoveryIssues，匹配的工作区标记阻止重试另建身份；先人工对照一致性备份恢复原认领，不能按 displayName 猜测接管。
 
 ## 配置：daemon config.json + 每 Bot config.json
 
@@ -62,8 +62,6 @@ daemon JSON 字段（路径为部署机器实际绝对路径，示例 `/private/
   "schemaVersion": 3,
   "dataDir": "/private/clawsynapse",
   "localApiAddr": "127.0.0.1:18080",
-  "adminTokenPath": "/private/clawsynapse/admin.token",
-  "allowRemoteAPI": false,
   "natsServers": ["nats://127.0.0.1:4222"],
   "production": false,
   "logLevel": "info",
@@ -81,11 +79,13 @@ daemon JSON 字段（路径为部署机器实际绝对路径，示例 `/private/
 }
 ```
 
-可选连接字段：`apiTLSCertFile`, `apiTLSKeyFile`, `natsCredentialsFile`, `natsTLSCAFile`, `natsTLSCertFile`, `natsTLSKeyFile`, `natsTLSServerName`。这些是路径/服务器名而非 token 内容。daemon 专属环境支持 `CLAWSYNAPSE_DATA_DIR`, `CLAWSYNAPSE_LOCAL_API_ADDR`, `CLAWSYNAPSE_ADMIN_TOKEN_PATH`, `CLAWSYNAPSE_API_TLS_CERT_FILE`, `CLAWSYNAPSE_API_TLS_KEY_FILE`, `CLAWSYNAPSE_ALLOW_REMOTE_API`, `CLAWSYNAPSE_NATS_SERVERS`, `CLAWSYNAPSE_NATS_CREDENTIALS_FILE`, `CLAWSYNAPSE_NATS_TLS_CA_FILE`, `CLAWSYNAPSE_NATS_TLS_CERT_FILE`, `CLAWSYNAPSE_NATS_TLS_KEY_FILE`, `CLAWSYNAPSE_NATS_TLS_SERVER_NAME`, `CLAWSYNAPSE_PRODUCTION`, `CLAWSYNAPSE_LOG_LEVEL`, `CLAWSYNAPSE_LOG_FORMAT`, `CLAWSYNAPSE_LOG_FILE_PATH`。预算/轮转其余值通过 JSON 或对应 daemon CLI flags 配置。
+可选连接字段：`apiTLSCertFile`, `apiTLSKeyFile`（仅本机可选 TLS）, `natsCredentialsFile`, `natsTLSCAFile`, `natsTLSCertFile`, `natsTLSKeyFile`, `natsTLSServerName`。这些是路径/服务器名而非 token 内容。daemon 专属环境支持 `CLAWSYNAPSE_DATA_DIR`, `CLAWSYNAPSE_LOCAL_API_ADDR`, `CLAWSYNAPSE_API_TLS_CERT_FILE`, `CLAWSYNAPSE_API_TLS_KEY_FILE`, `CLAWSYNAPSE_NATS_SERVERS`, `CLAWSYNAPSE_NATS_CREDENTIALS_FILE`, `CLAWSYNAPSE_NATS_TLS_CA_FILE`, `CLAWSYNAPSE_NATS_TLS_CERT_FILE`, `CLAWSYNAPSE_NATS_TLS_KEY_FILE`, `CLAWSYNAPSE_NATS_TLS_SERVER_NAME`, `CLAWSYNAPSE_PRODUCTION`, `CLAWSYNAPSE_LOG_LEVEL`, `CLAWSYNAPSE_LOG_FORMAT`, `CLAWSYNAPSE_LOG_FILE_PATH`。预算/轮转其余值通过 JSON 或对应 daemon CLI flags 配置。
 
 `--check-config` 严格校验并打印 daemon 配置，不生成身份/凭据。未知字段、旧 schema、无效路径、安全设置失败会拒绝启动。dataDir 必须为绝对非根目录；敏感凭据为私有常规文件，目录 0700，文件 0600。禁止通过 symlink/路径逃逸访问其他 Bot。
 
-BotConfig 保存在 `bots/{botId}/config.json`；通过 admin API/CLI create/config 管理，身份不允许手工指定。Role 在创建时必须显式提供，普通完整配置更新不能切换 Role。以下是 Agent 配置字段示意（revision/bindingRevision 由 GET 返回后保留；新建不必提供 bindingRevision）：
+已有 schemaVersion 3 配置中的旧管理员凭据路径和远程管理开关在读取时移除，不参与运行配置；读取不重写文件，后续正常保存不再输出旧字段。旧凭据文件和所有 Bot 身份/状态保留，不需要手工删除。已有非 loopback 地址仍校验失败，不会静默改写成本机地址；请通过正常配置流程选择 loopback。此兼容读取不替代旧 schema 的显式离线迁移。
+
+BotConfig 保存在 `bots/{botId}/config.json`；通过无 token 的本机 API/CLI create/config 管理，身份不允许手工指定。Role 在创建时必须显式提供，普通完整配置更新不能切换 Role。以下是 Agent 配置字段示意（revision/bindingRevision 由 GET 返回后保留；新建不必提供 bindingRevision）：
 
 ```json
 {
@@ -125,9 +125,9 @@ displayName、labels、产品/版本写入签名 announce，agentVersion 为空�
 
 ### 凭据与生产连接
 
-首次 daemon 启动创建 `admin.token`；每个 Bot 创建自己的 `credentials/api.token`。admin 能管理全部 Bot；scoped token 只能访问自己的业务，不能列 catalog、配置/生命周期或导入宿主文件。自定义 API endpoint 必须显式配对应 token。不要把 token 放进 URL、日志或仓库。
+本机管理无需 token，daemon 不生成或读取管理员凭据。每个 Bot 仍创建自己的 `credentials/api.token`；显式使用 scoped token 时，只能访问自己的业务，不能列 catalog、配置/生命周期或导入宿主文件。它是可选细粒度调用约束，不是本机进程隔离：任何本机进程可省略 token 管理全部 Bot。错误 token 仍被拒绝。不要把 Bot token 放进 URL、日志或仓库，也不要把本机 API 代理/转发给不可信调用方。
 
-非 loopback API 要求 allowRemoteAPI=true 与 API TLS 证书/私钥，客户端信任 CA，不提供跳过验证或明文回退。production 要求 TLS NATS 与身份凭据，拒绝 open 信任、URL 内嵌凭据；可用 credentials 或客户端证书。NATS account/subject ACL 仍由 server/JWT 管理端设置，客户端 TLS 不自动建立隔离。按各 Bot 授权 inbox、必要 discovery/auth/trust 和 ObjectStore API，不应全局放开 `$JS.>`。
+daemon 仅允许 loopback listener，客户端也拒绝非 loopback endpoint（包括 HTTPS），没有远程管理开关。本机可选 TLS 不改变该限制。跨设备 Bot 通信使用 NATS，Bot 间身份、签名、认证和信任检查不变。production 要求 TLS NATS 与身份凭据，拒绝 open 信任、URL 内嵌凭据；可用 credentials 或客户端证书。NATS account/subject ACL 仍由 server/JWT 管理端设置，客户端 TLS 不自动建立隔离。按各 Bot 授权 inbox、必要 discovery/auth/trust 和 ObjectStore API，不应全局放开 `$JS.>`。
 
 普通消息和文件要求实际可用的 JetStream；消息不降级到 Core NATS。持久 outbox 会继续发送已记录 intent，发布失败不代表可安全换 ID 重发。
 
@@ -136,7 +136,6 @@ displayName、labels、产品/版本写入签名 announce，agentVersion 为空�
 ```text
 DataDir/
   config.json                 daemon schemaVersion 3
-  admin.token                 daemon 管理凭据
   bots.json                   注册 catalog
   bots/{botId}/
     config.json
@@ -195,7 +194,7 @@ curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/script
 - 二进制由同一个安装脚本分发，避免 CLI 和 daemon 安装来源不一致
 - daemon 服务读取 `~/.clawsynapse/config.json`
 - 首次安装生成 daemon 配置，后续升级不覆盖用户配置；旧目录要求先显式停机迁移
-- Bot 由 admin 在 daemon 启动后显式创建、配置、启动，不自动生成默认身份
+- Bot 由本机 CLI/桌面在 daemon 启动后直接创建、配置、启动，无需管理 token，不自动生成默认身份
 - daemon 以普通用户运行，不以 root 直接执行业务进程
 - Bot ID 由各自 Ed25519 身份派生，不能用配置手工指定
 

@@ -57,7 +57,7 @@ func run(args []string, stdout, stderr *os.File) int {
 	timeout := fs.Duration("timeout", 5*time.Second, "local API timeout")
 	asJSON := fs.Bool("json", false, "print raw JSON response")
 	bot := fs.String("bot", "", "explicit Bot ID or unambiguous prefix")
-	tokenFile := fs.String("token-file", "", "private credential file for this daemon endpoint")
+	tokenFile := fs.String("token-file", "", "optional Bot-scoped credential file (local management needs no token)")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -530,7 +530,7 @@ func runTransfer(ctx context.Context, client localAPIClient, args []string) (typ
 	switch args[0] {
 	case "import":
 		fs := flag.NewFlagSet("transfer import", flag.ContinueOnError)
-		file := fs.String("file", "", "host file imported with administrator credentials")
+		file := fs.String("file", "", "host file imported through local management without a scoped token")
 		if err := fs.Parse(args[1:]); err != nil {
 			return types.APIResult{}, err
 		}
@@ -613,7 +613,7 @@ func printTransferHelp(stderr *os.File) {
 	fmt.Fprintln(stderr, "")
 	fmt.Fprintln(stderr, "Subcommands:")
 	fmt.Fprintln(stderr, "  send     send a selected-Bot workspace file to a target Bot")
-	fmt.Fprintln(stderr, "  import   admin-only import of an external host file into selected Bot references")
+	fmt.Fprintln(stderr, "  import   local-management import of an external host file (no scoped token)")
 	fmt.Fprintln(stderr, "  forward  send an authorized transfer reference to a target Bot")
 	fmt.Fprintln(stderr, "  get      get transfer details by id")
 	fmt.Fprintln(stderr, "  delete   delete a transfer by id")
@@ -1023,9 +1023,12 @@ func printUsage(stderr *os.File) {
 	fmt.Fprintln(stderr, "Global Flags:")
 	fmt.Fprintln(stderr, "  --api-addr string    local API address (default \"127.0.0.1:18080\")")
 	fmt.Fprintln(stderr, "  --bot string         required Bot ID or unambiguous prefix for business commands")
-	fmt.Fprintln(stderr, "  --token-file string  private credential for the exact daemon endpoint")
+	fmt.Fprintln(stderr, "  --token-file string  optional Bot-scoped credential; omitted for local management")
 	fmt.Fprintln(stderr, "  --timeout duration   local API timeout (default 5s)")
 	fmt.Fprintln(stderr, "  --json               print raw JSON response")
+	fmt.Fprintln(stderr, "")
+	fmt.Fprintln(stderr, "Only loopback daemon endpoints are supported. Any local process can manage without a token.")
+	fmt.Fprintln(stderr, "With a Bot-scoped token, use a full Bot ID; catalog-based prefix resolution is unavailable.")
 	fmt.Fprintln(stderr, "")
 	fmt.Fprintln(stderr, "Examples:")
 	fmt.Fprintln(stderr, "  clawsynapse init")

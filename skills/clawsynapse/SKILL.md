@@ -66,9 +66,11 @@ Messaging-related commands currently available in the CLI are:
 
 Set `BOT_A` to the full local Bot ID before using these examples. Every business command requires an explicit `--bot "$BOT_A"`; the remote peer is passed separately with `--target`.
 
-Bot creation is an admin operation: use `bot create --role console --name NAME`, or an explicit role-bearing JSON file for an Agent with a supported `harness.adapter`. Console configuration omits the entire `harness`, `maxConcurrent`, and `maxQueued` fields; Role cannot be switched through ordinary config updates. Full creation and offline schemaVersion 3 migration commands are documented in `docs/cli.md`.
+Create Bots directly through local management without a token: use `bot create --role console --name NAME`, or an explicit role-bearing JSON file for an Agent with a supported `harness.adapter`. Console configuration omits the entire `harness`, `maxConcurrent`, and `maxQueued` fields; Role cannot be switched through ordinary config updates. Full creation and offline schemaVersion 3 migration commands are documented in `docs/cli.md`.
 
 Console chat and feedback are durable inbox data, not model runs. An execution request to a Console returns `console.execution_unsupported` (or `execution.expired`) without started/accepted/completed events. A successful publish only confirms durable transport acceptance; correlate the returned message ID with stored request/run events to determine execution outcome.
+
+Use only loopback daemon endpoints; remote HTTPS is also rejected. Any local process can omit its token to manage every Bot. `--token-file` optionally selects a Bot-scoped credential; when supplied, use the full `--bot` ID because catalog-based prefix lookup is unavailable. Invalid tokens fail and scoped calls retain their restrictions, but this is not local-process isolation. Keep the local API private; cross-device Bot communication uses NATS, with signatures, authentication and trust unchanged.
 
 ## First Step: Resolve the Target
 
@@ -262,8 +264,9 @@ clawsynapse --bot "$BOT_A" publish --target bot-2 --message "[request] Can you s
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--api-addr` | `127.0.0.1:18080` | Local API address |
+| `--api-addr` | `127.0.0.1:18080` | Loopback-only local API address |
 | `--bot` | none | Required local Bot ID or unambiguous prefix for business commands |
+| `--token-file` | none | Optional Bot-scoped credential; omit for local management |
 | `--timeout` | `5s` | Local API timeout |
 | `--json` | `false` | Output raw JSON response |
 

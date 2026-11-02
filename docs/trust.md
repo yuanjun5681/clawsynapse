@@ -38,7 +38,6 @@ ClawSynapse 使用基于 Ed25519 的 Bot 身份模型；网络 v2 的 `nodeId` �
 ```text
 ~/.clawsynapse/
 ├── config.json                 # daemon 配置，不是 Bot 身份
-├── admin.token                 # daemon 管理凭据，不分发给 Harness
 ├── blobs/                      # 共享不可变实体；摘要不是授权
 └── bots/<botId>/
     ├── config.json             # Bot 策略和 Harness Binding
@@ -64,7 +63,7 @@ A 信任 R 不代表 B 信任 R；A 撤销 R 不改变 B，A/B 同宿主也不�
 
 信任只授权通信，不同步文件、不创建文件引用。共享 blob 的读取/转发仍需当前 Bot 的有效引用；知道摘要或另一个 Bot 已接收不构成授权。Harness 只获得独立工作副本，不获得全局实体路径。离线备份/单 Bot 导出必须包含其引用指向的全部实体；仅复制 `bots/<botId>/` 不完整，导入保留原身份并重新生成本地访问凭据。
 
-本地操作显式选择 Bot，例如 `clawsynapse --bot <local-bot-id> trust pending`；HTTP 使用 `/v2/bots/{botId}/trust/...`。Bot 作用域 token 不能管理其他 Bot 或修改绑定，也不能作为 daemon 管理凭据。
+本地操作显式选择 Bot，例如 `clawsynapse --bot <local-bot-id> trust pending`；HTTP 使用 `/v2/bots/{botId}/trust/...`。daemon 仅监听 loopback，本机无 token 请求可完整管理；显式使用 Bot 作用域 token 时不能管理其他 Bot 或修改绑定，错误 token 仍失败。任何本机进程都能省略 token，因此它不是本机进程隔离。跨设备 Bot 使用 NATS，身份、签名、认证和信任检查不变。
 
 ## 信任模式
 

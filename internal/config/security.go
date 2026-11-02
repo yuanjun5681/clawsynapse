@@ -11,7 +11,6 @@ import (
 // SecurityValues carries non-secret transport configuration across input sources.
 type SecurityValues struct {
 	APITokenPath        string `yaml:"apiTokenPath"`
-	AllowRemoteAPI      bool   `yaml:"allowRemoteAPI"`
 	APITLSCertFile      string `yaml:"apiTLSCertFile"`
 	APITLSKeyFile       string `yaml:"apiTLSKeyFile"`
 	Production          bool   `yaml:"production"`
@@ -20,12 +19,11 @@ type SecurityValues struct {
 	NATSTLSCertFile     string `yaml:"natsTLSCertFile"`
 	NATSTLSKeyFile      string `yaml:"natsTLSKeyFile"`
 	NATSTLSServerName   string `yaml:"natsTLSServerName"`
-	allowRemoteSet      bool
 	productionSet       bool
 }
 
 func securityValuesFromConfig(c Config) SecurityValues {
-	return SecurityValues{APITokenPath: c.APITokenPath, AllowRemoteAPI: c.AllowRemoteAPI, APITLSCertFile: c.APITLSCertFile, APITLSKeyFile: c.APITLSKeyFile, Production: c.Production, NATSCredentialsFile: c.NATSCredentialsFile, NATSTLSCAFile: c.NATSTLSCAFile, NATSTLSCertFile: c.NATSTLSCertFile, NATSTLSKeyFile: c.NATSTLSKeyFile, NATSTLSServerName: c.NATSTLSServerName, allowRemoteSet: true, productionSet: true}
+	return SecurityValues{APITokenPath: c.APITokenPath, APITLSCertFile: c.APITLSCertFile, APITLSKeyFile: c.APITLSKeyFile, Production: c.Production, NATSCredentialsFile: c.NATSCredentialsFile, NATSTLSCAFile: c.NATSTLSCAFile, NATSTLSCertFile: c.NATSTLSCertFile, NATSTLSKeyFile: c.NATSTLSKeyFile, NATSTLSServerName: c.NATSTLSServerName, productionSet: true}
 }
 
 func mergeSecurityValues(base, override SecurityValues) SecurityValues {
@@ -34,10 +32,6 @@ func mergeSecurityValues(base, override SecurityValues) SecurityValues {
 		if strings.TrimSpace(*pair[1]) != "" {
 			*pair[0] = strings.TrimSpace(*pair[1])
 		}
-	}
-	if override.allowRemoteSet || override.AllowRemoteAPI {
-		base.AllowRemoteAPI = override.AllowRemoteAPI
-		base.allowRemoteSet = true
 	}
 	if override.productionSet || override.Production {
 		base.Production = override.Production
@@ -60,8 +54,8 @@ func resolveSecurityPaths(c *Config) error {
 	return nil
 }
 
-// ValidateAPIListener rejects implicit public binding and plaintext remote APIs.
-func ValidateAPIListener(addr string, allowRemote bool, certFile, keyFile string) error {
+// ValidateAPIListener confines management to loopback, with optional local TLS.
+func ValidateAPIListener(addr, certFile, keyFile string) error {
 	if (certFile == "") != (keyFile == "") {
 		return errors.New("API TLS certificate and key must both be configured")
 	}
@@ -72,12 +66,7 @@ func ValidateAPIListener(addr string, allowRemote bool, certFile, keyFile string
 	ip := net.ParseIP(host)
 	loopback := strings.EqualFold(host, "localhost") || (ip != nil && ip.IsLoopback())
 	if !loopback {
-		if !allowRemote {
-			return errors.New("non-loopback API requires allowRemoteAPI")
-		}
-		if certFile == "" || keyFile == "" {
-			return errors.New("non-loopback API requires TLS certificate and key")
-		}
+		return errors.New("local API address must use a loopback host")
 	}
 	return nil
 }
@@ -95,7 +84,7 @@ func ValidateSecurity(c Config) error {
 	}
 	// Empty addresses occur in partial configuration validation; the server always validates its actual listener.
 	if c.LocalAPIAddr != "" {
-		if err := ValidateAPIListener(c.LocalAPIAddr, c.AllowRemoteAPI, c.APITLSCertFile, c.APITLSKeyFile); err != nil {
+		if err := ValidateAPIListener(c.LocalAPIAddr, c.APITLSCertFile, c.APITLSKeyFile); err != nil {
 			return err
 		}
 	}

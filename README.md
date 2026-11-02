@@ -199,7 +199,7 @@ clawsynapsed --check-config
 
 `init` configures only the daemon: listener, shared NATS connection, logging, and daemon state directory. Bot Harness bindings and trust settings belong to each Bot's configuration, managed with `clawsynapse --bot <local-bot-id> bot config`.
 
-The default daemon administrator credential is `~/.clawsynapse/admin.token`. For another daemon endpoint, use `clawsynapse --api-addr http://HOST:PORT --token-file /path/to/admin.token ...`. Bot-scoped credentials are separate; they cannot manage the daemon or access another Bot.
+Daemon management is loopback-only and needs no token: CLI and desktop clients can create and manage Bots directly. Any local process can omit its token to obtain full management access; do not expose or forward this API to untrusted callers. `--token-file /path/to/bots/<botId>/credentials/api.token` is optional for Bot-scoped calls with a full `--bot` ID; explicitly supplied credentials retain scope restrictions and invalid tokens fail, but they are not local-process isolation. Remote endpoints, including HTTPS, are rejected. Cross-device Bots communicate through NATS; their identity, signatures, authentication and trust checks are unchanged.
 
 Core real end-to-end behavior has been verified with two independent OpenCode GLM-5.3-Flash bindings and an external peer on NATS 2.11.9, including crash recovery, Bot isolation, and shared-file retention. This is not exhaustive coverage of every platform, Harness, or fault boundary.
 

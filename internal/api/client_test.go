@@ -55,14 +55,17 @@ func TestClientRequiresExplicitBotAndBindsRequests(t *testing.T) {
 	}
 }
 
-func TestClientNeverBorrowsCredentialsForAnotherEndpoint(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("CLAWSYNAPSE_DATA_DIR", root)
-	t.Setenv("CLAWSYNAPSE_LOCAL_API_ADDR", "127.0.0.1:18080")
-	client := NewClient("127.0.0.1:18081", time.Second)
-	_, err := client.Get(context.Background(), "/v2/health")
-	if err == nil || !strings.Contains(err.Error(), "token-file") {
-		t.Fatalf("expected endpoint-bound credential error: %v", err)
+func TestClientAnonymousAtDifferentLocalEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, present := r.Header["Authorization"]; present {
+			t.Error("anonymous client sent credentials")
+		}
+		_ = json.NewEncoder(w).Encode(types.APIResult{OK: true})
+	}))
+	defer server.Close()
+	client := NewClient(server.URL, time.Second)
+	if _, err := client.Get(context.Background(), "/v2/health"); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -80,7 +83,7 @@ func TestClientExplicitCredentialsDoNotLoadLegacyConfiguration(t *testing.T) {
 	}
 }
 
-func TestClientRejectsRedirectsAndRemotePlaintext(t *testing.T) {
+func TestClientRejectsRedirectsAndRemoteEndpoints(t *testing.T) {
 	var leaked bool
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { leaked = true }))
 	defer target.Close()
@@ -96,8 +99,10 @@ func TestClientRejectsRedirectsAndRemotePlaintext(t *testing.T) {
 	if leaked {
 		t.Fatal("credential redirected")
 	}
-	client = NewClient("http://192.0.2.1:18080", time.Second, WithTokenFile(token))
-	if _, err := client.Get(context.Background(), "/v2/health"); err == nil || !strings.Contains(err.Error(), "HTTPS") {
-		t.Fatalf("plaintext remote accepted: %v", err)
+	for _, baseURL := range []string{"http://192.0.2.1:18080", "https://192.0.2.1:18080", "https://example.com"} {
+		client = NewClient(baseURL, time.Second, WithTokenFile(token))
+		if _, err := client.Get(context.Background(), "/v2/health"); err == nil {
+			t.Fatalf("remote endpoint accepted: %s", baseURL)
+		}
 	}
 }

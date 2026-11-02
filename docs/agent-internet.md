@@ -134,7 +134,7 @@ ClawSynapse 在 Harness 执行边界外负责：
              Other Bots
 ```
 
-`clawsynapsed` 应继续作为独立 Sidecar 宿主运行，可以托管多个 Bot。Harness 插件只通过 `/v2/bots/{botId}/...` 和该 Bot 的作用域凭据使用网络能力，不应复制私钥管理、NATS 连接、认证和信任状态机，也不应持有 daemon 管理 token。
+`clawsynapsed` 应继续作为独立 Sidecar 宿主运行，可以托管多个 Bot。Harness 插件通过 `/v2/bots/{botId}/...` 和可选 Bot 作用域凭据使用网络能力，不应复制私钥管理、NATS 连接、认证和信任状态机。daemon 管理仅限 loopback 且无需 token；任何本机进程均可省略 token 完整管理，作用域凭据不提供本机进程隔离，不应将 API 代理/转发给不可信调用方。跨设备 Bot 通信使用 NATS，不开放远程 daemon 管理。
 
 ## Agent Internet 的核心实体
 

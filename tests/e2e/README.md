@@ -30,7 +30,9 @@ at 1,200 seconds. The runner does not build binaries or run unit tests.
 ## Exercised assertions
 
 - Independent A/B IDs, DIDs and scoped credentials; explicit CLI Bot selection;
-  anonymous, cross-Bot, management and host-import authorization checks.
+  anonymous local management, invalid-token rejection and scoped cross-Bot,
+  management and host-import restrictions. Any local process can omit its token
+  to manage the daemon; scoped credentials are not local-process isolation.
 - Real signed discovery, challenge authentication, and manually approved trust
   with R. A's trust and alias for R do not appear in B.
 - Real A/B model turns, native session and working-directory isolation, routed

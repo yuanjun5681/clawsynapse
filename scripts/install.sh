@@ -764,7 +764,8 @@ print_post_install_notes() {
                 ;;
         esac
         if [ "$INSTALL_CLI" -eq 1 ]; then
-            info "daemon health: ${INSTALL_DIR}/${CLI_BINARY} --api-addr http://${LOCAL_API_ADDR} --token-file ${DATA_DIR}/admin.token daemon"
+            info "daemon health: ${INSTALL_DIR}/${CLI_BINARY} --api-addr http://${LOCAL_API_ADDR} daemon"
+            info "management is loopback-only and needs no token; any local process can manage this daemon"
             info "create Bots explicitly with: ${INSTALL_DIR}/${CLI_BINARY} bot create --file /path/to/bot.json"
         fi
     fi

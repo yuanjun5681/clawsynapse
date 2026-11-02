@@ -54,12 +54,17 @@ func version2Fixture(t *testing.T) (string, string, string) {
 		t.Fatal(err)
 	}
 	downgradeBot(t, filepath.Join(root, "bots", agentID, "config.json"), "opencode")
-	d, err := config.LoadDaemon([]string{"--data-dir", root})
-	if err != nil {
+	if _, err := config.LoadDaemon([]string{"--data-dir", root}); err != nil {
 		t.Fatal(err)
 	}
-	d.SchemaVersion = 2
-	writeJSON(t, filepath.Join(root, "config.json"), d)
+	var daemonFields map[string]json.RawMessage
+	if err := json.Unmarshal(mustRead(t, filepath.Join(root, "config.json")), &daemonFields); err != nil {
+		t.Fatal(err)
+	}
+	daemonFields["schemaVersion"] = json.RawMessage("2")
+	daemonFields["adminTokenPath"], _ = json.Marshal(filepath.Join(root, "admin.token"))
+	daemonFields["allowRemoteAPI"] = json.RawMessage("false")
+	writeJSON(t, filepath.Join(root, "config.json"), daemonFields)
 	credentials := filepath.Join(t.TempDir(), "credentials")
 	if err := store.EnsurePrivateDir(credentials); err != nil {
 		t.Fatal(err)
@@ -475,4 +480,78 @@ func TestUpgradeAcceptsPartialDaemonConfigWithNormalDefaults(t *testing.T) {
 	}
 	assertRoleFile(t, root, agentID)
 	assertRoleFile(t, root, consoleID)
+}
+
+func TestUpgradeAcceptsCurrentDaemonWithoutAdministratorCredential(t *testing.T) {
+	for _, keepToken := range []bool{false, true} {
+		t.Run(map[bool]string{false: "missing-token", true: "retained-token"}[keepToken], func(t *testing.T) {
+			legacy, _ := legacyFixture(t)
+			root := filepath.Join(t.TempDir(), "daemon")
+			botID, err := Migrate(legacy, root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(root, "config.json")
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(mustRead(t, path), &fields); err != nil {
+				t.Fatal(err)
+			}
+			tokenPath := filepath.Join(root, "admin.token")
+			fields["adminTokenPath"], _ = json.Marshal(tokenPath)
+			fields["allowRemoteAPI"] = json.RawMessage("true")
+			fields["natsServers"] = json.RawMessage(`["tls://nats.example:4222"]`)
+			fields["natsTLSServerName"] = json.RawMessage(`"nats.example"`)
+			writeJSON(t, path, fields)
+			original := mustRead(t, path)
+			keyPath := filepath.Join(root, "bots", botID, "credentials", "identity.key")
+			originalKey := mustRead(t, keyPath)
+			oldSecret := []byte("retained obsolete secret")
+			if keepToken {
+				if err := os.WriteFile(tokenPath, oldSecret, 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := Upgrade(root); err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(original, mustRead(t, path)) || !bytes.Equal(originalKey, mustRead(t, keyPath)) {
+				t.Fatal("current schema validation changed configuration or identity")
+			}
+			d, _, err := readLayout(root, 3)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(d.NATSServers) != 1 || d.NATSServers[0] != "tls://nats.example:4222" || d.NATSTLSServerName != "nats.example" {
+				t.Fatal("old configuration lost NATS settings")
+			}
+			if keepToken {
+				if !bytes.Equal(oldSecret, mustRead(t, tokenPath)) {
+					t.Fatal("validation changed obsolete secret")
+				}
+			} else if _, err := os.Stat(tokenPath); !os.IsNotExist(err) {
+				t.Fatalf("validation generated administrator credential: %v", err)
+			}
+		})
+	}
+}
+
+func TestRoleUpgradeRejectsRemoteListenerWithoutChangingSource(t *testing.T) {
+	root, _, _ := version2Fixture(t)
+	path := filepath.Join(root, "config.json")
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(mustRead(t, path), &fields); err != nil {
+		t.Fatal(err)
+	}
+	fields["localApiAddr"] = json.RawMessage(`"192.0.2.1:18080"`)
+	fields["allowRemoteAPI"] = json.RawMessage("true")
+	fields["apiTLSCertFile"] = json.RawMessage(`"/private/api.pem"`)
+	fields["apiTLSKeyFile"] = json.RawMessage(`"/private/api.key"`)
+	writeJSON(t, path, fields)
+	original := mustRead(t, path)
+	if err := Upgrade(root); err == nil {
+		t.Fatal("role migration accepted remote management")
+	}
+	if !bytes.Equal(original, mustRead(t, path)) {
+		t.Fatal("rejected remote listener was silently replaced")
+	}
 }

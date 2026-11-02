@@ -231,7 +231,6 @@ func clearConfigEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
 		"API_TOKEN_PATH",
-		"ALLOW_REMOTE_API",
 		"API_TLS_CERT_FILE",
 		"API_TLS_KEY_FILE",
 		"PRODUCTION",

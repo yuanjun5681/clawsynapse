@@ -28,7 +28,7 @@ func TestLoadDaemonCheckConfigIsReadOnlyAndIgnoresBotEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.CheckConfig || cfg.AdminTokenPath != filepath.Join(root, "admin.token") {
+	if !cfg.CheckConfig || cfg.DataDir != root {
 		t.Fatalf("unexpected daemon config: %#v", cfg)
 	}
 	if _, err := os.Stat(root); !os.IsNotExist(err) {
@@ -64,7 +64,6 @@ func TestDaemonLoadsStrictV3DefaultsAndOverrides(t *testing.T) {
 	root := t.TempDir()
 	d := DefaultDaemonConfig()
 	d.DataDir = root
-	d.AdminTokenPath = filepath.Join(root, "admin.token")
 	d.LocalAPIAddr = "127.0.0.1:19000"
 	raw, err := json.Marshal(d)
 	if err != nil {
@@ -79,6 +78,132 @@ func TestDaemonLoadsStrictV3DefaultsAndOverrides(t *testing.T) {
 	}
 	if got.SchemaVersion != DaemonSchemaVersion || got.LocalAPIAddr != "127.0.0.1:19001" {
 		t.Fatalf("unexpected config: %#v", got)
+	}
+}
+
+func TestDaemonLoadsObsoleteManagementFieldsWithoutCredentials(t *testing.T) {
+	for _, keepToken := range []bool{false, true} {
+		t.Run(map[bool]string{false: "missing-token", true: "retained-token"}[keepToken], func(t *testing.T) {
+			root := t.TempDir()
+			tokenPath := filepath.Join(root, "admin.token")
+			secret := []byte("obsolete administrator secret")
+			if keepToken {
+				if err := os.WriteFile(tokenPath, secret, 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			d := DefaultDaemonConfig()
+			d.DataDir = root
+			d.LocalAPIAddr = "[::1]:19000"
+			d.NATSServers = []string{"tls://nats.example:4222"}
+			d.NATSTLSServerName = "nats.example"
+			d.LogLevel = "debug"
+			raw, err := json.Marshal(d)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &fields); err != nil {
+				t.Fatal(err)
+			}
+			fields["adminTokenPath"], _ = json.Marshal(tokenPath)
+			fields["allowRemoteAPI"] = json.RawMessage("true")
+			raw, err = json.Marshal(fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(root, "config.json")
+			if err := os.WriteFile(path, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			got, err := LoadDaemon([]string{"--data-dir", root})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got.ConfigPath = ""
+			encoded, err := json.Marshal(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			expected, err := json.Marshal(d)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(encoded) != string(expected) {
+				t.Fatalf("daemon settings changed: %s != %s", encoded, expected)
+			}
+			retained, err := os.ReadFile(path)
+			if err != nil || string(retained) != string(raw) {
+				t.Fatalf("loading rewrote persisted configuration: %v", err)
+			}
+			retained, err = os.ReadFile(tokenPath)
+			if keepToken {
+				if err != nil || string(retained) != string(secret) {
+					t.Fatalf("loading changed old secret: %v", err)
+				}
+			} else if !os.IsNotExist(err) {
+				t.Fatalf("loading created old secret: %v", err)
+			}
+		})
+	}
+}
+
+func TestDaemonRejectsRemotePersistedListenerAndObsoleteFlags(t *testing.T) {
+	root := t.TempDir()
+	body := `{"schemaVersion":3,"localApiAddr":"192.0.2.1:18080","allowRemoteAPI":true,"apiTLSCertFile":"/private/api.pem","apiTLSKeyFile":"/private/api.key"}`
+	path := filepath.Join(root, "config.json")
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadDaemon([]string{"--data-dir", root}); err == nil {
+		t.Fatal("obsolete opt-in enabled a remote listener")
+	}
+	for _, args := range [][]string{{"--admin-token-path", filepath.Join(root, "admin.token")}, {"--allow-remote-api"}} {
+		if _, err := LoadDaemon(append([]string{"--data-dir", t.TempDir()}, args...)); err == nil {
+			t.Fatalf("accepted removed flag: %v", args)
+		}
+	}
+	t.Setenv("CLAWSYNAPSE_ADMIN_TOKEN_PATH", "/invalid/obsolete-token")
+	t.Setenv("CLAWSYNAPSE_ALLOW_REMOTE_API", "not-a-boolean")
+	if _, err := LoadDaemon([]string{"--data-dir", t.TempDir()}); err != nil {
+		t.Fatalf("obsolete environment affected daemon: %v", err)
+	}
+}
+
+func TestLegacyImportDiscardsRemoteOptInButRetainsListener(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1:18080", "192.0.2.1:18080"} {
+		t.Run(addr, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "config.yaml")
+			body := "dataDir: " + root + "\nlocalApiAddr: " + addr + "\nallowRemoteAPI: true\n"
+			if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadLegacy(path)
+			if addr == "192.0.2.1:18080" {
+				if err == nil {
+					t.Fatal("legacy import enabled remote management")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.LocalAPIAddr != addr {
+				t.Fatal("legacy import changed listener")
+			}
+			encoded, err := json.Marshal(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(encoded, &fields); err != nil {
+				t.Fatal(err)
+			}
+			if _, present := fields["allowRemoteAPI"]; present {
+				t.Fatal("legacy import retained runtime remote opt-in")
+			}
+		})
 	}
 }
 

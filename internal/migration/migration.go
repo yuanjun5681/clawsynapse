@@ -216,9 +216,6 @@ func Migrate(legacy config.Config, target string) (string, error) {
 			return "", err
 		}
 	}
-	if err := newToken(filepath.Join(stage, "admin.token")); err != nil {
-		return "", err
-	}
 	if err := newToken(filepath.Join(botRoot, "credentials", "api.token")); err != nil {
 		return "", err
 	}
@@ -560,9 +557,7 @@ func syncTree(root string) error {
 func splitConfig(c config.Config, target, binding string) (config.DaemonConfig, config.BotConfig) {
 	d := config.DefaultDaemonConfig()
 	d.DataDir = target
-	d.AdminTokenPath = filepath.Join(target, "admin.token")
 	d.LocalAPIAddr = c.LocalAPIAddr
-	d.AllowRemoteAPI = c.AllowRemoteAPI
 	d.APITLSCertFile = c.APITLSCertFile
 	d.APITLSKeyFile = c.APITLSKeyFile
 	d.Production = c.Production

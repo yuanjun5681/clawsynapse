@@ -32,21 +32,27 @@ func TestProductionRejectsWeakTransportsAndTrust(t *testing.T) {
 	}
 }
 
-func TestRemoteAPIRequiresExplicitTLS(t *testing.T) {
-	for _, addr := range []string{"0.0.0.0:8080", "[::]:8080", ":8080", "192.0.2.1:8080"} {
-		if err := ValidateAPIListener(addr, false, "cert", "key"); err == nil {
-			t.Fatalf("implicit remote address accepted: %s", addr)
-		}
-		if err := ValidateAPIListener(addr, true, "", ""); err == nil {
-			t.Fatalf("plaintext remote address accepted: %s", addr)
-		}
-		if err := ValidateAPIListener(addr, true, "cert", "key"); err != nil {
-			t.Fatal(err)
+func TestAPIListenerRequiresLoopbackEvenWithTLS(t *testing.T) {
+	for _, addr := range []string{"0.0.0.0:8080", "[::]:8080", ":8080", "192.0.2.1:8080", "remote.example:8080", "127.0.0.1"} {
+		for _, tls := range []bool{false, true} {
+			cert, key := "", ""
+			if tls {
+				cert, key = "cert", "key"
+			}
+			if err := ValidateAPIListener(addr, cert, key); err == nil {
+				t.Fatalf("non-loopback or invalid address accepted: %s", addr)
+			}
 		}
 	}
-	for _, addr := range []string{"127.0.0.1:8080", "[::1]:8080", "localhost:8080"} {
-		if err := ValidateAPIListener(addr, false, "", ""); err != nil {
+	for _, addr := range []string{"127.0.0.1:8080", "127.0.0.2:8080", "[::1]:8080", "localhost:8080"} {
+		if err := ValidateAPIListener(addr, "", ""); err != nil {
 			t.Fatal(err)
+		}
+		if err := ValidateAPIListener(addr, "cert", "key"); err != nil {
+			t.Fatal(err)
+		}
+		if err := ValidateAPIListener(addr, "cert", ""); err == nil {
+			t.Fatal("incomplete local TLS pair accepted")
 		}
 	}
 }
@@ -57,7 +63,7 @@ func TestSecurityConfigurationSourcesAndPersistence(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	path := filepath.Join(home, "config.yaml")
-	data := []byte("production: true\ntrustMode: explicit\nnatsServers: [tls://nats.example:4222]\nnatsCredentialsFile: /private/bot.creds\nnatsTLSCAFile: /private/ca.pem\nnatsTLSCertFile: /private/client.pem\nnatsTLSKeyFile: /private/client.key\nnatsTLSServerName: nats.example\nallowRemoteAPI: true\nlocalApiAddr: 0.0.0.0:18080\napiTLSCertFile: /private/api.pem\napiTLSKeyFile: /private/api.key\napiTokenPath: /private/api.token\nagentAdapter: codex\n")
+	data := []byte("production: true\ntrustMode: explicit\nnatsServers: [tls://nats.example:4222]\nnatsCredentialsFile: /private/bot.creds\nnatsTLSCAFile: /private/ca.pem\nnatsTLSCertFile: /private/client.pem\nnatsTLSKeyFile: /private/client.key\nnatsTLSServerName: nats.example\nlocalApiAddr: 127.0.0.1:18080\napiTLSCertFile: /private/api.pem\napiTLSKeyFile: /private/api.key\napiTokenPath: /private/api.token\nagentAdapter: codex\n")
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +71,7 @@ func TestSecurityConfigurationSourcesAndPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Production || !cfg.AllowRemoteAPI || cfg.APITokenPath != "/private/api.token" || cfg.AgentAdapter != "codex" || cfg.NATSTLSServerName != "nats.example" {
+	if !cfg.Production || cfg.APITokenPath != "/private/api.token" || cfg.AgentAdapter != "codex" || cfg.NATSTLSServerName != "nats.example" {
 		t.Fatalf("security YAML not loaded: %+v", cfg)
 	}
 	t.Setenv("NATS_TLS_SERVER_NAME", "env.example")
@@ -87,9 +93,12 @@ func TestSecurityConfigurationSourcesAndPersistence(t *testing.T) {
 	if reloaded.NATSCredentialsFile != cfg.NATSCredentialsFile || reloaded.APITLSKeyFile != cfg.APITLSKeyFile || reloaded.Production != cfg.Production {
 		t.Fatal("security settings lost during save")
 	}
-	t.Setenv("ALLOW_REMOTE_API", "false")
-	if _, err := LoadFromOS([]string{"--config", path}); err == nil {
-		t.Fatal("explicit environment false did not disable remote API")
+	t.Setenv("ALLOW_REMOTE_API", "true")
+	if _, err := LoadFromOS([]string{"--config", path, "--local-api-addr", "192.0.2.1:18080"}); err == nil {
+		t.Fatal("obsolete environment enabled a remote API")
+	}
+	if _, err := LoadFromOS([]string{"--config", path, "--allow-remote-api"}); err == nil {
+		t.Fatal("accepted removed remote API flag")
 	}
 }
 

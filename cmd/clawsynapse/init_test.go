@@ -26,16 +26,16 @@ func TestRunInitWritesDaemonOnlyConfig(t *testing.T) {
 	if err = config.DecodeStrict(raw, &cfg); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.SchemaVersion != config.DaemonSchemaVersion || cfg.DataDir != data || cfg.AdminTokenPath != filepath.Join(data, "admin.token") || len(cfg.NATSServers) != 2 {
+	if cfg.SchemaVersion != config.DaemonSchemaVersion || cfg.DataDir != data || len(cfg.NATSServers) != 2 {
 		t.Fatalf("unexpected daemon config: %#v", cfg)
 	}
 	var fields map[string]json.RawMessage
 	if err = json.Unmarshal(raw, &fields); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"botId", "nodeId", "role", "harness", "identityKeyPath", "trustMode", "agentAdapter", "transferDir"} {
+	for _, key := range []string{"botId", "nodeId", "role", "harness", "identityKeyPath", "trustMode", "agentAdapter", "transferDir", "adminTokenPath", "allowRemoteAPI"} {
 		if _, ok := fields[key]; ok {
-			t.Fatalf("init generated Bot field %q", key)
+			t.Fatalf("init generated obsolete or Bot field %q", key)
 		}
 	}
 	entries, err := os.ReadDir(data)

@@ -305,7 +305,7 @@ func readLayout(root string, version int) (config.DaemonConfig, catalog, error) 
 	if err != nil {
 		return d, cat, err
 	}
-	if err := config.DecodeStrict(raw, &d); err != nil {
+	if err := config.DecodePersistedDaemon(raw, &d); err != nil {
 		return d, cat, err
 	}
 	if d.SchemaVersion != version {
@@ -579,9 +579,6 @@ func validateRoleLayout(stage, final string, d config.DaemonConfig, cat catalog)
 		return errors.New("daemon dataDir does not match migration source")
 	}
 	if err := config.ValidateDaemon(d); err != nil {
-		return err
-	}
-	if err := validateToken(resolveStaged(d.AdminTokenPath, stage, final)); err != nil {
 		return err
 	}
 	for _, path := range []string{d.APITLSCertFile, d.APITLSKeyFile, d.NATSCredentialsFile, d.NATSTLSCAFile, d.NATSTLSCertFile, d.NATSTLSKeyFile} {
