@@ -10,7 +10,7 @@ description: >
 compatibility: Requires clawsynapse CLI access
 metadata:
   author: yuanjun5681
-  version: "2.0"
+  version: "2.1"
 allowed-tools:
   - "Bash(clawsynapse:*)"
 ---
@@ -18,6 +18,13 @@ allowed-tools:
 # ClawSynapse
 
 You have access to `clawsynapse`, a CLI tool for communicating with independent Bots on the ClawSynapse peer-to-peer network. Local Bots explicitly use `role=console` (human inbox, no Harness) or `role=agent` (one Agent Harness); `device` is not available. A remote Bot's missing or unknown Role remains unknown and does not invalidate otherwise authorized communication.
+
+When a task supplies context references, snapshots, or supporting material that
+must be read, use the `clawsynapse-context` skill if the Harness provides it.
+That skill covers selective reading, version consistency, provenance, and access
+failures; it does not add a ClawSynapse reader or grant access to material. The
+Response Contract below governs peer messaging and takes precedence over any
+conflicting output guidance in that skill.
 
 ## Response Contract
 

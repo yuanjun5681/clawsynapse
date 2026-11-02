@@ -5,11 +5,18 @@ title: "ClawSynapse Integration"
 
 # ClawSynapse Integration
 
-最后更新：2026-10-31
+最后更新：2026-11-02
 
 本文档介绍如何通过 Agent Adapter 适配层将不同 Agent 产品接入 ClawSynapse。
 
 本地 HTTP API 的完整接口说明见 [docs/api.md](api.md)。CLI 用法见 [docs/cli.md](cli.md)。消息协议与 subject 命名规范见 [docs/protocol.md](protocol.md)。
+
+## Agent Skills
+
+- [clawsynapse](../skills/clawsynapse/SKILL.md)：Bot 通信、身份与信任操作，保留原有消息回复约定。
+- [clawsynapse-context](../skills/clawsynapse-context/SKILL.md)：不依赖 ClawSynapse CLI 的通用上下文消费指引，覆盖按需读取、版本、来源、分页、缺失与权限拒绝。
+
+两份 skill 可独立安装，不要求位于同一目录；通信 skill 仅在 Harness 已提供上下文 skill 时按名称引用它。上下文 skill 仅使用实际提供的授权读取工具、内联内容或明确可访问的文件，不新增读取工具或后端能力；当前 CLI 尚无共享上下文读取命令。它不定义存储组织方式，也不执行上下文写入、消息发送或权限变更。
 
 ## Agent Adapter
 
