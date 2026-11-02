@@ -411,13 +411,15 @@ Ed25519 签名的原文是下列 JSON 对象的 UTF-8 字节，而不是字段�
 | `did` | `string` | 是 | 与公钥及 Bot ID 派生关系一致的 DID |
 | `version` | `string` | 是 | Agent 产品版本；未配置 `agentVersion` 时使用 daemon 构建版本 |
 | `agentProduct` | `string` | 是 | 产品标识 |
+| `metadata.harnessAdapter` | `string` | 否 | 当前 Agent Binding 的公开 adapter 名；Console 省略，不替代 `agentProduct` |
+| `metadata.harnessModel` | `string` | 否 | 当前 Binding 显式配置的模型；未配置则省略，不推断产品默认值或实例内部模型 |
 | `displayName` | `string` | 否 | Bot 的人类可读公开名，≤128 字节，不允许控制字符；允许重名，不替代 Bot ID |
 | `labels` | `object` | 否 | Bot 属性；值为字符串或字符串数组。保留键 `caps` 必须是字符串数组，表示自报能力集合。限制：≤32 个键、键 ≤64 字节、单个值 ≤256 字节、数组 ≤32 个元素、整体 ≤4096 字节；发送方在签名前规范化（数组去重、排序，空元素丢弃） |
 | `inbox` | `string` | 是 | 默认收件箱 subject |
 | `publicKey` | `string` | 是 | Bot 公钥 |
 | `ts` | `number` | 是 | 发布时间 |
 | `ttlMs` | `number` | 是 | Bot 租约时长 |
-| `metadata` | `object` | 否 | 有界扩展声明；当前不导入 peer 业务属性 |
+| `metadata` | `object` | 否 | 有界扩展声明；仅将字符串 `harnessAdapter` / `harnessModel` 投影到 peer 的同名平铺字段，其余扩展不导入 peer 业务属性 |
 | `signature` | `string` | 是 | 全字段及 subject 绑定的 Ed25519 签名 |
 
 ### `discovery.depart`
@@ -434,8 +436,9 @@ Ed25519 签名的原文是下列 JSON 对象的 UTF-8 字节，而不是字段�
 
 ### 处理约定
 
-- announce 的签名覆盖整个声明（含 `displayName` 与 `labels`）；发送方在签名前对 labels 做规范化。因此远端名称、能力与场景标签只能来自签名、未过期且未重放的声明。修改任意字段都会使签名失效。
+- announce 的签名覆盖整个声明（含 `displayName`、`labels` 与 `metadata` 中的 Harness 声明）；发送方在签名前对 labels 做规范化。因此远端名称、能力、场景标签与 Harness 配置只能来自签名、未过期且未重放的声明。修改或删除任意已签名字段都会使签名失效。
 - `displayName`/`labels` 取代了旧的 `capabilities` 字段。接收端严格解码（未知字段拒绝）且签名绑定全部字段，新旧版本 announce 互不兼容：混部集群中的旧版 Bot 拒绝新 announce，新版 Bot 同样拒绝旧 announce，双方失败关闭、不会互相发现。升级时必须整批切换。
+- Harness 使用现有 `metadata` 扩展，不增加顶层 wire 字段，因此不改变现有 v2 严格解码结构。旧接收端仍验证完整 metadata 签名，只是不投影这些可选键。Harness 声明仅表示当前配置，不表示健康、可执行、模型可用或某次 Run 的实际模型；不发送 instance、Binding 修订、路径、凭据或 webhook URL。停止、更新 Binding 后重新启动会公布新配置。缺失或非字符串的键按空值处理，每次有效新声明替换旧值，后续省略键会清除旧配置；Console 和未实现这些可选键的对端可不发送。空声明省略 metadata。
 - announce/depart 均检查真实 subject、消息类型、派生身份、签名、时间与消息 ID；`open` 模式不跳过签名。
 - 发现消息最多 32 KiB，metadata 最多 8 KiB，TTL 最大 2 分钟，未来时间偏差最大 30 秒；无效声明被拒绝。
 - `lastSeenMs` 使用本地接收时间，不信任远端时间戳延长存活。

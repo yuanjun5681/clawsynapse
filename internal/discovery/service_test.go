@@ -238,10 +238,12 @@ func TestNewAnnounceUsesConfiguredAgentIdentity(t *testing.T) {
 		10*time.Second,
 		"tofu",
 		AnnounceConfig{
-			Identity:     id,
-			AgentProduct: "deepseek-harness",
-			AgentVersion: "0.1.2-alpha.3",
-			DisplayName:  "边缘Bot-01",
+			Identity:       id,
+			AgentProduct:   "deepseek-harness",
+			AgentVersion:   "0.1.2-alpha.3",
+			DisplayName:    "边缘Bot-01",
+			HarnessAdapter: "opencode",
+			HarnessModel:   "provider/configured-model",
 			Labels: types.Labels{
 				"env": types.LabelString("production"),
 			}.WithCaps([]string{"chat", "task", "transfer"}),
@@ -254,8 +256,13 @@ func TestNewAnnounceUsesConfiguredAgentIdentity(t *testing.T) {
 	}
 	receiver := NewService(slog.Default(), nil, NewRegistry(), nil, "receiver", "", "", time.Second, time.Minute, "tofu")
 	receiver.handleAnnounce(announceSubject, marshalDiscovery(t, msg))
-	if _, ok := receiver.peers.Get(botID); !ok {
+	peer, ok := receiver.peers.Get(botID)
+	if !ok {
 		t.Fatal("locally signed announce was rejected")
+	}
+	if msg.Metadata["harnessAdapter"] != "opencode" || msg.Metadata["harnessModel"] != "provider/configured-model" ||
+		peer.HarnessAdapter != msg.Metadata["harnessAdapter"] || peer.HarnessModel != msg.Metadata["harnessModel"] {
+		t.Fatalf("configured Harness was not propagated: announce=%+v peer=%+v", msg, peer)
 	}
 	if msg.AgentProduct != "deepseek-harness" {
 		t.Fatalf("agentProduct = %q, want deepseek-harness", msg.AgentProduct)
@@ -344,23 +351,69 @@ func TestStartRequiresSigningIdentity(t *testing.T) {
 	}
 }
 
+func TestNewAnnounceUsesOptionalHarnessMetadata(t *testing.T) {
+	id := testIdentity(30)
+	did := identity.DeriveBotDID(id.PublicKey)
+	botID := identity.DeriveBotID(did)
+	for _, configured := range []AnnounceConfig{
+		{Identity: id},
+		{Identity: id, HarnessAdapter: "opencode"},
+		{Identity: id, HarnessAdapter: "pi", HarnessModel: "provider/configured-model"},
+	} {
+		t.Run(configured.HarnessAdapter, func(t *testing.T) {
+			svc := NewService(slog.Default(), nil, NewRegistry(), nil, botID, did,
+				base64.RawURLEncoding.EncodeToString(id.PublicKey), time.Second, time.Minute, "explicit", configured)
+			msg, err := svc.newAnnounce()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var wire map[string]json.RawMessage
+			if err := json.Unmarshal(marshalDiscovery(t, msg), &wire); err != nil {
+				t.Fatal(err)
+			}
+			if wire["harnessAdapter"] != nil || wire["harnessModel"] != nil {
+				t.Fatal("Harness metadata changed the top-level v2 schema")
+			}
+			if configured.HarnessAdapter == "" && configured.HarnessModel == "" && wire["metadata"] != nil {
+				t.Fatal("unconfigured Harness emitted metadata")
+			}
+			for key, want := range map[string]string{"harnessAdapter": configured.HarnessAdapter, "harnessModel": configured.HarnessModel} {
+				got, present := msg.Metadata[key]
+				if want == "" {
+					if present {
+						t.Fatalf("empty %s was advertised: %#v", key, msg.Metadata)
+					}
+				} else if got != want {
+					t.Fatalf("%s = %#v, want %q", key, got, want)
+				}
+			}
+		})
+	}
+}
+
 func TestAnnounceRejectsTamperingInEveryTrustMode(t *testing.T) {
 	mutations := map[string]func(*protocol.DiscoveryAnnounce){
-		"version":   func(m *protocol.DiscoveryAnnounce) { m.Version = "altered" },
-		"product":   func(m *protocol.DiscoveryAnnounce) { m.AgentProduct = "altered" },
-		"labels":    func(m *protocol.DiscoveryAnnounce) { m.Labels = m.Labels.WithCaps([]string{"altered"}) },
-		"inbox":     func(m *protocol.DiscoveryAnnounce) { m.Inbox = "attacker.inbox" },
-		"timestamp": func(m *protocol.DiscoveryAnnounce) { m.Ts-- },
-		"ttl":       func(m *protocol.DiscoveryAnnounce) { m.TTLms++ },
-		"metadata":  func(m *protocol.DiscoveryAnnounce) { m.Metadata = map[string]any{"role": "admin"} },
-		"messageId": func(m *protocol.DiscoveryAnnounce) { m.MessageID = "altered" },
-		"signature": func(m *protocol.DiscoveryAnnounce) { m.Signature = "invalid" },
-		"unsigned":  func(m *protocol.DiscoveryAnnounce) { m.Signature = "" },
+		"version":        func(m *protocol.DiscoveryAnnounce) { m.Version = "altered" },
+		"product":        func(m *protocol.DiscoveryAnnounce) { m.AgentProduct = "altered" },
+		"harnessAdapter": func(m *protocol.DiscoveryAnnounce) { m.Metadata["harnessAdapter"] = "pi" },
+		"harnessModel":   func(m *protocol.DiscoveryAnnounce) { m.Metadata["harnessModel"] = "altered" },
+		"clearAdapter":   func(m *protocol.DiscoveryAnnounce) { delete(m.Metadata, "harnessAdapter") },
+		"clearModel":     func(m *protocol.DiscoveryAnnounce) { delete(m.Metadata, "harnessModel") },
+		"labels":         func(m *protocol.DiscoveryAnnounce) { m.Labels = m.Labels.WithCaps([]string{"altered"}) },
+		"inbox":          func(m *protocol.DiscoveryAnnounce) { m.Inbox = "attacker.inbox" },
+		"timestamp":      func(m *protocol.DiscoveryAnnounce) { m.Ts-- },
+		"ttl":            func(m *protocol.DiscoveryAnnounce) { m.TTLms++ },
+		"metadata":       func(m *protocol.DiscoveryAnnounce) { m.Metadata = map[string]any{"role": "admin"} },
+		"messageId":      func(m *protocol.DiscoveryAnnounce) { m.MessageID = "altered" },
+		"signature":      func(m *protocol.DiscoveryAnnounce) { m.Signature = "invalid" },
+		"unsigned":       func(m *protocol.DiscoveryAnnounce) { m.Signature = "" },
 	}
 	for _, mode := range []string{"tofu", "explicit", "open"} {
 		for name, mutate := range mutations {
 			t.Run(mode+"/"+name, func(t *testing.T) {
 				msg := testAnnounce(t, 20)
+				msg.Metadata = map[string]any{"harnessAdapter": "opencode", "harnessModel": "provider/configured-model"}
+				signAnnounce(t, &msg, testIdentity(20))
 				mutate(&msg)
 				r := NewRegistry()
 				svc := NewService(slog.Default(), nil, r, nil, "local", "", "", time.Second, time.Minute, mode)
@@ -678,5 +731,74 @@ func TestLocalAnnounceDoesNotAdvertiseUnboundedTTL(t *testing.T) {
 	receiver.handleAnnounce(announceSubject, marshalDiscovery(t, msg))
 	if _, ok := receiver.peers.Get(botID); !ok {
 		t.Fatal("bounded, locally signed announcement was rejected")
+	}
+}
+
+func TestAnnounceHarnessBindingRefreshAndMissingFields(t *testing.T) {
+	id := testIdentity(29)
+	msg := testAnnounce(t, 29)
+	msg.Ts = time.Now().Add(-time.Second).UnixMilli()
+	r := NewRegistry()
+	svc := NewService(slog.Default(), nil, r, nil, "local", "", "", time.Second, time.Minute, "explicit")
+	stages := []struct {
+		name    string
+		adapter any
+		model   any
+	}{
+		{name: "old-peer-without-harness"},
+		{name: "configured", adapter: "opencode", model: "provider/model-a"},
+		{name: "binding-changed", adapter: "pi", model: "provider/model-b"},
+		{name: "model-unspecified", adapter: "pi"},
+		{name: "non-string-values", adapter: true, model: 42},
+		{name: "configured-again", adapter: "omp", model: "provider/model-c"},
+		{name: "later-announce-without-harness"},
+	}
+	for _, stage := range stages {
+		t.Run(stage.name, func(t *testing.T) {
+			msg.MessageID = stage.name
+			msg.Ts++
+			msg.Metadata = nil
+			if stage.adapter != nil || stage.model != nil {
+				msg.Metadata = make(map[string]any, 2)
+				if stage.adapter != nil {
+					msg.Metadata["harnessAdapter"] = stage.adapter
+				}
+				if stage.model != nil {
+					msg.Metadata["harnessModel"] = stage.model
+				}
+			}
+			signAnnounce(t, &msg, id)
+			data := marshalDiscovery(t, msg)
+			var wire map[string]json.RawMessage
+			if err := json.Unmarshal(data, &wire); err != nil {
+				t.Fatal(err)
+			}
+			if wire["harnessAdapter"] != nil || wire["harnessModel"] != nil {
+				t.Fatal("Harness declarations must use the existing metadata seam")
+			}
+			if msg.Metadata == nil && wire["metadata"] != nil {
+				t.Fatal("empty Harness metadata should be omitted")
+			}
+			svc.handleAnnounce(announceSubject, data)
+			peer, ok := r.Get(msg.BotID)
+			if !ok {
+				t.Fatal("valid signed announcement was rejected")
+			}
+			adapter, _ := stage.adapter.(string)
+			model, _ := stage.model.(string)
+			if peer.HarnessAdapter != adapter || peer.HarnessModel != model {
+				t.Fatalf("stale or non-string Harness metadata: %+v", peer)
+			}
+			list := r.List()
+			if len(list) != 1 || list[0].HarnessAdapter != adapter || list[0].HarnessModel != model {
+				t.Fatalf("registry list lost Harness metadata: %+v", list)
+			}
+			if peer.AuthStatus != types.AuthSeen || peer.TrustStatus != types.TrustNone {
+				t.Fatalf("Harness declaration granted permissions: %+v", peer)
+			}
+			if peer.AgentProduct != "clawsynapse" {
+				t.Fatal("Harness adapter replaced the Agent product")
+			}
+		})
 	}
 }

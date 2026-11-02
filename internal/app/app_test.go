@@ -139,6 +139,10 @@ func TestConfigCASBindingChangeAndArchiveKeepIdentity(t *testing.T) {
 		t.Fatal("binding change failed to isolate sessions or changed identity")
 	}
 	cfg, _ = a.manager.Config(id)
+	announce := discoveryAnnounceConfig(cfg, nil, "daemon-version")
+	if announce.HarnessAdapter != "opencode" || announce.HarnessModel != "opencode/glm-5.3-flash-free" {
+		t.Fatalf("updated binding did not reach discovery configuration: %+v", announce)
+	}
 	cfg.Harness.Adapter = "default"
 	cfg.Harness.Model = ""
 	back, err := a.manager.Update(id, cfg)
@@ -147,6 +151,11 @@ func TestConfigCASBindingChangeAndArchiveKeepIdentity(t *testing.T) {
 	}
 	if back.BindingRevision == before.BindingRevision || back.BindingRevision == rebound.BindingRevision {
 		t.Fatal("switching back revived old session scope")
+	}
+	cfg, _ = a.manager.Config(id)
+	announce = discoveryAnnounceConfig(cfg, nil, "daemon-version")
+	if announce.HarnessAdapter != "default" || announce.HarnessModel != "" {
+		t.Fatalf("discovery retained stale binding configuration: %+v", announce)
 	}
 	archived, err := a.manager.Transition(id, "archive")
 	if err != nil || archived.State != "archived" {
@@ -410,5 +419,47 @@ func TestConsoleFileRecordsAndAuthorizedBytesRemainReadableAcrossRestart(t *test
 	requireStatus(t, file, 200)
 	if file.Body.String() != content {
 		t.Fatal("Console file bytes lost after reopen")
+	}
+}
+
+func TestDiscoveryAnnounceConfigPublishesOnlyAgentBinding(t *testing.T) {
+	for _, role := range []string{config.RoleConsole, config.RoleAgent} {
+		t.Run(role, func(t *testing.T) {
+			b := config.DefaultBotConfigForRole(role)
+			b.AgentProduct = "desktop-product"
+			b.DisplayName = "Public name"
+			// Even an accidental binding on Console must never be announced.
+			b.Harness = &config.HarnessBinding{
+				Adapter:         "opencode",
+				Model:           "provider/configured-model",
+				Instance:        "private-instance",
+				CredentialsFile: "/private/credentials",
+				WebhookURL:      "https://private.example/webhook",
+			}
+			announce := discoveryAnnounceConfig(b, nil, "daemon-version")
+			if announce.AgentProduct != b.AgentProduct || announce.AgentVersion != "daemon-version" || announce.DisplayName != b.DisplayName {
+				t.Fatalf("public Bot metadata changed: %+v", announce)
+			}
+			if role == config.RoleAgent {
+				if announce.HarnessAdapter != b.Harness.Adapter || announce.HarnessModel != b.Harness.Model {
+					t.Fatalf("Agent binding was not projected: %+v", announce)
+				}
+			} else if announce.HarnessAdapter != "" || announce.HarnessModel != "" {
+				t.Fatalf("Console announced a Harness: %+v", announce)
+			}
+			raw, err := json.Marshal(announce)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, private := range []string{b.Harness.Instance, b.Harness.CredentialsFile, b.Harness.WebhookURL} {
+				if bytes.Contains(raw, []byte(private)) {
+					t.Fatalf("private binding detail leaked: %s", raw)
+				}
+			}
+			b.AgentVersion = "configured-version"
+			if got := discoveryAnnounceConfig(b, nil, "daemon-version").AgentVersion; got != b.AgentVersion {
+				t.Fatalf("configured product version lost: %q", got)
+			}
+		})
 	}
 }

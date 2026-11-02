@@ -158,6 +158,52 @@ func TestHandlePeersExcludesSelfBot(t *testing.T) {
 	}
 }
 
+func TestHandlePeersProjectsOptionalConfiguredHarness(t *testing.T) {
+	for _, advertised := range []types.Peer{
+		{BotID: "configured", AgentProduct: "desktop-product", HarnessAdapter: "opencode", HarnessModel: "provider/configured-model"},
+		{BotID: "adapter-only", AgentProduct: "desktop-product", HarnessAdapter: "openclaw"},
+		{BotID: "old-peer-or-console", AgentProduct: "desktop-product"},
+	} {
+		t.Run(advertised.BotID, func(t *testing.T) {
+			peers := discovery.NewRegistry()
+			peers.Upsert(advertised)
+			srv := &Server{peers: peers}
+			rec := httptest.NewRecorder()
+			srv.handlePeers(rec, httptest.NewRequest(http.MethodGet, "/peers", nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+			}
+			var result types.APIResult
+			if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			items := result.Data["items"].([]any)
+			if len(items) != 1 {
+				t.Fatalf("expected one peer: %#v", items)
+			}
+			peer := items[0].(map[string]any)
+			for key, want := range map[string]string{"harnessAdapter": advertised.HarnessAdapter, "harnessModel": advertised.HarnessModel} {
+				got, present := peer[key]
+				if want == "" {
+					if present {
+						t.Fatalf("unknown %s should be omitted: %#v", key, peer)
+					}
+				} else if got != want {
+					t.Fatalf("%s = %#v, want %q", key, got, want)
+				}
+			}
+			if peer["agentProduct"] != advertised.AgentProduct {
+				t.Fatal("Harness metadata replaced the product identity")
+			}
+			for _, key := range []string{"harness", "harnessHealthy", "harnessInstance", "credentialsFile", "model"} {
+				if _, present := peer[key]; present {
+					t.Fatalf("unexpected binding detail or health claim %q: %#v", key, peer)
+				}
+			}
+		})
+	}
+}
+
 func TestHandleHealthIncludesAdapterError(t *testing.T) {
 	srv := &Server{
 		peers:       discovery.NewRegistry(),

@@ -3,10 +3,14 @@ package types
 // Peer is the local view of a discovered remote Bot. Public names and labels
 // arrive through signed discovery. Local remarks belong to the receiving Bot
 // and are never overwritten by remote heartbeats or broadcast.
+// Harness fields declare the remote configured binding, not execution health
+// or the actual model used by a Run.
 type Peer struct {
 	BotID            string         `json:"botId"`
 	DID              string         `json:"did,omitempty"`
 	AgentProduct     string         `json:"agentProduct,omitempty"`
+	HarnessAdapter   string         `json:"harnessAdapter,omitempty"`
+	HarnessModel     string         `json:"harnessModel,omitempty"`
 	Version          string         `json:"version,omitempty"`
 	DisplayName      string         `json:"displayName,omitempty"`
 	Labels           Labels         `json:"labels,omitempty"`

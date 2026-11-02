@@ -81,12 +81,8 @@ func NewRuntime(d config.DaemonConfig, b config.BotConfig, botID, version string
 	}
 	hb, _ := time.ParseDuration(cfg.HeartbeatInterval)
 	ttl, _ := time.ParseDuration(cfg.AnnounceTTL)
-	v := cfg.AgentVersion
-	if v == "" {
-		v = version
-	}
 	did := identity.DeriveBotDID(id.PublicKey)
-	r.discovery = discovery.NewService(r.log, r.bus, peers, fs, botID, did, base64.RawURLEncoding.EncodeToString(id.PublicKey), hb, ttl, cfg.TrustMode, discovery.AnnounceConfig{Identity: id, AgentProduct: cfg.AgentProduct, AgentVersion: v, DisplayName: cfg.DisplayName, Labels: cfg.Labels})
+	r.discovery = discovery.NewService(r.log, r.bus, peers, fs, botID, did, base64.RawURLEncoding.EncodeToString(id.PublicKey), hb, ttl, cfg.TrustMode, discoveryAnnounceConfig(b, id, version))
 	r.auth = auth.NewService(r.log, peers, r.bus, botID, id, replay, cfg.TrustMode)
 	r.discovery.SetAutoAuthenticator(r.auth.StartChallenge)
 	r.trust, err = trust.NewService(r.log, peers, r.bus, fs, botID, id, cfg.TrustAutoApprove)
@@ -131,6 +127,26 @@ func NewRuntime(d config.DaemonConfig, b config.BotConfig, botID, version string
 	})
 	r.handler = api.NewBotHandler(peers, r.auth, r.trust, r.messaging, r.transfer, r.bus, r.harness, cfg.AgentAdapter, api.SelfInfo{BotID: botID, Role: b.Role, DID: did, IdentityFingerprint: identity.Fingerprint(id.PublicKey), TrustMode: cfg.TrustMode, DisplayName: cfg.DisplayName, Labels: cfg.Labels}, version, fs).Handler()
 	return r, nil
+}
+
+// discoveryAnnounceConfig exposes only the public configured binding, never
+// instance identifiers, paths, credentials, or execution health.
+func discoveryAnnounceConfig(b config.BotConfig, id *identity.Identity, version string) discovery.AnnounceConfig {
+	if b.AgentVersion != "" {
+		version = b.AgentVersion
+	}
+	announce := discovery.AnnounceConfig{
+		Identity:     id,
+		AgentProduct: b.AgentProduct,
+		AgentVersion: version,
+		DisplayName:  b.DisplayName,
+		Labels:       b.Labels,
+	}
+	if b.Role == config.RoleAgent && b.Harness != nil {
+		announce.HarnessAdapter = b.Harness.Adapter
+		announce.HarnessModel = b.Harness.Model
+	}
+	return announce
 }
 
 func loadBotState(cfg config.Config, botID string) (*store.FSStore, *identity.Identity, *discovery.Registry, error) {

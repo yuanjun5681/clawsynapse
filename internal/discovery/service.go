@@ -53,6 +53,8 @@ type Service struct {
 	trustMode       string
 	agentProduct    string
 	agentVersion    string
+	harnessAdapter  string
+	harnessModel    string
 	displayName     string
 	labels          types.Labels
 	autoAuth        func(context.Context, string) error
@@ -81,12 +83,16 @@ type discoveryMessage struct {
 	id    string
 }
 
+// AnnounceConfig contains public declarations covered by the discovery signature.
+// Harness fields describe configuration only, never execution health or a Run.
 type AnnounceConfig struct {
-	Identity     *identity.Identity
-	AgentProduct string
-	AgentVersion string
-	DisplayName  string
-	Labels       types.Labels
+	Identity       *identity.Identity
+	AgentProduct   string
+	AgentVersion   string
+	HarnessAdapter string
+	HarnessModel   string
+	DisplayName    string
+	Labels         types.Labels
 }
 
 func NewService(log *slog.Logger, bus *natsbus.Client, peers *Registry, fs *store.FSStore, botID string, did string, publicKey string, heartbeat, ttl time.Duration, trustMode string, announceConfigs ...AnnounceConfig) *Service {
@@ -98,6 +104,8 @@ func NewService(log *slog.Logger, bus *natsbus.Client, peers *Registry, fs *stor
 	if len(announceConfigs) > 0 {
 		configured := announceConfigs[0]
 		announce.Identity = configured.Identity
+		announce.HarnessAdapter = configured.HarnessAdapter
+		announce.HarnessModel = configured.HarnessModel
 		if configured.AgentProduct != "" {
 			announce.AgentProduct = configured.AgentProduct
 		}
@@ -112,24 +120,26 @@ func NewService(log *slog.Logger, bus *natsbus.Client, peers *Registry, fs *stor
 		}
 	}
 	return &Service{
-		log:          log,
-		bus:          bus,
-		peers:        peers,
-		store:        fs,
-		botID:        botID,
-		did:          did,
-		publicKey:    publicKey,
-		ttl:          ttl,
-		heartbeat:    heartbeat,
-		trustMode:    trustMode,
-		agentProduct: announce.AgentProduct,
-		agentVersion: announce.AgentVersion,
-		displayName:  announce.DisplayName,
-		labels:       announce.Labels,
-		authing:      map[string]struct{}{},
-		id:           announce.Identity,
-		latest:       map[string]discoveryClaim{},
-		seen:         map[discoveryMessage]int64{},
+		log:            log,
+		bus:            bus,
+		peers:          peers,
+		store:          fs,
+		botID:          botID,
+		did:            did,
+		publicKey:      publicKey,
+		ttl:            ttl,
+		heartbeat:      heartbeat,
+		trustMode:      trustMode,
+		agentProduct:   announce.AgentProduct,
+		agentVersion:   announce.AgentVersion,
+		harnessAdapter: announce.HarnessAdapter,
+		harnessModel:   announce.HarnessModel,
+		displayName:    announce.DisplayName,
+		labels:         announce.Labels,
+		authing:        map[string]struct{}{},
+		id:             announce.Identity,
+		latest:         map[string]discoveryClaim{},
+		seen:           map[discoveryMessage]int64{},
 	}
 }
 
@@ -231,6 +241,15 @@ func (s *Service) newAnnounce() (protocol.DiscoveryAnnounce, error) {
 		Ts:              s.nextTimestamp(),
 		TTLms:           ttl.Milliseconds(),
 	}
+	if s.harnessAdapter != "" || s.harnessModel != "" {
+		msg.Metadata = make(map[string]any, 2)
+		if s.harnessAdapter != "" {
+			msg.Metadata["harnessAdapter"] = s.harnessAdapter
+		}
+		if s.harnessModel != "" {
+			msg.Metadata["harnessModel"] = s.harnessModel
+		}
+	}
 	signature, err := s.sign(announceSubject, msg)
 	msg.Signature = signature
 	return msg, err
@@ -301,16 +320,20 @@ func (s *Service) handleAnnounce(subject string, data []byte) {
 	if !ok {
 		trustStatus = s.persistedTrustStatus(msg.BotID)
 	}
+	harnessAdapter, _ := msg.Metadata["harnessAdapter"].(string)
+	harnessModel, _ := msg.Metadata["harnessModel"].(string)
 	peer := types.Peer{
-		BotID:        msg.BotID,
-		DID:          msg.DID,
-		Version:      msg.Version,
-		AgentProduct: msg.AgentProduct,
-		DisplayName:  msg.DisplayName,
-		Labels:       msg.Labels,
-		Inbox:        msg.Inbox,
-		TrustStatus:  trustStatus,
-		LastSeenMs:   now,
+		BotID:          msg.BotID,
+		DID:            msg.DID,
+		Version:        msg.Version,
+		AgentProduct:   msg.AgentProduct,
+		HarnessAdapter: harnessAdapter,
+		HarnessModel:   harnessModel,
+		DisplayName:    msg.DisplayName,
+		Labels:         msg.Labels,
+		Inbox:          msg.Inbox,
+		TrustStatus:    trustStatus,
+		LastSeenMs:     now,
 		Metadata: map[string]any{
 			"publicKey": msg.PublicKey,
 			"ttlMs":     msg.TTLms,

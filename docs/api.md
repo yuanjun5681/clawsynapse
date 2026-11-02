@@ -94,6 +94,8 @@ Console 示例：`{"displayName":"inbox","role":"console"}`。Role 不是管理�
 
 本地身份字段使用 `botId`，目标参数为 `targetBot`；旧 `targetNode` 被严格解码拒绝。peer 的显示名与自报 `labels` 来自签名 discovery，但不授予权限。`GET peers` 支持重复 `label=key=value`（标量精确匹配）、`labelHas=key=value`（数组成员）、`name=substring`（显示名/本地别名，大小写不敏感）。
 
+`GET B/peers` 的每个 peer 可包含平铺的 `harnessAdapter`、`harnessModel` 字符串，来自最近一次有效签名 discovery 的 `metadata.harnessAdapter` / `metadata.harnessModel` 当前 Binding 配置；`agentProduct` 仍是产品标识。Console、旧对端或未配置模型时，相应字段省略，客户端应显示“未声明”而非推断模型。新声明缺失或非字符串的键会清除旧值，Binding 更新后的重启会公布新配置。这不是远端健康、可执行性或实际 Run 模型的证明，不附带 instance、路径、凭据或 Binding 修订；不能据此自动授权或绕过信任。
+
 备注 patch 是 `{"alias":"现场网关","description":"上海机房","labels":{"floor":"3"}}`。省略保持，空字符串/空对象清除；labels 整体替换。备注按本地 Bot 隔离，只影响显示，不影响远端身份和授权。非法 patch 为 400；持久化失败为 500 `peer_attrs.persist_failed`。
 
 认证 body 为 `{"targetBot":"n1-…"}`；trust request 为 `{"targetBot":"n1-…","reason":"协作","capabilities":["chat"]}`；approve/reject 为 `{"requestId":"req-…","reason":"已确认"}`；revoke 为 `{"targetBot":"n1-…","reason":"撤销"}`。认证和信任是两个步骤；正常模式先握手，再请求并批准信任。业务错误返回 400，code 为对应的 `auth.challenge_failed` / `trust.request_failed` / `trust.response_failed` / `trust.revoke_failed`。`GET trust` 返回 `trusted`, `rejected`, `revoked`, `pending`；每个本地 Bot 独立保存信任。
