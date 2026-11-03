@@ -105,16 +105,17 @@ func (h *AdapterMessageHandler) HandleMessage(msg IncomingMessage) (HandlerResul
 		return HandlerResult{}, err
 	}
 	defer release()
-	sessionKey := msg.SessionKey
+	replySessionKey := msg.SessionKey
+	if replySessionKey == "" {
+		replySessionKey = msg.MessageID
+	}
+	sessionKey := replySessionKey
 	if !h.acceptFeedback {
-		if sessionKey == "" {
-			sessionKey = msg.MessageID
-		}
 		scope, _ := json.Marshal([]string{msg.From, msg.AgentID, sessionKey})
 		digest := sha256.Sum256(scope)
 		sessionKey = hex.EncodeToString(digest[:])
 	}
-	result, err := h.adapter.DeliverMessage(ctx, adapter.DeliverMessageRequest{MessageID: msg.MessageID, RequestID: msg.RequestID, RunID: msg.RunID, Seq: msg.Seq, Type: msg.Type, AgentID: msg.AgentID, SessionKey: sessionKey, Message: msg.Message, Payload: msg.Payload, From: msg.From, Metadata: msg.Metadata, Emit: msg.Emit})
+	result, err := h.adapter.DeliverMessage(ctx, adapter.DeliverMessageRequest{MessageID: msg.MessageID, RequestID: msg.RequestID, RunID: msg.RunID, Seq: msg.Seq, Type: msg.Type, AgentID: msg.AgentID, SessionKey: sessionKey, ReplySessionKey: replySessionKey, Message: msg.Message, Payload: msg.Payload, From: msg.From, Metadata: msg.Metadata, Emit: msg.Emit})
 	if err != nil {
 		return HandlerResult{}, err
 	}

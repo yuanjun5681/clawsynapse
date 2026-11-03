@@ -12,17 +12,21 @@ type AgentAdapter interface {
 }
 
 type DeliverMessageRequest struct {
-	MessageID  string
-	RequestID  string
-	RunID      string
-	Seq        uint64
-	Type       string
-	AgentID    string
-	SessionKey string
-	Message    string
-	From       string
-	Metadata   map[string]any
-	Payload    protocol.MessagePayload
+	MessageID string
+	RequestID string
+	RunID     string
+	Seq       uint64
+	Type      string
+	AgentID   string
+	// SessionKey scopes the local Harness session store. ReplySessionKey is the
+	// peer-visible key the Harness must use after a successful publish; it must
+	// not be replaced by the scoped internal key.
+	SessionKey      string
+	ReplySessionKey string
+	Message         string
+	From            string
+	Metadata        map[string]any
+	Payload         protocol.MessagePayload
 	// Emit applies synchronous backpressure; an error must stop execution.
 	Emit func(OutputEvent) error
 }

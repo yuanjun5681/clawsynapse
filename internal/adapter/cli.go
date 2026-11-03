@@ -226,6 +226,10 @@ func formatDeliverMessage(localBotID string, req DeliverMessageRequest) (string,
 	if payload.Text == "" && payload.Instruction == "" && len(payload.Input) == 0 {
 		payload.Text = req.Message
 	}
+	replySessionKey := req.ReplySessionKey
+	if replySessionKey == "" {
+		replySessionKey = req.SessionKey
+	}
 	prompt := struct {
 		Source     string                  `json:"source"`
 		BotID      string                  `json:"botId"`
@@ -238,7 +242,7 @@ func formatDeliverMessage(localBotID string, req DeliverMessageRequest) (string,
 		SessionKey string                  `json:"sessionKey,omitempty"`
 		Payload    protocol.MessagePayload `json:"payload"`
 		Metadata   map[string]any          `json:"metadata,omitempty"`
-	}{"clawsynapse", localBotID, req.MessageID, req.RequestID, req.RunID, req.Seq, req.Type, req.From, req.SessionKey, payload, req.Metadata}
+	}{"clawsynapse", localBotID, req.MessageID, req.RequestID, req.RunID, req.Seq, req.Type, req.From, replySessionKey, payload, req.Metadata}
 	data, err := json.Marshal(prompt)
 	if err != nil {
 		return "", &ExecutionError{Code: "invalid_prompt", Stage: "validation", Err: errors.New("request cannot be encoded as structured JSON")}
