@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	initDefaultNATSServers  = "nats://220.168.146.21:9414"
+	initDefaultNATSServers  = "nats://36.133.158.119:9414"
 	initDefaultLocalAPIAddr = "127.0.0.1:18080"
 	initDefaultLogLevel     = "info"
 	initDefaultLogFormat    = "json"
