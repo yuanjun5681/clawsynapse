@@ -152,6 +152,14 @@ if ! git show-ref --verify --quiet "refs/remotes/${REMOTE}/${RELEASE_BRANCH}"; t
 	exit 1
 fi
 
+if git show-ref --verify --quiet "refs/heads/${BASE_BRANCH}"; then
+	ahead="$(git rev-list --count "refs/remotes/${REMOTE}/${BASE_BRANCH}..refs/heads/${BASE_BRANCH}")"
+	if [ "$ahead" -ne 0 ]; then
+		echo "local ${BASE_BRANCH} is ahead of ${REMOTE}/${BASE_BRANCH} by ${ahead} commit(s); push it first: git push ${REMOTE} ${BASE_BRANCH}" >&2
+		exit 1
+	fi
+fi
+
 git checkout "$RELEASE_BRANCH"
 git merge --ff-only "${REMOTE}/${RELEASE_BRANCH}"
 if [ "$FF_ONLY" -eq 1 ]; then
