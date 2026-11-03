@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"syscall"
 
 	"clawsynapse/internal/protocol"
 )
@@ -86,7 +85,7 @@ func openMessageJournal(path string) (*messageJournal, error) {
 		return nil, err
 	}
 	fail := func(err error) (*messageJournal, error) { _ = f.Close(); return nil, err }
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := lockJournal(f); err != nil {
 		return fail(fmt.Errorf("lock messaging journal: %w", err))
 	}
 	j := &messageJournal{file: f, publications: make(map[string]*publication), keys: make(map[string]string), received: make(map[string]bool), work: make(map[string]*admittedWork), tails: make(map[string]string)}
