@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"clawsynapse/pkg/types"
 )
 
 func TestLoadFromOSReadsHomeConfig(t *testing.T) {
@@ -62,8 +64,8 @@ func TestLoadFromOSReadsHomeConfig(t *testing.T) {
 	if cfg.AgentProduct != "clawsynapse" {
 		t.Fatalf("expected default agent product clawsynapse, got %q", cfg.AgentProduct)
 	}
-	if len(cfg.Capabilities) != 2 || cfg.Capabilities[0] != "chat" || cfg.Capabilities[1] != "tools" {
-		t.Fatalf("unexpected default capabilities: %#v", cfg.Capabilities)
+	if caps := cfg.Labels.Caps(); len(caps) != 2 || caps[0] != "chat" || caps[1] != "tools" {
+		t.Fatalf("unexpected default labels.caps: %#v", cfg.Labels)
 	}
 }
 
@@ -84,7 +86,7 @@ func TestLoadFromOSMergesDotEnvEnvAndFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := os.WriteFile(filepath.Join(project, ".env"), []byte("TRUST_MODE=open\nTRUST_AUTO_APPROVE=true\nNATS_SERVERS=nats://10.0.0.2:4222\nAGENT_ADAPTER=openclaw\nAGENT_ADAPTER_TIMEOUT=15m\nAGENT_PRODUCT=deepseek-harness\nAGENT_VERSION=0.1.2-alpha.3\nAGENT_CAPABILITIES=chat,task,transfer\nLOG_LEVEL=debug\nLOG_FORMAT=text\nLOG_ADD_SOURCE=true\nLOG_FILE_PATH=./runtime/clawsynapsed.log\nLOG_ROTATE_MAX_SIZE_MB=64\nLOG_ROTATE_MAX_BACKUPS=5\nLOG_ROTATE_MAX_AGE_DAYS=14\nLOG_ROTATE_COMPRESS=true\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(project, ".env"), []byte("TRUST_MODE=open\nTRUST_AUTO_APPROVE=true\nNATS_SERVERS=nats://10.0.0.2:4222\nAGENT_ADAPTER=openclaw\nAGENT_ADAPTER_TIMEOUT=15m\nAGENT_PRODUCT=deepseek-harness\nAGENT_VERSION=0.1.2-alpha.3\nNODE_DISPLAY_NAME=Deepseek Bot\nNODE_LABELS={\"env\":\"test\",\"caps\":[\"chat\",\"task\",\"transfer\"]}\nLOG_LEVEL=debug\nLOG_FORMAT=text\nLOG_ADD_SOURCE=true\nLOG_FILE_PATH=./runtime/clawsynapsed.log\nLOG_ROTATE_MAX_SIZE_MB=64\nLOG_ROTATE_MAX_BACKUPS=5\nLOG_ROTATE_MAX_AGE_DAYS=14\nLOG_ROTATE_COMPRESS=true\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -155,8 +157,14 @@ func TestLoadFromOSMergesDotEnvEnvAndFlags(t *testing.T) {
 	if cfg.AgentVersion != "0.1.2-alpha.3" {
 		t.Fatalf("expected dotenv agent version 0.1.2-alpha.3, got %q", cfg.AgentVersion)
 	}
-	if len(cfg.Capabilities) != 3 || cfg.Capabilities[2] != "transfer" {
-		t.Fatalf("unexpected dotenv capabilities: %#v", cfg.Capabilities)
+	if cfg.DisplayName != "Deepseek Bot" {
+		t.Fatalf("expected dotenv display name, got %q", cfg.DisplayName)
+	}
+	if caps := cfg.Labels.Caps(); len(caps) != 3 || caps[2] != "transfer" {
+		t.Fatalf("unexpected dotenv labels.caps: %#v", cfg.Labels)
+	}
+	if !cfg.Labels.MatchExact("env", "test") {
+		t.Fatalf("unexpected dotenv labels: %#v", cfg.Labels)
 	}
 }
 
@@ -222,6 +230,16 @@ func TestLoadFromOSCanDisableTrustAutoApproveFromEnvAndFlag(t *testing.T) {
 func clearConfigEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
+		"API_TOKEN_PATH",
+		"API_TLS_CERT_FILE",
+		"API_TLS_KEY_FILE",
+		"PRODUCTION",
+		"NATS_CREDENTIALS_FILE",
+		"NATS_TLS_CA_FILE",
+		"NATS_TLS_CERT_FILE",
+		"NATS_TLS_KEY_FILE",
+		"NATS_TLS_SERVER_NAME",
+		"AGENT_ALLOWED_IDS",
 		"NATS_SERVERS",
 		"LOCAL_API_ADDR",
 		"DATA_DIR",
@@ -232,6 +250,8 @@ func clearConfigEnv(t *testing.T) {
 		"AGENT_PRODUCT",
 		"AGENT_VERSION",
 		"AGENT_CAPABILITIES",
+		"NODE_DISPLAY_NAME",
+		"NODE_LABELS",
 		"TRUST_MODE",
 		"TRUST_AUTO_APPROVE",
 		"AGENT_ADAPTER",
@@ -393,7 +413,12 @@ func TestSaveToFileAndReadBack(t *testing.T) {
 		AgentAdapterTimeout: "20m",
 		AgentProduct:        "deepseek-harness",
 		AgentVersion:        "0.1.2-alpha.3",
-		Capabilities:        []string{"chat", "task", "transfer"},
+		DisplayName:         "Deepseek Bot",
+		Labels: types.Labels{
+			"env":  types.LabelString("production"),
+			"role": types.LabelSet([]string{"worker", "batch"}),
+			"caps": types.LabelSet([]string{"chat", "task", "transfer"}),
+		},
 		LogLevel:            "debug",
 		LogFormat:           "text",
 		LogFilePath:         filepath.Join(dir, "clawsynapsed.log"),
@@ -434,8 +459,17 @@ func TestSaveToFileAndReadBack(t *testing.T) {
 	if loaded.AgentProduct != "deepseek-harness" || loaded.AgentVersion != "0.1.2-alpha.3" {
 		t.Fatalf("unexpected agent identity: product=%q version=%q", loaded.AgentProduct, loaded.AgentVersion)
 	}
-	if len(loaded.Capabilities) != 3 || loaded.Capabilities[2] != "transfer" {
-		t.Fatalf("unexpected capabilities: %#v", loaded.Capabilities)
+	if loaded.DisplayName != "Deepseek Bot" {
+		t.Fatalf("expected display name to round trip, got %q", loaded.DisplayName)
+	}
+	if !loaded.Labels.MatchExact("env", "production") {
+		t.Fatalf("expected scalar label env=production, got %#v", loaded.Labels)
+	}
+	if !loaded.Labels.MatchMember("role", "batch") || !loaded.Labels.MatchMember("role", "worker") {
+		t.Fatalf("expected set label role, got %#v", loaded.Labels)
+	}
+	if caps := loaded.Labels.Caps(); len(caps) != 3 {
+		t.Fatalf("unexpected labels.caps: %#v", loaded.Labels)
 	}
 	if !loaded.LogAddSource {
 		t.Fatal("expected log add source true")
@@ -454,6 +488,190 @@ func TestSaveToFileAndReadBack(t *testing.T) {
 	}
 	if !loaded.LogRotateCompress {
 		t.Fatal("expected rotate compress true")
+	}
+}
+
+func TestLoadLegacyCapabilitiesFromYAMLAndRewrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := []byte("natsServers:\n  - nats://10.0.0.1:4222\ncapabilities:\n  - chat\n  - transfer\n")
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := loadConfigValues(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if caps := loaded.Labels.Caps(); len(caps) != 2 || caps[0] != "chat" || caps[1] != "transfer" {
+		t.Fatalf("expected legacy capabilities folded into labels.caps, got %#v", loaded.Labels)
+	}
+
+	// labels.caps wins over legacy capabilities when both are present.
+	content = []byte("capabilities:\n  - legacy\nlabels:\n  caps:\n    - chat\n")
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = loadConfigValues(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if caps := loaded.Labels.Caps(); len(caps) != 1 || caps[0] != "chat" {
+		t.Fatalf("expected labels.caps to win over legacy capabilities, got %#v", loaded.Labels)
+	}
+
+	// Saving never writes the legacy capabilities key.
+	cfg := Config{
+		NATSServers: []string{"nats://10.0.0.1:4222"},
+		Labels:      types.Labels{}.WithCaps([]string{"chat"}),
+	}
+	if err := SaveToFile(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(saved), "capabilities:") {
+		t.Fatalf("legacy capabilities key written on save: %s", saved)
+	}
+	loaded, err = loadConfigValues(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if caps := loaded.Labels.Caps(); len(caps) != 1 || caps[0] != "chat" {
+		t.Fatalf("expected labels.caps to survive save, got %#v", loaded.Labels)
+	}
+}
+
+func TestLoadLegacyAgentCapabilitiesFromEnv(t *testing.T) {
+	home := t.TempDir()
+	project := t.TempDir()
+	t.Setenv("HOME", home)
+	clearConfigEnv(t)
+	chdirTempProject(t, project)
+
+	t.Setenv("AGENT_CAPABILITIES", "chat,transfer")
+	cfg, err := LoadFromOS(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if caps := cfg.Labels.Caps(); len(caps) != 2 || caps[0] != "chat" || caps[1] != "transfer" {
+		t.Fatalf("expected AGENT_CAPABILITIES folded into labels.caps, got %#v", cfg.Labels)
+	}
+
+	// NODE_LABELS caps wins over legacy AGENT_CAPABILITIES.
+	t.Setenv("NODE_LABELS", `{"caps":["chat"]}`)
+	cfg, err = LoadFromOS(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if caps := cfg.Labels.Caps(); len(caps) != 1 || caps[0] != "chat" {
+		t.Fatalf("expected NODE_LABELS caps to win, got %#v", cfg.Labels)
+	}
+}
+
+func TestLoadRejectsInvalidBotLabelsEnv(t *testing.T) {
+	home := t.TempDir()
+	project := t.TempDir()
+	t.Setenv("HOME", home)
+	clearConfigEnv(t)
+	chdirTempProject(t, project)
+
+	t.Setenv("NODE_LABELS", `not-json`)
+	if _, err := LoadFromOS(nil); err == nil {
+		t.Fatal("expected error for invalid NODE_LABELS")
+	}
+}
+
+func TestLabelFlagsAccumulate(t *testing.T) {
+	home := t.TempDir()
+	project := t.TempDir()
+	t.Setenv("HOME", home)
+	clearConfigEnv(t)
+	chdirTempProject(t, project)
+
+	cfg, err := LoadFromOS([]string{"--display-name", "Bot One", "--label", "env=staging", "--label", "role=worker", "--label", "role=batch"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DisplayName != "Bot One" {
+		t.Fatalf("expected display name from flag, got %q", cfg.DisplayName)
+	}
+	if !cfg.Labels.MatchExact("env", "staging") {
+		t.Fatalf("expected scalar label env=staging, got %#v", cfg.Labels)
+	}
+	if !cfg.Labels.MatchMember("role", "worker") || !cfg.Labels.MatchMember("role", "batch") {
+		t.Fatalf("expected repeated --label role to become a set, got %#v", cfg.Labels)
+	}
+	// Flag labels replace merged defaults wholesale; no default caps.
+	if len(cfg.Labels.Caps()) != 0 {
+		t.Fatalf("expected default caps replaced by flag labels, got %#v", cfg.Labels)
+	}
+
+	if _, err := LoadFromOS([]string{"--label", "missingequals"}); err == nil {
+		t.Fatal("expected error for --label without =")
+	}
+	if _, err := LoadFromOS([]string{"--label", "=value"}); err == nil {
+		t.Fatal("expected error for --label with empty key")
+	}
+}
+
+func TestLabelFlagsCapsStaysSet(t *testing.T) {
+	home := t.TempDir()
+	project := t.TempDir()
+	t.Setenv("HOME", home)
+	clearConfigEnv(t)
+	chdirTempProject(t, project)
+
+	// A single --label caps=... must still produce a set: caps is reserved.
+	cfg, err := LoadFromOS([]string{"--label", "caps=chat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if caps := cfg.Labels.Caps(); len(caps) != 1 || caps[0] != "chat" {
+		t.Fatalf("expected caps set [chat], got %#v", cfg.Labels)
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("single caps flag must validate: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidLabels(t *testing.T) {
+	base := Config{
+		NATSServers:         []string{"nats://127.0.0.1:4222"},
+		TrustMode:           "tofu",
+		AgentAdapter:        "default",
+		LogLevel:            "info",
+		LogFormat:           "json",
+		LogRotateMaxSizeMB:  10,
+		LogRotateMaxBackups: 3,
+		LogRotateMaxAgeDays: 7,
+	}
+
+	withControlChar := base
+	withControlChar.Labels = types.Labels{"env": types.LabelString("bad\x01value")}
+	if err := Validate(withControlChar); err == nil {
+		t.Fatal("expected error for control char in label value")
+	}
+
+	capsScalar := base
+	capsScalar.Labels = types.Labels{"caps": types.LabelString("chat")}
+	if err := Validate(capsScalar); err == nil {
+		t.Fatal("expected error for caps as scalar")
+	}
+
+	badName := base
+	badName.DisplayName = "bad\x00name"
+	if err := Validate(badName); err == nil {
+		t.Fatal("expected error for control char in display name")
+	}
+
+	valid := base
+	valid.DisplayName = "Bot One"
+	valid.Labels = types.Labels{"env": types.LabelString("prod"), "caps": types.LabelSet([]string{"chat"})}
+	if err := Validate(valid); err != nil {
+		t.Fatalf("expected valid labels, got %v", err)
 	}
 }
 

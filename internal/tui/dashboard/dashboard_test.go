@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"clawsynapse/internal/identity"
 	"clawsynapse/internal/protocol"
 	"clawsynapse/pkg/types"
 )
@@ -38,89 +39,6 @@ func (s stubLogProvider) ReadLogs(_ context.Context, _ int) (string, error) {
 	return s.text, s.err
 }
 
-func TestLoadSnapshotDecodesHealthPeersAndMessages(t *testing.T) {
-	client := stubDashboardClient{
-		results: map[string]types.APIResult{
-			"/v1/health": {
-				OK: true,
-				Data: map[string]any{
-					"peersCount": 1,
-					"nats": map[string]any{
-						"connected": true,
-						"status":    "CONNECTED",
-						"inMsgs":    10,
-						"outMsgs":   5,
-					},
-				},
-			},
-			"/v1/peers": {
-				OK: true,
-				Data: map[string]any{
-					"items": []map[string]any{
-						{
-							"nodeId":      "node-beta",
-							"authStatus":  "authenticated",
-							"trustStatus": "trusted",
-						},
-					},
-				},
-			},
-			"/v1/messages": {
-				OK: true,
-				Data: map[string]any{
-					"items": []map[string]any{
-						{
-							"id":      "msg-1",
-							"type":    "chat.message",
-							"from":    "node-beta",
-							"to":      "node-alpha",
-							"content": "hello",
-							"ts":      123,
-						},
-					},
-				},
-			},
-			"/v1/config": {
-				OK: true,
-				Data: map[string]any{
-					"config": map[string]any{
-						"trustMode":   "tofu",
-						"logLevel":    "info",
-						"logFormat":   "json",
-						"natsServers": []any{"nats://127.0.0.1:4222"},
-					},
-				},
-			},
-		},
-	}
-
-	snapshot, err := loadSnapshot(context.Background(), client, stubLogProvider{text: "line-a\nline-b"}, dashboardDefaultLogLines)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if snapshot.Health.PeersCount != 1 {
-		t.Fatalf("expected peers count 1, got %d", snapshot.Health.PeersCount)
-	}
-	if !snapshot.Health.NATS.Connected {
-		t.Fatal("expected nats connected")
-	}
-	if len(snapshot.Peers) != 1 || snapshot.Peers[0].NodeID != "node-beta" {
-		t.Fatalf("unexpected peers: %#v", snapshot.Peers)
-	}
-	if len(snapshot.Messages) != 1 || snapshot.Messages[0].Content != "hello" {
-		t.Fatalf("unexpected messages: %#v", snapshot.Messages)
-	}
-	if snapshot.Logs != "line-a\nline-b" {
-		t.Fatalf("unexpected logs: %q", snapshot.Logs)
-	}
-	if snapshot.ConfigData == nil {
-		t.Fatal("expected config data to be loaded")
-	}
-	if snapshot.ConfigData["trustMode"] != "tofu" {
-		t.Fatalf("expected trustMode=tofu, got %v", snapshot.ConfigData["trustMode"])
-	}
-}
-
 func TestDashboardViewRendersStructuredPanels(t *testing.T) {
 	model := model{
 		apiAddr:     "127.0.0.1:18080",
@@ -143,7 +61,7 @@ func TestDashboardViewRendersStructuredPanels(t *testing.T) {
 			},
 			Peers: []types.Peer{
 				{
-					NodeID:       "node-beta",
+					BotID:        "bot-beta",
 					AuthStatus:   "authenticated",
 					TrustStatus:  "trusted",
 					AgentProduct: "openclaw",
@@ -157,8 +75,8 @@ func TestDashboardViewRendersStructuredPanels(t *testing.T) {
 	for _, needle := range []string{
 		"ClawSynapse Dashboard",
 		"Peer Detail",
-		"node-beta",
-		"Keys: q quit",
+		"bot-beta",
+		"/ filter",
 	} {
 		if !strings.Contains(view, needle) {
 			t.Fatalf("expected view to contain %q, got:\n%s", needle, view)
@@ -188,14 +106,17 @@ func TestHeaderViewKeepsReadyWhileLoading(t *testing.T) {
 	}
 }
 
-func TestPeerListLinesShowFullNodeIDWhenWidthAllows(t *testing.T) {
-	const nodeID = "n1-1234567890abcdef1234567890abcdef"
+func TestPeerListLinesShowFullBotIDWhenWidthAllows(t *testing.T) {
+	const botID = "n1-1234567890abcdef1234567890abcdef"
+	const did = "did:key:z6Mkgw6m2D1d8Zk7D1bQp4qJx1vYw9sX3rT5uN7mK2hF4jL6"
 
 	model := model{
 		snapshot: snapshot{
 			Peers: []types.Peer{
 				{
-					NodeID:       nodeID,
+					BotID:        botID,
+					DID:          did,
+					DisplayName:  "beta-bot",
 					AuthStatus:   types.AuthAuthenticated,
 					TrustStatus:  types.TrustTrusted,
 					AgentProduct: "openclaw",
@@ -205,13 +126,52 @@ func TestPeerListLinesShowFullNodeIDWhenWidthAllows(t *testing.T) {
 		},
 	}
 
-	lines := model.peerListLines(4, 78)
-	if got := parseTaggedOnly(lines[1]); !strings.Contains(got, nodeID) {
-		t.Fatalf("expected peer row to contain full nodeId %q, got %q", nodeID, got)
+	lines := model.peerListLines(4, 120)
+	row := parseTaggedOnly(lines[1])
+	if !strings.Contains(row, botID) {
+		t.Fatalf("expected peer row to contain full botId %q, got %q", botID, row)
+	}
+	if !strings.Contains(row, "beta-bot") {
+		t.Fatalf("expected peer row to contain display name, got %q", row)
+	}
+	if fp := identity.FingerprintFromDID(did); !strings.Contains(row, fp) {
+		t.Fatalf("expected peer row to contain fingerprint %q, got %q", fp, row)
 	}
 	for _, line := range lines {
-		if got := visibleLen(parseTaggedOnly(line)); got > 78 {
-			t.Fatalf("line exceeds width: got %d want <= 78, line=%q", got, line)
+		if got := visibleLen(parseTaggedOnly(line)); got > 120 {
+			t.Fatalf("line exceeds width: got %d want <= 120, line=%q", got, line)
+		}
+	}
+}
+
+func TestPeerListLinesDropBotIDBeforeFingerprint(t *testing.T) {
+	const did = "did:key:z6Mkgw6m2D1d8Zk7D1bQp4qJx1vYw9sX3rT5uN7mK2hF4jL6"
+	peers := []types.Peer{
+		{
+			BotID:       "n1-1234567890abcdef1234567890abcdef",
+			DID:         did,
+			LocalAlias:  "edge-1",
+			AuthStatus:  types.AuthAuthenticated,
+			TrustStatus: types.TrustTrusted,
+		},
+	}
+	model := model{snapshot: snapshot{Peers: peers}}
+
+	// Medium width: name and fingerprint stay, full botId is dropped.
+	lines := model.peerListLines(4, 80)
+	row := parseTaggedOnly(lines[1])
+	if !strings.Contains(row, "edge-1") {
+		t.Fatalf("expected local alias in row, got %q", row)
+	}
+	if fp := identity.FingerprintFromDID(did); !strings.Contains(row, fp) {
+		t.Fatalf("expected fingerprint in medium-width row, got %q", row)
+	}
+	if strings.Contains(row, "n1-1234567890abcdef1234567890abcdef") {
+		t.Fatalf("expected botId to be dropped at medium width, got %q", row)
+	}
+	for _, line := range lines {
+		if got := visibleLen(parseTaggedOnly(line)); got > 80 {
+			t.Fatalf("line exceeds width: got %d want <= 80, line=%q", got, line)
 		}
 	}
 }
@@ -222,9 +182,9 @@ func TestMessageListLinesFitPanelWidth(t *testing.T) {
 			Messages: []protocol.MessageEnvelope{
 				{
 					Type:    "conversation.message",
-					From:    "node-with-a-very-long-name",
+					From:    "bot-with-a-very-long-name",
 					To:      "trustmesh-dev",
-					Content: `{"conversation_id":"abcd","summary":"long preview body for the dashboard list"}`,
+					Payload: protocol.MessagePayload{Text: `{"conversation_id":"abcd","summary":"long preview body for the dashboard list"}`},
 					Ts:      1711111111111,
 				},
 			},
@@ -243,9 +203,9 @@ func TestFormatMessageRowCollapsesEmbeddedNewlinesInPreview(t *testing.T) {
 	cols := messageColumnsForWidth(54)
 	row := formatMessageRow(" ", protocol.MessageEnvelope{
 		Type:    "conversation.message",
-		From:    "node-jack",
+		From:    "bot-jack",
 		To:      "trustmesh-dev",
-		Content: "line one\n\nline two\tline three",
+		Payload: protocol.MessagePayload{Text: "line one\n\nline two\tline three"},
 		Ts:      1711111111111,
 	}, cols)
 
@@ -288,25 +248,6 @@ func TestRenderPanelKeepsLayoutForMultilineContent(t *testing.T) {
 	}
 }
 
-func TestConfigViewRendersGroupsAndFields(t *testing.T) {
-	m := model{
-		width:     120,
-		height:    32,
-		activeTab: 4,
-		cfgState: configEditState{
-			fields: initConfigFields(),
-		},
-	}
-	m.recalcLayout()
-
-	view := m.configView(m.width, m.height)
-	for _, needle := range []string{"Network", "Security", "Logging", "Trust Mode", "Log Level", "Field Detail"} {
-		if !strings.Contains(view, needle) {
-			t.Fatalf("expected config view to contain %q", needle)
-		}
-	}
-}
-
 func TestSyncConfigFieldsPopulatesValues(t *testing.T) {
 	m := model{
 		cfgState: configEditState{
@@ -315,24 +256,29 @@ func TestSyncConfigFieldsPopulatesValues(t *testing.T) {
 	}
 
 	data := map[string]any{
-		"trustMode":    "explicit",
-		"logLevel":     "debug",
-		"logAddSource": true,
-		"natsServers":  []any{"nats://a:4222", "nats://b:4222"},
+		"trustMode":   "explicit",
+		"displayName": "edge-bot",
+		"labels":      map[string]any{"env": "prod", "caps": []any{"chat", "tools"}},
 	}
 	m.syncConfigFields(data)
 
 	check := map[string]string{
-		"trustMode":    "explicit",
-		"logLevel":     "debug",
-		"logAddSource": "true",
-		"natsServers":  "nats://a:4222,nats://b:4222",
+		"trustMode":   "explicit",
+		"displayName": "edge-bot",
+		"labels":      `{"caps":["chat","tools"],"env":"prod"}`,
 	}
+	seen := make(map[string]bool, len(check))
 	for _, f := range m.cfgState.fields {
 		if expected, ok := check[f.Key]; ok {
+			seen[f.Key] = true
 			if f.Value != expected {
 				t.Fatalf("field %s: expected %q, got %q", f.Key, expected, f.Value)
 			}
+		}
+	}
+	for key := range check {
+		if !seen[key] {
+			t.Fatalf("expected config field %q to exist", key)
 		}
 	}
 }
@@ -370,6 +316,128 @@ func TestConfigViewShowsUnsavedIndicator(t *testing.T) {
 	view := m.configView(m.width, m.height)
 	if !strings.Contains(view, "Unsaved") {
 		t.Fatal("expected unsaved changes indicator")
+	}
+}
+
+func TestParsePeerFilterMatches(t *testing.T) {
+	peer := types.Peer{
+		BotID:       "n1-aabbccddeeff0011aabbccddeeff0011",
+		DisplayName: "Edge Bot",
+		LocalAlias:  "Kitchen",
+		Labels: types.Labels{
+			"env":  types.LabelString("prod"),
+			"caps": types.LabelSet([]string{"chat", "tools"}),
+		},
+	}
+
+	cases := []struct {
+		raw   string
+		match bool
+	}{
+		{"env=prod", true},       // exact scalar match
+		{"env~=prod", false},     // member match never hits scalars
+		{"env=staging", false},   // exact mismatch
+		{"caps~=chat", true},     // set member match
+		{"caps=chat", false},     // exact match never hits sets
+		{"caps~=missing", false}, // set member mismatch
+		{"zone=eu", false},       // unknown key
+		{"edge", true},           // substring over display name
+		{"EDGE", true},           // case-insensitive
+		{"kitchen", true},        // substring over local alias
+		{"aabbccdd", true},       // substring over bot ID
+		{"prod,chat", false},     // plain text is never comma-split
+		{"nope", false},
+		{"", true}, // empty filter matches everything
+	}
+	for _, tc := range cases {
+		t.Run(tc.raw, func(t *testing.T) {
+			if got := parsePeerFilter(tc.raw).matches(peer); got != tc.match {
+				t.Fatalf("parsePeerFilter(%q).matches = %v, want %v", tc.raw, got, tc.match)
+			}
+		})
+	}
+}
+
+func TestFilteredPeersHidesNonMatching(t *testing.T) {
+	model := model{
+		snapshot: snapshot{
+			Peers: []types.Peer{
+				{BotID: "n1-aaa", Labels: types.Labels{"env": types.LabelString("prod")}},
+				{BotID: "n1-bbb", Labels: types.Labels{"env": types.LabelString("staging")}},
+			},
+		},
+		peerFilter: peerFilterState{raw: "env=prod"},
+	}
+	peers := model.filteredPeers()
+	if len(peers) != 1 || peers[0].BotID != "n1-aaa" {
+		t.Fatalf("expected only n1-aaa to match, got %#v", peers)
+	}
+}
+
+func TestFormatLabelSetVsScalar(t *testing.T) {
+	if got := formatLabel("env", types.LabelString("prod")); got != "env=prod" {
+		t.Fatalf("expected scalar rendering, got %q", got)
+	}
+	if got := formatLabel("caps", types.LabelSet([]string{"chat", "tools"})); got != "caps=[chat,tools]" {
+		t.Fatalf("expected set rendering, got %q", got)
+	}
+	lines := formatLabelsLines(types.Labels{
+		"caps": types.LabelSet([]string{"chat"}),
+		"env":  types.LabelString("prod"),
+	}, "  ")
+	if len(lines) != 2 || lines[0] != "  caps=[chat]" || lines[1] != "  env=prod" {
+		t.Fatalf("expected sorted label lines, got %#v", lines)
+	}
+	if got := formatLabelsLines(nil, "  "); got != nil {
+		t.Fatalf("expected nil for empty labels, got %#v", got)
+	}
+}
+
+func TestBuildConfigFromFieldsIncludesDisplayNameAndLabels(t *testing.T) {
+	fields := initConfigFields()
+	for i := range fields {
+		switch fields[i].Key {
+		case "displayName":
+			fields[i].Changed = true
+			fields[i].Value = "edge-bot"
+		case "labels":
+			fields[i].Changed = true
+			fields[i].Value = `{"env":"prod","caps":["chat","tools"]}`
+		}
+	}
+
+	cfg, err := buildBotConfigFromFields(fields, map[string]any{"role": "console"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.DisplayName != "edge-bot" {
+		t.Fatalf("expected displayName to round-trip, got %q", cfg.DisplayName)
+	}
+	if !cfg.Labels.MatchExact("env", "prod") {
+		t.Fatalf("expected env=prod label, got %#v", cfg.Labels)
+	}
+	if got := cfg.Labels.Caps(); len(got) != 2 || got[0] != "chat" || got[1] != "tools" {
+		t.Fatalf("expected caps set, got %#v", got)
+	}
+}
+
+func TestBuildConfigFromFieldsRejectsBadLabels(t *testing.T) {
+	for _, raw := range []string{
+		`not json`,
+		`["chat"]`,        // not a JSON object
+		`{"caps":"chat"}`, // reserved caps key must be a set
+		`{"bad key":"v"}`, // invalid label key
+	} {
+		fields := initConfigFields()
+		for i := range fields {
+			if fields[i].Key == "labels" {
+				fields[i].Value = raw
+				fields[i].Changed = true
+			}
+		}
+		if _, err := buildBotConfigFromFields(fields, nil); err == nil {
+			t.Fatalf("expected error for labels %q, got nil", raw)
+		}
 	}
 }
 

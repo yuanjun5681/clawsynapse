@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -16,6 +15,7 @@ import (
 
 	"clawsynapse/internal/api"
 	appconfig "clawsynapse/internal/config"
+	"clawsynapse/pkg/types"
 )
 
 func Run(args []string, stdout, stderr io.Writer, opts Options) error {
@@ -28,18 +28,16 @@ func Run(args []string, stdout, stderr io.Writer, opts Options) error {
 
 	client := opts.Client
 	if client == nil {
-		client = api.NewClient(cfg.APIAddr, cfg.Timeout)
+		options := []api.ClientOption{}
+		if cfg.TokenFile != "" {
+			options = append(options, api.WithTokenFile(cfg.TokenFile))
+		}
+		client = api.NewClient(cfg.APIAddr, cfg.Timeout, options...)
 	}
 
 	logLines := opts.LogLines
 	if logLines <= 0 {
 		logLines = dashboardDefaultLogLines
-	}
-
-	fields := initConfigFields()
-	localCfg, cfgPath, cfgErr := loadLocalConfig()
-	if cfgErr == nil {
-		populateFieldsFromConfig(fields, localCfg)
 	}
 
 	m := model{
@@ -52,7 +50,9 @@ func Run(args []string, stdout, stderr io.Writer, opts Options) error {
 		logLines:       logLines,
 		loading:        true,
 		logsFollowTail: true,
-		cfgState:       configEditState{fields: fields, configPath: cfgPath},
+		cfgState:       configEditState{fields: initConfigFields()},
+		botID:          cfg.BotID,
+		selectingBot:   cfg.BotID == "",
 	}
 
 	p := tea.NewProgram(m)
@@ -62,12 +62,6 @@ func Run(args []string, stdout, stderr io.Writer, opts Options) error {
 
 func parseArgs(args []string, stderr io.Writer, opts Options) (config, error) {
 	defaultAPIAddr := strings.TrimSpace(opts.APIAddr)
-	if defaultAPIAddr == "" {
-		defaultAPIAddr = strings.TrimSpace(os.Getenv("LOCAL_API_ADDR"))
-	}
-	if defaultAPIAddr == "" {
-		defaultAPIAddr = "127.0.0.1:18080"
-	}
 
 	timeout := opts.Timeout
 	if timeout <= 0 {
@@ -83,55 +77,71 @@ func parseArgs(args []string, stderr io.Writer, opts Options) (config, error) {
 	fs.SetOutput(stderr)
 	fs.StringVar(&cfg.APIAddr, "api-addr", cfg.APIAddr, "local API address")
 	fs.DurationVar(&cfg.Timeout, "timeout", cfg.Timeout, "local API timeout")
+	fs.StringVar(&cfg.BotID, "bot", opts.BotID, "explicit local Bot ID or prefix; otherwise choose from the Bot list")
+	fs.StringVar(&cfg.TokenFile, "token-file", opts.TokenFile, "private credential for the selected daemon")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
 	if len(fs.Args()) > 0 {
 		return config{}, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
+	if cfg.APIAddr == "" {
+		localCfg, err := appconfig.LoadDaemon(nil)
+		if err != nil {
+			return config{}, err
+		}
+		cfg.APIAddr = localCfg.LocalAPIAddr
+	}
 	return cfg, nil
 }
 
 func loadSnapshot(ctx context.Context, client Client, logs LogProvider, logLines int) (snapshot, error) {
 	var snap snapshot
-
-	healthResult, err := client.Get(ctx, "/v1/health")
+	configResult, err := client.Get(ctx, "/config")
 	if err != nil {
-		return snapshot{}, err
+		return snap, err
+	}
+	if cfgData, ok := configResult.Data["config"].(map[string]any); ok {
+		snap.ConfigData = cfgData
+	}
+
+	healthResult, err := client.Get(ctx, "/health")
+	if err != nil {
+		return snap, err
 	}
 	if err := decodeData(healthResult.Data, &snap.Health); err != nil {
-		return snapshot{}, fmt.Errorf("decode health: %w", err)
+		return snap, fmt.Errorf("decode health: %w", err)
 	}
 
-	peersResult, err := client.Get(ctx, "/v1/peers")
+	peersResult, err := client.Get(ctx, "/peers")
 	if err != nil {
-		return snapshot{}, err
+		return snap, err
 	}
 	if err := decodeItems(peersResult.Data, &snap.Peers); err != nil {
-		return snapshot{}, fmt.Errorf("decode peers: %w", err)
+		return snap, fmt.Errorf("decode peers: %w", err)
 	}
 
-	messagesResult, err := client.Get(ctx, "/v1/messages")
+	messagesResult, err := client.Get(ctx, "/messages")
 	if err != nil {
-		return snapshot{}, err
+		return snap, err
 	}
 	if err := decodeItems(messagesResult.Data, &snap.Messages); err != nil {
-		return snapshot{}, fmt.Errorf("decode messages: %w", err)
+		return snap, fmt.Errorf("decode messages: %w", err)
 	}
 	if logs != nil {
 		logText, err := logs.ReadLogs(ctx, logLines)
 		if err != nil {
 			snap.Logs = "log error: " + err.Error()
 		} else {
-			snap.Logs = logText
-		}
-	}
-
-	configResult, err := client.Get(ctx, "/v1/config")
-	if err == nil {
-		if cfgData, ok := configResult.Data["config"]; ok {
-			if m, ok := cfgData.(map[string]any); ok {
-				snap.ConfigData = m
+			if scoped, ok := client.(scopedClient); ok {
+				var lines []string
+				for _, line := range strings.Split(logText, "\n") {
+					var record map[string]any
+					if json.Unmarshal([]byte(line), &record) == nil && record["botId"] == scoped.botID {
+						lines = append(lines, line)
+					}
+				}
+				snap.Logs = strings.Join(lines, "\n")
 			}
 		}
 	}
@@ -162,7 +172,7 @@ func decodeInto(src any, dst any) error {
 
 var logKnownFields = map[string]bool{
 	"time": true, "level": true, "msg": true, "source": true,
-	"nodeId": true, "service": true, "component": true,
+	"botId": true, "service": true, "component": true,
 	"event": true, "peer": true, "from": true, "to": true,
 	"messageId": true, "requestId": true, "sessionKey": true,
 	"error": true,
@@ -197,7 +207,7 @@ func parseLogEntry(line string) parsedLogEntry {
 	}
 	entry.Level = strField("level")
 	entry.Msg = strField("msg")
-	entry.NodeID = strField("nodeId")
+	entry.BotID = strField("botId")
 	entry.Service = strField("service")
 	entry.Comp = strField("component")
 	entry.Event = strField("event")
@@ -222,82 +232,43 @@ func parseLogEntry(line string) parsedLogEntry {
 	return entry
 }
 
-func loadLocalConfig() (appconfig.Config, string, error) {
-	cfg, err := appconfig.LoadFromOS(nil)
-	if err != nil {
-		return appconfig.Config{}, "", err
-	}
-	return cfg, cfg.ConfigPath, nil
-}
-
-func populateFieldsFromConfig(fields []configField, cfg appconfig.Config) {
-	raw, err := json.Marshal(cfg)
-	if err != nil {
-		return
-	}
-	var data map[string]any
-	if err := json.Unmarshal(raw, &data); err != nil {
-		return
-	}
-	for i := range fields {
-		f := &fields[i]
-		v, ok := data[f.Key]
-		if !ok {
-			continue
-		}
-		switch val := v.(type) {
-		case string:
-			f.Value = val
-		case bool:
-			if val {
-				f.Value = "true"
-			} else {
-				f.Value = "false"
-			}
-		case float64:
-			f.Value = fmt.Sprintf("%.0f", val)
-		case []any:
-			parts := make([]string, 0, len(val))
-			for _, item := range val {
-				parts = append(parts, fmt.Sprintf("%v", item))
-			}
-			f.Value = strings.Join(parts, ",")
-		default:
-			f.Value = fmt.Sprintf("%v", val)
-		}
-	}
-}
-
 func initConfigFields() []configField {
 	return []configField{
-		{Label: "NATS Servers", Key: "natsServers", Group: "Network", Kind: cfkStringSlice},
-		{Label: "Local API Addr", Key: "localApiAddr", Group: "Network", Kind: cfkText},
 		{Label: "Heartbeat Interval", Key: "heartbeatInterval", Group: "Network", Kind: cfkText},
 		{Label: "Announce TTL", Key: "announceTtl", Group: "Network", Kind: cfkText},
 		{Label: "Agent Product", Key: "agentProduct", Group: "Discovery", Kind: cfkText},
 		{Label: "Agent Version", Key: "agentVersion", Group: "Discovery", Kind: cfkText},
-		{Label: "Capabilities", Key: "capabilities", Group: "Discovery", Kind: cfkStringSlice},
+		{Label: "Display Name", Key: "displayName", Group: "Discovery", Kind: cfkText},
+		{Label: "Labels", Key: "labels", Group: "Discovery", Kind: cfkText},
 		{Label: "Trust Mode", Key: "trustMode", Group: "Security", Kind: cfkEnum, Enums: []string{"open", "tofu", "explicit"}},
 		{Label: "Trust Auto Approve", Key: "trustAutoApprove", Group: "Security", Kind: cfkBool},
-		{Label: "Agent Adapter", Key: "agentAdapter", Group: "Agent", Kind: cfkEnum, Enums: []string{"default", "openclaw", "opencode", "webhook"}},
-		{Label: "Agent Adapter Timeout", Key: "agentAdapterTimeout", Group: "Agent", Kind: cfkText},
-		{Label: "Webhook URL", Key: "webhookUrl", Group: "Agent", Kind: cfkText},
+		{Label: "NATS Credentials File", Key: "natsCredentialsFile", Group: "Security", Kind: cfkText},
+		{Label: "NATS TLS CA", Key: "natsTLSCAFile", Group: "Security", Kind: cfkText},
+		{Label: "NATS TLS Client Certificate", Key: "natsTLSCertFile", Group: "Security", Kind: cfkText},
+		{Label: "NATS TLS Client Key", Key: "natsTLSKeyFile", Group: "Security", Kind: cfkText},
+		{Label: "NATS TLS Server Name", Key: "natsTLSServerName", Group: "Security", Kind: cfkText},
+		{Label: "Harness Binding (JSON)", Key: "harness", Group: "Agent", Kind: cfkText},
 		{Label: "Deliverable Prefixes", Key: "deliverablePrefixes", Group: "Agent", Kind: cfkStringSlice},
-		{Label: "Data Dir", Key: "dataDir", Group: "Storage", Kind: cfkText},
-		{Label: "Identity Key Path", Key: "identityKeyPath", Group: "Storage", Kind: cfkText},
-		{Label: "Identity Pub Path", Key: "identityPubPath", Group: "Storage", Kind: cfkText},
-		{Label: "Transfer Dir", Key: "transferDir", Group: "Transfer", Kind: cfkText},
 		{Label: "Transfer Max Size", Key: "transferMaxFileSize", Group: "Transfer", Kind: cfkText},
 		{Label: "Transfer TTL", Key: "transferTtl", Group: "Transfer", Kind: cfkText},
-		{Label: "Log Level", Key: "logLevel", Group: "Logging", Kind: cfkEnum, Enums: []string{"debug", "info", "warn", "error"}},
-		{Label: "Log Format", Key: "logFormat", Group: "Logging", Kind: cfkEnum, Enums: []string{"json", "text"}},
-		{Label: "Log Add Source", Key: "logAddSource", Group: "Logging", Kind: cfkBool},
+		{Label: "Max Concurrent", Key: "maxConcurrent", Group: "Execution", Kind: cfkText},
+		{Label: "Max Queued", Key: "maxQueued", Group: "Execution", Kind: cfkText},
+		{Label: "File Quota Bytes", Key: "fileQuotaBytes", Group: "Transfer", Kind: cfkText},
 	}
 }
 
 func (m *model) syncConfigFields(data map[string]any) {
 	if data == nil || m.cfgState.editing {
 		return
+	}
+	if data["role"] == "console" {
+		fields := m.cfgState.fields[:0]
+		for _, field := range m.cfgState.fields {
+			if field.Key != "harness" && field.Key != "maxConcurrent" && field.Key != "maxQueued" {
+				fields = append(fields, field)
+			}
+		}
+		m.cfgState.fields = fields
 	}
 	for i := range m.cfgState.fields {
 		f := &m.cfgState.fields[i]
@@ -325,6 +296,12 @@ func (m *model) syncConfigFields(data map[string]any) {
 				parts = append(parts, fmt.Sprintf("%v", item))
 			}
 			f.Value = strings.Join(parts, ",")
+		case map[string]any:
+			raw, err := json.Marshal(val)
+			if err != nil {
+				continue
+			}
+			f.Value = string(raw)
 		default:
 			f.Value = fmt.Sprintf("%v", val)
 		}
@@ -344,4 +321,100 @@ func logLevelTag(level string) string {
 	default:
 		return dashboardTagMuted
 	}
+}
+
+type peerFilterKind int
+
+const (
+	peerFilterNone peerFilterKind = iota
+	peerFilterText
+	peerFilterExact
+	peerFilterMember
+)
+
+// peerFilterExpr is a parsed peers-tab filter expression.
+type peerFilterExpr struct {
+	kind  peerFilterKind
+	key   string
+	value string
+}
+
+// parsePeerFilter parses a filter expression: "key=value" matches a remote
+// label scalar exactly, "key~=value" matches a remote label set member, and
+// anything else is a case-insensitive substring over display name, local
+// alias, and Bot ID. Plain text is never split on commas.
+func parsePeerFilter(raw string) peerFilterExpr {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return peerFilterExpr{kind: peerFilterNone}
+	}
+	if i := strings.Index(raw, "~="); i >= 0 {
+		key, value := strings.TrimSpace(raw[:i]), strings.TrimSpace(raw[i+2:])
+		if key != "" && value != "" {
+			return peerFilterExpr{kind: peerFilterMember, key: key, value: value}
+		}
+		return peerFilterExpr{kind: peerFilterText, value: raw}
+	}
+	if i := strings.Index(raw, "="); i >= 0 {
+		key, value := strings.TrimSpace(raw[:i]), strings.TrimSpace(raw[i+1:])
+		if key != "" && value != "" {
+			return peerFilterExpr{kind: peerFilterExact, key: key, value: value}
+		}
+		return peerFilterExpr{kind: peerFilterText, value: raw}
+	}
+	return peerFilterExpr{kind: peerFilterText, value: raw}
+}
+
+func (f peerFilterExpr) matches(peer types.Peer) bool {
+	switch f.kind {
+	case peerFilterNone:
+		return true
+	case peerFilterExact:
+		return peer.Labels.MatchExact(f.key, f.value)
+	case peerFilterMember:
+		return peer.Labels.MatchMember(f.key, f.value)
+	default:
+		needle := strings.ToLower(f.value)
+		return strings.Contains(strings.ToLower(peer.DisplayName), needle) ||
+			strings.Contains(strings.ToLower(peer.LocalAlias), needle) ||
+			strings.Contains(strings.ToLower(peer.BotID), needle)
+	}
+}
+
+// filteredPeers applies the active peers-tab filter to the snapshot.
+func (m model) filteredPeers() []types.Peer {
+	expr := parsePeerFilter(m.peerFilter.raw)
+	if expr.kind == peerFilterNone {
+		return m.snapshot.Peers
+	}
+	out := make([]types.Peer, 0, len(m.snapshot.Peers))
+	for _, peer := range m.snapshot.Peers {
+		if expr.matches(peer) {
+			out = append(out, peer)
+		}
+	}
+	return out
+}
+
+// parseLabelsField parses the Labels config field (a JSON object such as
+// {"env":"prod","caps":["chat"]}) and normalizes it. An empty field means no
+// labels. Parse or validation errors abort the save instead of silently
+// dropping labels.
+func parseLabelsField(raw string) (types.Labels, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	var labels types.Labels
+	if err := json.Unmarshal([]byte(raw), &labels); err != nil {
+		return nil, fmt.Errorf("labels must be a JSON object, e.g. {\"env\":\"prod\"}: %w", err)
+	}
+	normalized, err := types.NormalizeLabels(labels)
+	if err != nil {
+		return nil, fmt.Errorf("labels: %w", err)
+	}
+	if len(normalized) == 0 {
+		return nil, nil
+	}
+	return normalized, nil
 }

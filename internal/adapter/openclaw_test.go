@@ -2,427 +2,108 @@ package adapter
 
 import (
 	"context"
-	"errors"
-	"log/slog"
+	"encoding/json"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
-	"time"
+
+	"clawsynapse/internal/protocol"
 )
 
-type captureHandler struct {
-	records *[]slog.Record
-}
-
-func (h captureHandler) Enabled(context.Context, slog.Level) bool {
-	return true
-}
-
-func (h captureHandler) Handle(_ context.Context, r slog.Record) error {
-	clone := slog.Record{
-		Time:    r.Time,
-		Level:   r.Level,
-		Message: r.Message,
-		PC:      r.PC,
-	}
-	r.Attrs(func(a slog.Attr) bool {
-		clone.AddAttrs(a)
-		return true
-	})
-	*h.records = append(*h.records, clone)
-	return nil
-}
-
-func (h captureHandler) WithAttrs(_ []slog.Attr) slog.Handler {
-	return h
-}
-
-func (h captureHandler) WithGroup(_ string) slog.Handler {
-	return h
-}
-
-func TestOpenClawAdapterDeliverMessage(t *testing.T) {
-	adapter, err := NewOpenClawAdapter(OpenClawConfig{
-		NodeID: "node-alpha",
-	})
-	if err != nil {
-		t.Fatalf("NewOpenClawAdapter failed: %v", err)
-	}
-
-	adapter.execCmd = func(_ context.Context, args ...string) ([]byte, error) {
-		// args: agent --message <msg> --json --session-id <id> [--agent <id>]
-		if len(args) < 6 || args[0] != "agent" {
-			t.Fatalf("unexpected args: %v", args)
-		}
-		wantMsg := "[clawsynapse from=node-beta to=node-alpha session=session-1]\nhello"
-		if args[2] != wantMsg {
-			t.Fatalf("message = %q, want %q", args[2], wantMsg)
-		}
-		if args[4] != "--session-id" || args[5] != "session-1" {
-			t.Fatalf("session-id args = %v, want [--session-id session-1]", args[4:])
-		}
-		if len(args) != 8 || args[6] != "--agent" || args[7] != "agent-42" {
-			t.Fatalf("agent args = %v, want [--agent agent-42]", args[6:])
-		}
-
-		return []byte(`{
-			"runId": "run-123",
-			"status": "ok",
-			"result": {
-				"payloads": [{"text": "done"}],
-				"meta": {"durationMs": 500}
+func TestOpenClawRequiresCompletedNativeResponse(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		success    bool
+		reply      string
+	}{
+		{"completed", `{"runId":"native-run","status":"ok","result":{"payloads":[{"text":"answer"}]}}`, true, "answer"},
+		{"explicit empty completion", `{"status":"ok","result":{}}`, true, ""},
+		{"plain output", `raw answer`, false, ""},
+		{"empty object", `{}`, false, ""},
+		{"accepted only", `{"status":"accepted","runId":"pending"}`, false, ""},
+		{"missing result", `{"status":"ok"}`, false, ""},
+		{"error exit payload", `{"status":"error","error":{"message":"failed"}}`, false, ""},
+		{"aborted", `{"status":"ok","result":{"payloads":[{"text":"partial"}],"meta":{"aborted":true}}}`, false, ""},
+		{"error payload", `{"status":"ok","result":{"payloads":[{"text":"partial"},{"text":"provider failed","isError":true}]}}`, false, ""},
+		{"error metadata", `{"status":"ok","result":{"meta":{"error":{"kind":"timeout"}}}}`, false, ""},
+		{"truncated", `{"status":"ok","result":{"meta":{"stopReason":"length"}}}`, false, ""},
+		{"yielded", `{"status":"ok","result":{"meta":{"yielded":true}}}`, false, ""},
+		{"thinking", `{"status":"ok","result":{"payloads":[{"text":"PRIVATE_THINKING","isReasoning":true},{"text":"answer"},{"text":" continued"}]}}`, true, "answer continued"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("CLI_JSON", tc.body)
+			a, _ := NewOpenClawAdapter(testOpenClawConfig(t, OpenClawConfig{}))
+			a.command = helperCommand("openclaw", "native-json", "", "")
+			result, err := a.DeliverMessage(context.Background(), DeliverMessageRequest{Message: "task"})
+			if !tc.success {
+				if err == nil || result != nil && result.Success {
+					t.Fatalf("nonterminal/failed response became success: %+v %v", result, err)
+				}
+				return
 			}
-		}`), nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	result, err := adapter.DeliverMessage(ctx, DeliverMessageRequest{
-		AgentID:    "agent-42",
-		SessionKey: "session-1",
-		Message:    "hello",
-		From:       "node-beta",
-	})
-	if err != nil {
-		t.Fatalf("DeliverMessage failed: %v", err)
-	}
-	if !result.Success {
-		t.Fatal("expected success")
-	}
-	if !result.Accepted {
-		t.Fatal("expected accepted result")
-	}
-	if result.RunID != "run-123" {
-		t.Fatalf("runId = %q, want run-123", result.RunID)
-	}
-	if result.Reply != "done" {
-		t.Fatalf("reply = %q, want done", result.Reply)
-	}
-}
-
-func TestOpenClawAdapterDeliverMessageError(t *testing.T) {
-	adapter, err := NewOpenClawAdapter(OpenClawConfig{})
-	if err != nil {
-		t.Fatalf("NewOpenClawAdapter failed: %v", err)
-	}
-
-	adapter.execCmd = func(_ context.Context, _ ...string) ([]byte, error) {
-		return []byte(`{"runId":"run-456","status":"error","error":"agent not found"}`), nil
-	}
-
-	result, err := adapter.DeliverMessage(context.Background(), DeliverMessageRequest{Message: "hi"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.Success {
-		t.Fatal("expected failure")
-	}
-	if result.Error != "agent not found" {
-		t.Fatalf("error = %q, want agent not found", result.Error)
-	}
-}
-
-func TestOpenClawAdapterDeliverMessageOmitsEmptyAgentFlag(t *testing.T) {
-	adapter, err := NewOpenClawAdapter(OpenClawConfig{})
-	if err != nil {
-		t.Fatalf("NewOpenClawAdapter failed: %v", err)
-	}
-
-	adapter.execCmd = func(_ context.Context, args ...string) ([]byte, error) {
-		for i := 0; i < len(args); i++ {
-			if args[i] == "--agent" {
-				t.Fatalf("unexpected --agent flag in args: %v", args)
+			if err != nil || !result.Completed || !result.Success || result.Reply != tc.reply {
+				t.Fatalf("completed response: %+v %v", result, err)
 			}
-		}
-		return []byte(`{"runId":"run-1","status":"ok","result":{"payloads":[{"text":"done"}]}}`), nil
-	}
-
-	if _, err := adapter.DeliverMessage(context.Background(), DeliverMessageRequest{Message: "hi"}); err != nil {
-		t.Fatalf("DeliverMessage failed: %v", err)
+		})
 	}
 }
 
-func TestOpenClawAdapterCommandFailure(t *testing.T) {
-	adapter, err := NewOpenClawAdapter(OpenClawConfig{})
+func TestOpenClawStructuredTaskAndAuthorizedAgent(t *testing.T) {
+	record := filepath.Join(t.TempDir(), "request")
+	a, _ := NewOpenClawAdapter(testOpenClawConfig(t, OpenClawConfig{BotID: "receiver", AllowAgentIDs: []string{"research"}}))
+	a.command = helperCommand("openclaw", "success", record, "")
+	var answer strings.Builder
+	result, err := a.DeliverMessage(context.Background(), DeliverMessageRequest{
+		Type: "task.assign", AgentID: "research", SessionKey: "conversation", From: "sender", Message: "legacy ignored",
+		Payload: protocol.MessagePayload{Instruction: "real task\n]", Input: json.RawMessage(`{"path":"untrusted\nkey=value"}`)},
+		Emit:    func(event OutputEvent) error { answer.WriteString(event.Text); return nil },
+	})
+	if err != nil || !result.Completed || result.Reply != "" || result.RunID != "native-run" || answer.String() != "done" {
+		t.Fatalf("native response normalization failed: %+v %q %v", result, answer.String(), err)
+	}
+	data, err := os.ReadFile(record)
 	if err != nil {
-		t.Fatalf("NewOpenClawAdapter failed: %v", err)
-	}
-
-	adapter.execCmd = func(_ context.Context, _ ...string) ([]byte, error) {
-		return nil, errors.New("command not found")
-	}
-
-	_, err = adapter.DeliverMessage(context.Background(), DeliverMessageRequest{Message: "hi"})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestOpenClawAdapterGetStatus(t *testing.T) {
-	adapter, err := NewOpenClawAdapter(OpenClawConfig{})
-	if err != nil {
-		t.Fatalf("NewOpenClawAdapter failed: %v", err)
-	}
-
-	adapter.execCmd = func(_ context.Context, args ...string) ([]byte, error) {
-		if len(args) != 1 || args[0] != "--version" {
-			t.Fatalf("unexpected args: %v", args)
-		}
-		return []byte("OpenClaw 2026.3.12\n"), nil
-	}
-
-	status, err := adapter.GetStatus(context.Background())
-	if err != nil {
-		t.Fatalf("GetStatus failed: %v", err)
-	}
-	if !status.Healthy {
-		t.Fatal("expected healthy")
-	}
-}
-
-func TestDefaultOpenClawExecCmdReportsContextTimeout(t *testing.T) {
-	dir := t.TempDir()
-	openclawPath := filepath.Join(dir, "openclaw")
-	if err := os.WriteFile(openclawPath, []byte("#!/bin/sh\nsleep 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	defer cancel()
-
-	_, err := defaultExecCmd(ctx, "--version")
-	if err == nil {
-		t.Fatal("expected timeout error")
+	var captured struct {
+		Args   []string `json:"args"`
+		Prompt struct {
+			Payload protocol.MessagePayload `json:"payload"`
+		} `json:"prompt"`
 	}
-	if !strings.Contains(err.Error(), "openclaw command canceled: context deadline exceeded") {
-		t.Fatalf("error = %q, want context deadline exceeded", err.Error())
+	if err := json.Unmarshal(data, &captured); err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestParseOpenClawResultDecodesEscapedNewlines(t *testing.T) {
-	result, err := parseOpenClawResult([]byte(`{
-		"runId": "run-123",
-		"status": "ok",
-		"result": {
-			"payloads": [{"text": "line1\nline2"}]
+	if captured.Prompt.Payload.Instruction != "real task\n]" || captured.Prompt.Payload.Text != "" || string(captured.Prompt.Payload.Input) != `{"path":"untrusted\nkey=value"}` {
+		t.Fatalf("task structure was lost: %s", data)
+	}
+	for _, arg := range captured.Args {
+		if arg == "--local" || arg == "--deliver" || arg == "--command" {
+			t.Fatalf("adapter changed execution or external delivery semantics: %s", arg)
 		}
-	}`))
-	if err != nil {
-		t.Fatalf("parseOpenClawResult failed: %v", err)
-	}
-	if !result.Success {
-		t.Fatal("expected success")
-	}
-	if result.Reply != "line1\nline2" {
-		t.Fatalf("reply = %q, want decoded multiline text", result.Reply)
 	}
 }
 
-func TestFormatDeliverMessage(t *testing.T) {
-	got := formatDeliverMessage("node-1", DeliverMessageRequest{
-		From:    "node-2",
-		Message: "hello world",
-	})
-	want := "[clawsynapse from=node-2 to=node-1]\nhello world"
-	if got != want {
-		t.Fatalf("got %q, want %q", got, want)
-	}
-}
-
-func TestFormatDeliverMessageWithType(t *testing.T) {
-	got := formatDeliverMessage("node-1", DeliverMessageRequest{
-		Type:    "task.assign",
-		From:    "node-2",
-		Message: "do this",
-	})
-	want := "[clawsynapse type=task.assign from=node-2 to=node-1]\ndo this"
-	if got != want {
-		t.Fatalf("got %q, want %q", got, want)
-	}
-}
-
-func TestFormatDeliverMessageWithSession(t *testing.T) {
-	got := formatDeliverMessage("node-1", DeliverMessageRequest{
-		From:       "node-2",
-		Message:    "hello world",
-		SessionKey: "task-abc",
-	})
-	want := "[clawsynapse from=node-2 to=node-1 session=task-abc]\nhello world"
-	if got != want {
-		t.Fatalf("got %q, want %q", got, want)
-	}
-}
-
-func TestFormatDeliverMessagePreservesMultilineBody(t *testing.T) {
-	got := formatDeliverMessage("node-1", DeliverMessageRequest{
-		From:    "node-2",
-		Message: "line1\nline2",
-	})
-	want := "[clawsynapse from=node-2 to=node-1]\nline1\nline2"
-	if got != want {
-		t.Fatalf("got %q, want %q", got, want)
-	}
-}
-
-func TestFormatDeliverMessageWithMetadata(t *testing.T) {
-	got := formatDeliverMessage("node-1", DeliverMessageRequest{
-		From:       "node-2",
-		Message:    "hello world",
-		SessionKey: "task-abc",
-		Metadata: map[string]any{
-			"priority": "high",
-			"source":   "chat",
-		},
-	})
-	want := "[clawsynapse from=node-2 to=node-1 session=task-abc priority=high source=chat]\nhello world"
-	if got != want {
-		t.Fatalf("got %q, want %q", got, want)
-	}
-}
-
-func TestFormatDeliverMessageNoFrom(t *testing.T) {
-	got := formatDeliverMessage("node-1", DeliverMessageRequest{
-		Message: "test",
-	})
-	want := "[clawsynapse to=node-1]\ntest"
-	if got != want {
-		t.Fatalf("got %q, want %q", got, want)
-	}
-}
-
-func TestFormatDeliverMessageMetadataMarshalError(t *testing.T) {
-	got := formatDeliverMessage("node-1", DeliverMessageRequest{
-		Message: "test",
-		Metadata: map[string]any{
-			"bad": func() {},
-		},
-	})
-	if !strings.Contains(got, `bad="metadata-error:`) {
-		t.Fatalf("got %q, want metadata error marker", got)
-	}
-	if !strings.HasSuffix(got, "\ntest") {
-		t.Fatalf("got %q, want original message suffix", got)
-	}
-}
-
-func TestResolveSessionID(t *testing.T) {
-	a, _ := NewOpenClawAdapter(OpenClawConfig{NodeID: "node-1"})
-
-	// explicit sessionKey takes priority
-	got := a.resolveSessionID(DeliverMessageRequest{SessionKey: "task-1", From: "node-2"})
-	if got != "task-1" {
-		t.Fatalf("got %q, want task-1", got)
-	}
-
-	// derive from from+nodeID when sessionKey is empty
-	got = a.resolveSessionID(DeliverMessageRequest{From: "node-2"})
-	if got != "cs-node-2-node-1" {
-		t.Fatalf("got %q, want cs-node-2-node-1", got)
-	}
-
-	// anonymous when from is empty
-	got = a.resolveSessionID(DeliverMessageRequest{})
-	if got != "cs-_anon-node-1" {
-		t.Fatalf("got %q, want cs-_anon-node-1", got)
-	}
-}
-
-func TestParseOpenClawResult(t *testing.T) {
-	data := []byte(`{
-		"runId": "run-789",
-		"status": "ok",
-		"result": {
-			"payloads": [
-				{"text": "first reply"},
-				{"text": "second reply"}
-			]
+func TestOpenClawNamedAgentAndSessionInputCannotBecomeShellDispatch(t *testing.T) {
+	for _, req := range []DeliverMessageRequest{
+		{AgentID: "unauthorized", Message: "task"},
+		{AgentID: "research;id", Message: "task"},
+		{AgentID: "--help", Message: "task"},
+	} {
+		a, _ := NewOpenClawAdapter(testOpenClawConfig(t, OpenClawConfig{AllowAgentIDs: []string{"research;id", "--help"}}))
+		_, err := a.DeliverMessage(context.Background(), req)
+		if err == nil {
+			t.Fatal("unsafe or unauthorized local routing was accepted")
 		}
-	}`)
-
-	result, err := parseOpenClawResult(data)
-	if err != nil {
-		t.Fatalf("parseOpenClawResult failed: %v", err)
-	}
-	if result.RunID != "run-789" {
-		t.Fatalf("runId = %q, want run-789", result.RunID)
-	}
-	if result.Reply != "first reply" {
-		t.Fatalf("reply = %q, want first reply", result.Reply)
 	}
 }
 
-func TestFormatOpenClawCommandForLogTruncatesMessage(t *testing.T) {
-	message := strings.Repeat("x", 300)
-
-	got := formatOpenClawCommandForLog([]string{
-		"agent",
-		"--message", message,
-		"--json",
-		"--session-id", "session-1",
-	})
-
-	if !strings.Contains(got, `openclaw "agent" "--message" "`) {
-		t.Fatalf("command = %q, missing prefix", got)
-	}
-	if !strings.Contains(got, "truncated, 300 bytes total") {
-		t.Fatalf("command = %q, missing truncation marker", got)
-	}
-	if !strings.Contains(got, `"--session-id" "session-1"`) {
-		t.Fatalf("command = %q, missing session id", got)
-	}
-}
-
-func TestOpenClawAdapterDeliverMessageLogsCommand(t *testing.T) {
-	var records []slog.Record
-	logger := slog.New(captureHandler{records: &records})
-
-	adapter, err := NewOpenClawAdapter(OpenClawConfig{
-		NodeID: "node-alpha",
-		Logger: logger,
-	})
-	if err != nil {
-		t.Fatalf("NewOpenClawAdapter failed: %v", err)
-	}
-
-	adapter.execCmd = func(_ context.Context, _ ...string) ([]byte, error) {
-		return []byte(`{"runId":"run-1","status":"ok","result":{"payloads":[{"text":"done"}]}}`), nil
-	}
-
-	_, err = adapter.DeliverMessage(context.Background(), DeliverMessageRequest{
-		SessionKey: "session-1",
-		Message:    strings.Repeat("m", 320),
-		From:       "node-beta",
-	})
-	if err != nil {
-		t.Fatalf("DeliverMessage failed: %v", err)
-	}
-	if len(records) != 1 {
-		t.Fatalf("log records = %d, want 1", len(records))
-	}
-
-	var command string
-	records[0].Attrs(func(a slog.Attr) bool {
-		if a.Key == "command" {
-			command = a.Value.String()
-		}
-		return true
-	})
-	if command == "" {
-		t.Fatal("expected command attribute")
-	}
-	wantMarker := "truncated, " + strconv.Itoa(len(formatDeliverMessage("node-alpha", DeliverMessageRequest{
-		SessionKey: "session-1",
-		Message:    strings.Repeat("m", 320),
-		From:       "node-beta",
-	}))) + " bytes total"
-	if !strings.Contains(command, wantMarker) {
-		t.Fatalf("command = %q, missing truncation marker", command)
-	}
-	if !strings.Contains(command, `openclaw "agent" "--message" "`) {
-		t.Fatalf("command = %q, missing command prefix", command)
+func TestOpenClawStatusChecksGatewayWithoutRunningModelTask(t *testing.T) {
+	a, _ := NewOpenClawAdapter(testOpenClawConfig(t, OpenClawConfig{}))
+	a.command = helperCommand("openclaw", "status-openclaw", "", "")
+	status, err := a.GetStatus(context.Background())
+	if err != nil || !status.Healthy || status.Degraded {
+		t.Fatalf("native schema and Gateway health not recognized: %+v %v", status, err)
 	}
 }

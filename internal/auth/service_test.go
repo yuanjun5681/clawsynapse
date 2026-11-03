@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,13 @@ import (
 	"clawsynapse/pkg/types"
 )
 
+func TestChallengeValidationUsesBotTerminology(t *testing.T) {
+	svc := &Service{}
+	if err := svc.StartChallenge(context.Background(), ""); err == nil || err.Error() != "targetBot is required" {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestHandleChallengeResponseRejectsUnexpectedSender(t *testing.T) {
 	peers := discovery.NewRegistry()
 	self := mustIdentity(t, "self")
@@ -21,7 +29,7 @@ func TestHandleChallengeResponseRejectsUnexpectedSender(t *testing.T) {
 	attacker := mustIdentity(t, "attacker")
 
 	peers.Upsert(types.Peer{
-		NodeID:      "node-beta",
+		BotID:       "bot-beta",
 		AuthStatus:  types.AuthSeen,
 		TrustStatus: types.TrustNone,
 		Metadata: map[string]any{
@@ -29,7 +37,7 @@ func TestHandleChallengeResponseRejectsUnexpectedSender(t *testing.T) {
 		},
 	})
 	peers.Upsert(types.Peer{
-		NodeID:      "node-gamma",
+		BotID:       "bot-gamma",
 		AuthStatus:  types.AuthSeen,
 		TrustStatus: types.TrustNone,
 		Metadata: map[string]any{
@@ -37,12 +45,12 @@ func TestHandleChallengeResponseRejectsUnexpectedSender(t *testing.T) {
 		},
 	})
 
-	svc := NewService(slog.Default(), peers, nil, "node-alpha", self, nil, "tofu")
+	svc := NewService(slog.Default(), peers, nil, "bot-alpha", self, nil, "tofu")
 	resultCh := make(chan error, 1)
 	svc.pending["req-1"] = &pendingChallenge{
 		requestID: "req-1",
 		nonce:     "nonce-1",
-		target:    "node-beta",
+		target:    "bot-beta",
 		requestTs: time.Now().UnixMilli(),
 		resultCh:  resultCh,
 	}
@@ -50,8 +58,8 @@ func TestHandleChallengeResponseRejectsUnexpectedSender(t *testing.T) {
 	resp := map[string]any{
 		"messageId":    "resp-1",
 		"messageType":  "auth.challenge.response",
-		"from":         "node-gamma",
-		"to":           "node-alpha",
+		"from":         "bot-gamma",
+		"to":           "bot-alpha",
 		"publicKey":    base64.RawURLEncoding.EncodeToString(attacker.PublicKey),
 		"nonce":        "nonce-2",
 		"challengeRef": "req-1",
@@ -63,7 +71,7 @@ func TestHandleChallengeResponseRejectsUnexpectedSender(t *testing.T) {
 		t.Fatalf("marshal response: %v", err)
 	}
 
-	svc.handleChallengeResponse("clawsynapse.auth.node-alpha.challenge.response", b)
+	svc.handleChallengeResponse("clawsynapse.auth.bot-alpha.challenge.response", b)
 
 	if _, ok := svc.pending["req-1"]; ok {
 		t.Fatal("pending challenge should be cleared on sender mismatch")
@@ -85,7 +93,7 @@ func TestHandleChallengeAckRejectsInvalidProof(t *testing.T) {
 	peer := mustIdentity(t, "peer")
 
 	peers.Upsert(types.Peer{
-		NodeID:      "node-beta",
+		BotID:       "bot-beta",
 		AuthStatus:  types.AuthSeen,
 		TrustStatus: types.TrustNone,
 		Metadata: map[string]any{
@@ -93,10 +101,10 @@ func TestHandleChallengeAckRejectsInvalidProof(t *testing.T) {
 		},
 	})
 
-	svc := NewService(slog.Default(), peers, nil, "node-alpha", self, nil, "tofu")
+	svc := NewService(slog.Default(), peers, nil, "bot-alpha", self, nil, "tofu")
 	svc.savePendingAck("resp-1", pendingAck{
 		challengeRef: "resp-1",
-		peer:         "node-beta",
+		peer:         "bot-beta",
 		nonce:        "nonce-2",
 		responseTs:   time.Now().UnixMilli(),
 		createdAt:    time.Now(),
@@ -105,8 +113,8 @@ func TestHandleChallengeAckRejectsInvalidProof(t *testing.T) {
 	ack := map[string]any{
 		"messageId":    "ack-1",
 		"messageType":  "auth.challenge.ack",
-		"from":         "node-beta",
-		"to":           "node-alpha",
+		"from":         "bot-beta",
+		"to":           "bot-alpha",
 		"challengeRef": "resp-1",
 		"proof":        "invalid-proof",
 		"ts":           time.Now().UnixMilli(),
@@ -118,7 +126,7 @@ func TestHandleChallengeAckRejectsInvalidProof(t *testing.T) {
 
 	svc.handleChallengeAck("", b)
 
-	p, ok := peers.Get("node-beta")
+	p, ok := peers.Get("bot-beta")
 	if !ok {
 		t.Fatal("peer should exist")
 	}
@@ -133,7 +141,7 @@ func TestHandleChallengeAckAuthenticatesPeerWithValidProof(t *testing.T) {
 	peer := mustIdentity(t, "peer")
 
 	peers.Upsert(types.Peer{
-		NodeID:      "node-beta",
+		BotID:       "bot-beta",
 		AuthStatus:  types.AuthSeen,
 		TrustStatus: types.TrustNone,
 		Metadata: map[string]any{
@@ -141,22 +149,22 @@ func TestHandleChallengeAckAuthenticatesPeerWithValidProof(t *testing.T) {
 		},
 	})
 
-	svc := NewService(slog.Default(), peers, nil, "node-alpha", self, nil, "tofu")
+	svc := NewService(slog.Default(), peers, nil, "bot-alpha", self, nil, "tofu")
 	responseTS := time.Now().UnixMilli()
 	svc.savePendingAck("resp-1", pendingAck{
 		challengeRef: "resp-1",
-		peer:         "node-beta",
+		peer:         "bot-beta",
 		nonce:        "nonce-2",
 		responseTs:   responseTS,
 		createdAt:    time.Now(),
 	})
 
-	proof := identity.Sign(peer.PrivateKey, []byte("nonce-2|node-alpha|node-beta|"+fmt.Sprintf("%d", responseTS)))
+	proof := identity.Sign(peer.PrivateKey, []byte("nonce-2|bot-alpha|bot-beta|"+fmt.Sprintf("%d", responseTS)))
 	ack := map[string]any{
 		"messageId":    "ack-1",
 		"messageType":  "auth.challenge.ack",
-		"from":         "node-beta",
-		"to":           "node-alpha",
+		"from":         "bot-beta",
+		"to":           "bot-alpha",
 		"challengeRef": "resp-1",
 		"proof":        proof,
 		"ts":           time.Now().UnixMilli(),
@@ -168,7 +176,7 @@ func TestHandleChallengeAckAuthenticatesPeerWithValidProof(t *testing.T) {
 
 	svc.handleChallengeAck("", b)
 
-	p, ok := peers.Get("node-beta")
+	p, ok := peers.Get("bot-beta")
 	if !ok {
 		t.Fatal("peer should exist")
 	}
@@ -180,7 +188,7 @@ func TestHandleChallengeAckAuthenticatesPeerWithValidProof(t *testing.T) {
 func mustIdentity(t *testing.T, name string) *identity.Identity {
 	t.Helper()
 	base := t.TempDir()
-	id, err := identity.LoadOrCreate(filepath.Join(base, name+".key"), filepath.Join(base, name+".pub"))
+	id, err := identity.Create(filepath.Join(base, name+".key"), filepath.Join(base, name+".pub"))
 	if err != nil {
 		t.Fatalf("load identity %s: %v", name, err)
 	}

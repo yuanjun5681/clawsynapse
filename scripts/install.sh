@@ -4,7 +4,7 @@
 #
 # Usage:
 #   CLI only:
-#     ./scripts/install.sh
+#     ./scripts/install.sh --cli
 #     curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/scripts/install.sh | bash -s -- --cli
 #
 #   CLI + daemon service (default):
@@ -21,18 +21,9 @@ DEFAULT_INSTALL_DIR="/usr/local/bin"
 FALLBACK_INSTALL_DIR="${HOME}/.local/bin"
 DEFAULT_CONFIG_ROOT="${HOME}/.clawsynapse"
 DEFAULT_MANIFEST_PATH="${DEFAULT_CONFIG_ROOT}/manifest.json"
-DEFAULT_CONFIG_PATH="${DEFAULT_CONFIG_ROOT}/config.yaml"
 DEFAULT_DATA_DIR="${DEFAULT_CONFIG_ROOT}"
-DEFAULT_TRANSFER_DIR="${DEFAULT_DATA_DIR}/transfers"
 DEFAULT_NATS_SERVERS="nats://220.168.146.21:9414"
 DEFAULT_LOCAL_API_ADDR="127.0.0.1:18080"
-DEFAULT_TRUST_MODE="tofu"
-DEFAULT_AGENT_ADAPTER="default"
-DEFAULT_DELIVERABLE_PREFIXES="chat,task"
-DEFAULT_HEARTBEAT="15s"
-DEFAULT_ANNOUNCE_TTL="30s"
-DEFAULT_TRANSFER_MAX_FILE_SIZE="104857600"
-DEFAULT_TRANSFER_TTL="24h"
 DEFAULT_LOG_LEVEL="info"
 DEFAULT_LOG_FORMAT="json"
 SYSTEMD_UNIT_NAME="clawsynapsed.service"
@@ -74,22 +65,17 @@ Common options:
   --no-start           Install the daemon service but do not start it
   -h, --help           Show this help
 
-Daemon bootstrap options:
+Daemon bootstrap options (no Bot is created):
   --nats-servers URLS
   --local-api-addr ADDR
-  --trust-mode MODE
-  --agent-adapter NAME
-  --webhook-url URL
-  --deliverable-prefixes CSV
-  --config PATH
-  --data-dir PATH
-  --transfer-dir PATH
-  --heartbeat DURATION
-  --announce-ttl DURATION
-  --transfer-max-file-size BYTES
-  --transfer-ttl DURATION
+  --config PATH         Version 3 daemon JSON config (default: DATA_DIR/config.json)
+  --data-dir PATH       Daemon state directory (default: ~/.clawsynapse)
   --log-level LEVEL
   --log-format FORMAT
+
+Existing configs are not implicitly migrated. Version 2 layouts and legacy
+single-Bot state must be migrated explicitly while the daemon is stopped.
+Use --cli to install the migration command without starting a daemon.
 
 Examples:
   Install CLI and daemon as a service:
@@ -186,9 +172,12 @@ build_service_path() {
     local candidate
     local openclaw_dir
     local opencode_dir
+    local pi_bin omp_bin
 
     openclaw_dir="$(detect_openclaw_dir)"
     opencode_dir="$(detect_opencode_dir)"
+    pi_bin="$(command -v pi 2>/dev/null || true)"
+    omp_bin="$(command -v omp 2>/dev/null || true)"
 
     for candidate in \
         "$INSTALL_DIR" \
@@ -196,6 +185,9 @@ build_service_path() {
         "$HOME/.npm-global/bin" \
         ${openclaw_dir:+"$openclaw_dir"} \
         ${opencode_dir:+"$opencode_dir"} \
+        ${pi_bin:+"$(dirname "$pi_bin")"} \
+        ${omp_bin:+"$(dirname "$omp_bin")"} \
+        "$HOME/.bun/bin" \
         "/opt/homebrew/bin" \
         "/opt/homebrew/sbin" \
         "/usr/local/bin" \
@@ -259,37 +251,32 @@ prompt_value() {
     printf '%s' "$current"
 }
 
-prompt_required() {
-    local label="$1"
-    local current="${2:-}"
-    local answer
+reject_legacy_layout() {
+    local root marker
 
-    while :; do
-        answer="$(prompt_value "$label" "$current")"
-        if [ -n "$answer" ]; then
-            printf '%s' "$answer"
-            return 0
-        fi
-        warn "${label} is required"
+    if [ "$ACTION" != "install" ] || [ "$INSTALL_DAEMON" -ne 1 ]; then
+        return 0
+    fi
+    case "$CONFIG_PATH" in
+        *.yaml|*.yml)
+            legacy_migration_error "$CONFIG_PATH"
+            ;;
+    esac
+    for root in "$CONFIG_ROOT" "$DATA_DIR"; do
+        for marker in config.yaml config.yml identity.key identity.pub trust.json replay-cache.json peer-attrs.json; do
+            if [ -e "${root}/${marker}" ] || [ -L "${root}/${marker}" ]; then
+                legacy_migration_error "${root}/${marker}"
+            fi
+        done
     done
 }
 
-prompt_choice() {
-    local label="$1"
-    local current="$2"
-    shift 2
-
-    local answer choice
-    while :; do
-        answer="$(prompt_value "${label} ($(printf '%s/' "$@" | sed 's:/$::'))" "$current")"
-        for choice in "$@"; do
-            if [ "$answer" = "$choice" ]; then
-                printf '%s' "$answer"
-                return 0
-            fi
-        done
-        warn "choose one of: $*"
-    done
+legacy_migration_error() {
+    warn "legacy single-Bot configuration/state detected: $1"
+    warn "nothing has been migrated or replaced; stop the old daemon and back up its configuration and data first"
+    warn "install only the CLI with --cli, then run:"
+    warn "  clawsynapse migrate --legacy-config /absolute/path/to/config.yaml --data-dir /absolute/path/to/daemon-root"
+    error "explicit migration is required; rerun the daemon installer with --config <daemon-root>/config.json --data-dir <daemon-root> after migration"
 }
 
 maybe_prompt_daemon_config() {
@@ -309,15 +296,7 @@ maybe_prompt_daemon_config() {
     info "interactive daemon configuration"
     info "reading answers from your terminal"
     NATS_SERVERS="$(prompt_value "NATS servers (comma-separated)" "$NATS_SERVERS")"
-    AGENT_ADAPTER="$(prompt_choice "Agent adapter" "$AGENT_ADAPTER" default openclaw opencode webhook)"
-    if [ "$AGENT_ADAPTER" = "webhook" ]; then
-        WEBHOOK_URL="$(prompt_required "Webhook URL" "$WEBHOOK_URL")"
-    else
-        WEBHOOK_URL=""
-    fi
-    TRUST_MODE="$(prompt_choice "Trust mode" "$TRUST_MODE" open tofu explicit)"
     LOCAL_API_ADDR="$(prompt_value "Local API address" "$LOCAL_API_ADDR")"
-    DELIVERABLE_PREFIXES="$(prompt_value "Deliverable prefixes (comma-separated)" "$DELIVERABLE_PREFIXES")"
 }
 
 detect_platform() {
@@ -448,12 +427,6 @@ install_binary() {
     info "installed: ${dest}"
 }
 
-ensure_config_root() {
-    install -d -m 700 "$CONFIG_ROOT"
-    install -d -m 700 "$DATA_DIR"
-    install -d -m 700 "$TRANSFER_DIR"
-    install -d -m 700 "${DATA_DIR}/log"
-}
 
 read_installed_version() {
     local binary="$1"
@@ -520,59 +493,35 @@ sync_manifest() {
     rm -f "$tmpfile"
 }
 
-yaml_write_list() {
-    local csv="$1"
-    local item
-    local trimmed
+initialize_daemon_config() {
+    local platform="$1"
+    local cli_path="${INSTALL_DIR}/${CLI_BINARY}"
 
-    IFS=',' read -r -a items <<<"$csv"
-    for item in "${items[@]}"; do
-        trimmed="$(trim "$item")"
-        [ -n "$trimmed" ] || continue
-        printf '  - %s\n' "$trimmed"
-    done
-}
-
-write_config_if_missing() {
-    local tmpfile
-
-    if [ -f "$CONFIG_PATH" ]; then
-        info "keeping existing config: ${CONFIG_PATH}"
+    if [ -e "$CONFIG_PATH" ] || [ -L "$CONFIG_PATH" ]; then
+        info "keeping existing daemon config: ${CONFIG_PATH}"
         return 0
     fi
 
-    if [ "$AGENT_ADAPTER" = "webhook" ] && [ -z "$WEBHOOK_URL" ]; then
-        error "--webhook-url is required when --agent-adapter webhook is used"
+    info "creating version 3 daemon config (no Bot or identity is created)"
+    if [ "$INSTALL_CLI" -eq 1 ]; then
+        "$cli_path" init --config "$CONFIG_PATH" --data-dir "$DATA_DIR" \
+            --nats-servers "$NATS_SERVERS" --local-api-addr "$LOCAL_API_ADDR" \
+            --log-level "$LOG_LEVEL" --log-format "$LOG_FORMAT" </dev/null
+    else
+        # Daemon-only installs still use the matching release's init contract.
+        # The bootstrap CLI is temporary and is not added to the manifest.
+        (
+            local bootstrap_dir
+            bootstrap_dir="$(mktemp -d)"
+            trap 'rm -rf "$bootstrap_dir"' EXIT
+            INSTALL_DIR="$bootstrap_dir"
+            SUDO=""
+            install_binary "$CLI_BINARY" "$platform"
+            "${bootstrap_dir}/${CLI_BINARY}" init --config "$CONFIG_PATH" --data-dir "$DATA_DIR" \
+                --nats-servers "$NATS_SERVERS" --local-api-addr "$LOCAL_API_ADDR" \
+                --log-level "$LOG_LEVEL" --log-format "$LOG_FORMAT" </dev/null
+        )
     fi
-
-    tmpfile="$(mktemp)"
-
-    {
-        printf 'natsServers:\n'
-        yaml_write_list "$NATS_SERVERS"
-        printf 'localApiAddr: %s\n' "$LOCAL_API_ADDR"
-        printf 'trustMode: %s\n' "$TRUST_MODE"
-        printf 'agentAdapter: %s\n' "$AGENT_ADAPTER"
-        if [ -n "$WEBHOOK_URL" ]; then
-            printf 'webhookUrl: %s\n' "$WEBHOOK_URL"
-        fi
-        printf 'heartbeatInterval: %s\n' "$HEARTBEAT_INTERVAL"
-        printf 'announceTtl: %s\n' "$ANNOUNCE_TTL"
-        printf 'dataDir: %s\n' "$DATA_DIR"
-        printf 'identityKeyPath: %s\n' "${DATA_DIR}/identity.key"
-        printf 'identityPubPath: %s\n' "${DATA_DIR}/identity.pub"
-        printf 'deliverablePrefixes:\n'
-        yaml_write_list "$DELIVERABLE_PREFIXES"
-        printf 'transferDir: %s\n' "$TRANSFER_DIR"
-        printf 'transferMaxFileSize: %s\n' "$TRANSFER_MAX_FILE_SIZE"
-        printf 'transferTtl: %s\n' "$TRANSFER_TTL"
-        printf 'logLevel: %s\n' "$LOG_LEVEL"
-        printf 'logFormat: %s\n' "$LOG_FORMAT"
-    } >"$tmpfile"
-
-    install -m 600 "$tmpfile" "$CONFIG_PATH"
-    rm -f "$tmpfile"
-    info "created config: ${CONFIG_PATH}"
 }
 
 validate_daemon_config() {
@@ -821,7 +770,9 @@ print_post_install_notes() {
                 ;;
         esac
         if [ "$INSTALL_CLI" -eq 1 ]; then
-            info "health check: ${INSTALL_DIR}/${CLI_BINARY} health"
+            info "daemon health: ${INSTALL_DIR}/${CLI_BINARY} --api-addr http://${LOCAL_API_ADDR} daemon"
+            info "management is loopback-only and needs no token; any local process can manage this daemon"
+            info "create Bots explicitly with: ${INSTALL_DIR}/${CLI_BINARY} bot create --file /path/to/bot.json"
         fi
     fi
 }
@@ -862,11 +813,6 @@ parse_args() {
             --no-start)
                 AUTO_START=0
                 ;;
-            --node-id)
-                [ $# -ge 2 ] || error "missing value for --node-id"
-                warn "--node-id is deprecated and ignored; nodeId is derived from the local identity key"
-                shift
-                ;;
             --nats-servers)
                 [ $# -ge 2 ] || error "missing value for --nats-servers"
                 NATS_SERVERS="$2"
@@ -877,26 +823,6 @@ parse_args() {
                 LOCAL_API_ADDR="$2"
                 shift
                 ;;
-            --trust-mode)
-                [ $# -ge 2 ] || error "missing value for --trust-mode"
-                TRUST_MODE="$2"
-                shift
-                ;;
-            --agent-adapter)
-                [ $# -ge 2 ] || error "missing value for --agent-adapter"
-                AGENT_ADAPTER="$2"
-                shift
-                ;;
-            --webhook-url)
-                [ $# -ge 2 ] || error "missing value for --webhook-url"
-                WEBHOOK_URL="$2"
-                shift
-                ;;
-            --deliverable-prefixes)
-                [ $# -ge 2 ] || error "missing value for --deliverable-prefixes"
-                DELIVERABLE_PREFIXES="$2"
-                shift
-                ;;
             --config)
                 [ $# -ge 2 ] || error "missing value for --config"
                 CONFIG_PATH="$2"
@@ -905,31 +831,6 @@ parse_args() {
             --data-dir)
                 [ $# -ge 2 ] || error "missing value for --data-dir"
                 DATA_DIR="$2"
-                shift
-                ;;
-            --transfer-dir)
-                [ $# -ge 2 ] || error "missing value for --transfer-dir"
-                TRANSFER_DIR="$2"
-                shift
-                ;;
-            --heartbeat)
-                [ $# -ge 2 ] || error "missing value for --heartbeat"
-                HEARTBEAT_INTERVAL="$2"
-                shift
-                ;;
-            --announce-ttl)
-                [ $# -ge 2 ] || error "missing value for --announce-ttl"
-                ANNOUNCE_TTL="$2"
-                shift
-                ;;
-            --transfer-max-file-size)
-                [ $# -ge 2 ] || error "missing value for --transfer-max-file-size"
-                TRANSFER_MAX_FILE_SIZE="$2"
-                shift
-                ;;
-            --transfer-ttl)
-                [ $# -ge 2 ] || error "missing value for --transfer-ttl"
-                TRANSFER_TTL="$2"
                 shift
                 ;;
             --log-level)
@@ -946,6 +847,9 @@ parse_args() {
                 usage
                 exit 0
                 ;;
+            --node-id|--trust-mode|--agent-adapter|--webhook-url|--deliverable-prefixes|--transfer-dir|--heartbeat|--announce-ttl|--transfer-max-file-size|--transfer-ttl)
+                error "$1 is not a daemon installer option; configure a Bot explicitly with clawsynapse bot create --file <bot.json>, or use clawsynapse migrate for legacy state"
+                ;;
             *)
                 error "unknown argument: $1"
                 ;;
@@ -955,14 +859,13 @@ parse_args() {
 }
 
 normalize_paths() {
+    if [ -z "$CONFIG_PATH" ]; then
+        CONFIG_PATH="$(expand_path "$DATA_DIR")/config.json"
+    fi
     CONFIG_PATH="$(expand_path "$CONFIG_PATH")"
     CONFIG_ROOT="$(dirname "$CONFIG_PATH")"
     DATA_DIR="$(expand_path "$DATA_DIR")"
 
-    if [ -z "$TRANSFER_DIR" ]; then
-        TRANSFER_DIR="${DATA_DIR}/transfers"
-    fi
-    TRANSFER_DIR="$(expand_path "$TRANSFER_DIR")"
 }
 
 select_components() {
@@ -994,8 +897,7 @@ install_selected() {
     fi
     if [ "$INSTALL_DAEMON" -eq 1 ]; then
         install_binary "$DAEMON_BINARY" "$platform"
-        ensure_config_root
-        write_config_if_missing
+        initialize_daemon_config "$platform"
         validate_daemon_config
         install_daemon_service
     fi
@@ -1026,26 +928,18 @@ main() {
     VERSION="${VERSION:-latest}"
     GITHUB_REPO="${GITHUB_REPO:-$DEFAULT_REPO}"
     INSTALL_DIR="${INSTALL_DIR:-}"
-    CONFIG_PATH="${CONFIG_PATH:-$DEFAULT_CONFIG_PATH}"
+    CONFIG_PATH="${CONFIG_PATH:-}"
     DATA_DIR="${DATA_DIR:-$DEFAULT_DATA_DIR}"
-    TRANSFER_DIR="${TRANSFER_DIR:-$DEFAULT_TRANSFER_DIR}"
     NATS_SERVERS="${NATS_SERVERS:-$DEFAULT_NATS_SERVERS}"
     LOCAL_API_ADDR="${LOCAL_API_ADDR:-$DEFAULT_LOCAL_API_ADDR}"
-    TRUST_MODE="${TRUST_MODE:-$DEFAULT_TRUST_MODE}"
-    AGENT_ADAPTER="${AGENT_ADAPTER:-$DEFAULT_AGENT_ADAPTER}"
-    WEBHOOK_URL="${WEBHOOK_URL:-}"
-    DELIVERABLE_PREFIXES="${DELIVERABLE_PREFIXES:-$DEFAULT_DELIVERABLE_PREFIXES}"
-    HEARTBEAT_INTERVAL="${HEARTBEAT_INTERVAL:-$DEFAULT_HEARTBEAT}"
-    ANNOUNCE_TTL="${ANNOUNCE_TTL:-$DEFAULT_ANNOUNCE_TTL}"
-    TRANSFER_MAX_FILE_SIZE="${TRANSFER_MAX_FILE_SIZE:-$DEFAULT_TRANSFER_MAX_FILE_SIZE}"
-    TRANSFER_TTL="${TRANSFER_TTL:-$DEFAULT_TRANSFER_TTL}"
     LOG_LEVEL="${LOG_LEVEL:-$DEFAULT_LOG_LEVEL}"
     LOG_FORMAT="${LOG_FORMAT:-$DEFAULT_LOG_FORMAT}"
 
     parse_args "$@"
     select_components
-    maybe_prompt_daemon_config
     normalize_paths
+    reject_legacy_layout
+    maybe_prompt_daemon_config
     detect_install_dir
 
     info "ClawSynapse installer"

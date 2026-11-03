@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,22 +10,30 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"clawsynapse/pkg/types"
 )
 
 type fileConfig struct {
-	NATSServers         []string `yaml:"natsServers"`
-	LocalAPIAddr        string   `yaml:"localApiAddr"`
-	DataDir             string   `yaml:"dataDir"`
-	IdentityKeyPath     string   `yaml:"identityKeyPath"`
-	IdentityPubPath     string   `yaml:"identityPubPath"`
-	HeartbeatInterval   string   `yaml:"heartbeatInterval"`
-	AnnounceTTL         string   `yaml:"announceTtl"`
-	AgentProduct        string   `yaml:"agentProduct"`
-	AgentVersion        string   `yaml:"agentVersion"`
-	Capabilities        []string `yaml:"capabilities"`
+	SecurityValues    `yaml:",inline"`
+	NATSServers       []string     `yaml:"natsServers"`
+	LocalAPIAddr      string       `yaml:"localApiAddr"`
+	DataDir           string       `yaml:"dataDir"`
+	IdentityKeyPath   string       `yaml:"identityKeyPath"`
+	IdentityPubPath   string       `yaml:"identityPubPath"`
+	HeartbeatInterval string       `yaml:"heartbeatInterval"`
+	AnnounceTTL       string       `yaml:"announceTtl"`
+	AgentProduct      string       `yaml:"agentProduct"`
+	AgentVersion      string       `yaml:"agentVersion"`
+	DisplayName       string       `yaml:"displayName"`
+	Labels            types.Labels `yaml:"labels"`
+	// Capabilities is a legacy key folded into labels.caps on load; it is
+	// never written back out.
+	Capabilities        []string `yaml:"capabilities,omitempty"`
 	TrustMode           string   `yaml:"trustMode"`
 	TrustAutoApprove    *bool    `yaml:"trustAutoApprove"`
 	AgentAdapter        string   `yaml:"agentAdapter"`
+	AgentAllowedIDs     []string `yaml:"agentAllowedIds"`
 	AgentAdapterTimeout string   `yaml:"agentAdapterTimeout"`
 	WebhookURL          string   `yaml:"webhookUrl"`
 	LogFilePath         string   `yaml:"logFilePath"`
@@ -46,6 +55,7 @@ func toFileConfig(cfg Config) fileConfig {
 	taa := cfg.TrustAutoApprove
 	mfs := cfg.TransferMaxFileSize
 	return fileConfig{
+		SecurityValues:      securityValuesFromConfig(cfg),
 		NATSServers:         cfg.NATSServers,
 		LocalAPIAddr:        cfg.LocalAPIAddr,
 		DataDir:             cfg.DataDir,
@@ -55,10 +65,12 @@ func toFileConfig(cfg Config) fileConfig {
 		AnnounceTTL:         cfg.AnnounceTTL,
 		AgentProduct:        cfg.AgentProduct,
 		AgentVersion:        cfg.AgentVersion,
-		Capabilities:        cloneStrings(cfg.Capabilities),
+		DisplayName:         cfg.DisplayName,
+		Labels:              cloneLabels(cfg.Labels),
 		TrustMode:           cfg.TrustMode,
 		TrustAutoApprove:    &taa,
 		AgentAdapter:        cfg.AgentAdapter,
+		AgentAllowedIDs:     cloneStrings(cfg.AgentAllowedIDs),
 		AgentAdapterTimeout: cfg.AgentAdapterTimeout,
 		WebhookURL:          cfg.WebhookURL,
 		LogFilePath:         cfg.LogFilePath,
@@ -96,6 +108,7 @@ func loadConfigValues(path string, required bool) (configValues, error) {
 	}
 
 	values := configValues{
+		SecurityValues:      cfg.SecurityValues,
 		NATSServers:         cloneStrings(cfg.NATSServers),
 		LocalAPIAddr:        strings.TrimSpace(cfg.LocalAPIAddr),
 		DataDir:             strings.TrimSpace(cfg.DataDir),
@@ -103,9 +116,11 @@ func loadConfigValues(path string, required bool) (configValues, error) {
 		IdentityPubPath:     strings.TrimSpace(cfg.IdentityPubPath),
 		AgentProduct:        strings.TrimSpace(cfg.AgentProduct),
 		AgentVersion:        strings.TrimSpace(cfg.AgentVersion),
-		Capabilities:        cloneStrings(cfg.Capabilities),
+		DisplayName:         strings.TrimSpace(cfg.DisplayName),
+		Labels:              cloneLabels(cfg.Labels),
 		TrustMode:           strings.TrimSpace(cfg.TrustMode),
 		AgentAdapter:        strings.TrimSpace(cfg.AgentAdapter),
+		AgentAllowedIDs:     append([]string(nil), cfg.AgentAllowedIDs...),
 		AgentAdapterTimeout: parseDurationValue(cfg.AgentAdapterTimeout, 0),
 		WebhookURL:          strings.TrimSpace(cfg.WebhookURL),
 		LogFilePath:         strings.TrimSpace(cfg.LogFilePath),
@@ -114,6 +129,13 @@ func loadConfigValues(path string, required bool) (configValues, error) {
 		LogLevel:            strings.TrimSpace(cfg.LogLevel),
 		LogFormat:           strings.TrimSpace(cfg.LogFormat),
 	}
+	var securityFlags struct {
+		Production *bool `yaml:"production"`
+	}
+	if err := yaml.Unmarshal(data, &securityFlags); err != nil {
+		return configValues{}, fmt.Errorf("parse security config: %w", err)
+	}
+	values.productionSet = securityFlags.Production != nil
 	if cfg.LogRotateMaxSizeMB != nil {
 		values.LogRotateMaxSizeMB = *cfg.LogRotateMaxSizeMB
 	}
@@ -133,6 +155,11 @@ func loadConfigValues(path string, required bool) (configValues, error) {
 		values.TrustAutoApprove = *cfg.TrustAutoApprove
 		values.TrustAutoApproveSet = true
 	}
+	if caps := cloneStrings(cfg.Capabilities); len(caps) > 0 {
+		if _, capsSet := values.Labels[types.LabelKeyCaps]; !capsSet {
+			values.Labels = values.Labels.WithCaps(caps)
+		}
+	}
 
 	if cfg.HeartbeatInterval != "" {
 		values.Heartbeat = parseDurationValue(cfg.HeartbeatInterval, 0)
@@ -150,16 +177,16 @@ func loadConfigValues(path string, required bool) (configValues, error) {
 	return values, nil
 }
 
-func loadDotEnvValues() configValues {
+func loadDotEnvValues() (configValues, error) {
 	wd, err := os.Getwd()
 	if err != nil {
-		return configValues{}
+		return configValues{}, nil
 	}
 	root := findProjectRoot(wd)
 
 	data, err := os.ReadFile(filepath.Join(root, ".env"))
 	if err != nil {
-		return configValues{}
+		return configValues{}, nil
 	}
 
 	entries := parseDotEnv(string(data))
@@ -185,7 +212,7 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
-func loadOSEnvValues() configValues {
+func loadOSEnvValues() (configValues, error) {
 	entries := make(map[string]string)
 	for _, raw := range os.Environ() {
 		key, value, ok := strings.Cut(raw, "=")
@@ -197,9 +224,21 @@ func loadOSEnvValues() configValues {
 	return loadValuesFromMap(entries)
 }
 
-func loadValuesFromMap(values map[string]string) configValues {
+func loadValuesFromMap(values map[string]string) (configValues, error) {
 	trustAutoApproveRaw := strings.TrimSpace(values["TRUST_AUTO_APPROVE"])
 	cfg := configValues{
+		SecurityValues: SecurityValues{
+			APITokenPath:        strings.TrimSpace(values["API_TOKEN_PATH"]),
+			APITLSCertFile:      strings.TrimSpace(values["API_TLS_CERT_FILE"]),
+			APITLSKeyFile:       strings.TrimSpace(values["API_TLS_KEY_FILE"]),
+			Production:          parseBoolValue(values["PRODUCTION"]),
+			NATSCredentialsFile: strings.TrimSpace(values["NATS_CREDENTIALS_FILE"]),
+			NATSTLSCAFile:       strings.TrimSpace(values["NATS_TLS_CA_FILE"]),
+			NATSTLSCertFile:     strings.TrimSpace(values["NATS_TLS_CERT_FILE"]),
+			NATSTLSKeyFile:      strings.TrimSpace(values["NATS_TLS_KEY_FILE"]),
+			NATSTLSServerName:   strings.TrimSpace(values["NATS_TLS_SERVER_NAME"]),
+			productionSet:       strings.TrimSpace(values["PRODUCTION"]) != "",
+		},
 		NATSServers:         splitCSV(values["NATS_SERVERS"]),
 		LocalAPIAddr:        strings.TrimSpace(values["LOCAL_API_ADDR"]),
 		DataDir:             strings.TrimSpace(values["DATA_DIR"]),
@@ -209,9 +248,10 @@ func loadValuesFromMap(values map[string]string) configValues {
 		AnnounceTTL:         parseDurationValue(values["ANNOUNCE_TTL_MS"], 0),
 		AgentProduct:        strings.TrimSpace(values["AGENT_PRODUCT"]),
 		AgentVersion:        strings.TrimSpace(values["AGENT_VERSION"]),
-		Capabilities:        splitCSV(values["AGENT_CAPABILITIES"]),
+		DisplayName:         strings.TrimSpace(values["NODE_DISPLAY_NAME"]),
 		TrustMode:           strings.TrimSpace(values["TRUST_MODE"]),
 		AgentAdapter:        strings.TrimSpace(values["AGENT_ADAPTER"]),
+		AgentAllowedIDs:     splitCSV(values["AGENT_ALLOWED_IDS"]),
 		AgentAdapterTimeout: parseDurationValue(values["AGENT_ADAPTER_TIMEOUT"], 0),
 		WebhookURL:          strings.TrimSpace(values["WEBHOOK_URL"]),
 		WebhookAuthToken:    strings.TrimSpace(values["WEBHOOK_AUTH_TOKEN"]),
@@ -232,7 +272,19 @@ func loadValuesFromMap(values map[string]string) configValues {
 		cfg.TrustAutoApprove = parseBoolValue(trustAutoApproveRaw)
 		cfg.TrustAutoApproveSet = true
 	}
-	return cfg
+	if raw := strings.TrimSpace(values["NODE_LABELS"]); raw != "" {
+		labels := types.Labels{}
+		if err := json.Unmarshal([]byte(raw), &labels); err != nil {
+			return configValues{}, fmt.Errorf("parse NODE_LABELS: %w", err)
+		}
+		cfg.Labels = labels
+	}
+	if caps := splitCSV(values["AGENT_CAPABILITIES"]); len(caps) > 0 {
+		if _, capsSet := cfg.Labels[types.LabelKeyCaps]; !capsSet {
+			cfg.Labels = cfg.Labels.WithCaps(caps)
+		}
+	}
+	return cfg, nil
 }
 
 func parseDurationValue(v string, fallback time.Duration) time.Duration {

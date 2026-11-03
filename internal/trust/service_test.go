@@ -1,6 +1,7 @@
 package trust
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -21,6 +22,16 @@ type publishedMessage struct {
 	payload any
 }
 
+func TestTrustValidationUsesBotTerminology(t *testing.T) {
+	svc := &Service{}
+	if _, err := svc.Request(context.Background(), "", "", nil); err == nil || err.Error() != "targetBot is required" {
+		t.Fatalf("request error = %v", err)
+	}
+	if err := svc.Revoke("", ""); err == nil || err.Error() != "targetBot is required" {
+		t.Fatalf("revoke error = %v", err)
+	}
+}
+
 func TestHandleTrustRequestKeepsPendingWhenAutoApproveDisabled(t *testing.T) {
 	svc, peers, peerID := newTrustTestService(t, false)
 	var published []publishedMessage
@@ -29,8 +40,8 @@ func TestHandleTrustRequestKeepsPendingWhenAutoApproveDisabled(t *testing.T) {
 		return nil
 	}
 
-	req := signedTrustRequest(t, svc, peerID, "node-alpha", "req-1")
-	svc.handleTrustRequest("clawsynapse.trust.node-alpha.request", mustJSON(t, req))
+	req := signedTrustRequest(t, svc, peerID, "bot-alpha", "req-1")
+	svc.handleTrustRequest("clawsynapse.trust.bot-alpha.request", mustJSON(t, req))
 
 	if len(published) != 0 {
 		t.Fatalf("expected no trust response to be published, got %d", len(published))
@@ -41,7 +52,7 @@ func TestHandleTrustRequestKeepsPendingWhenAutoApproveDisabled(t *testing.T) {
 	if len(svc.state.Trusted) != 0 {
 		t.Fatalf("expected no trusted peers, got %+v", svc.state.Trusted)
 	}
-	peer, ok := peers.Get(peerID.nodeID)
+	peer, ok := peers.Get(peerID.botID)
 	if !ok {
 		t.Fatal("expected peer to exist")
 	}
@@ -58,20 +69,20 @@ func TestHandleTrustRequestAutoApprovesValidRequest(t *testing.T) {
 		return nil
 	}
 
-	req := signedTrustRequest(t, svc, peerID, "node-alpha", "req-1")
-	svc.handleTrustRequest("clawsynapse.trust.node-alpha.request", mustJSON(t, req))
+	req := signedTrustRequest(t, svc, peerID, "bot-alpha", "req-1")
+	svc.handleTrustRequest("clawsynapse.trust.bot-alpha.request", mustJSON(t, req))
 
 	if len(svc.state.Pending) != 0 {
 		t.Fatalf("expected pending request to be cleared, got %+v", svc.state.Pending)
 	}
-	if len(svc.state.Trusted) != 1 || svc.state.Trusted[0].NodeID != peerID.nodeID {
+	if len(svc.state.Trusted) != 1 || svc.state.Trusted[0].BotID != peerID.botID {
 		t.Fatalf("expected peer to be trusted, got %+v", svc.state.Trusted)
 	}
 	if svc.state.Trusted[0].Reason != "auto-approved trust request" {
 		t.Fatalf("unexpected trust reason: %q", svc.state.Trusted[0].Reason)
 	}
 
-	peer, ok := peers.Get(peerID.nodeID)
+	peer, ok := peers.Get(peerID.botID)
 	if !ok {
 		t.Fatal("expected peer to exist")
 	}
@@ -82,14 +93,14 @@ func TestHandleTrustRequestAutoApprovesValidRequest(t *testing.T) {
 	if len(published) != 1 {
 		t.Fatalf("expected one trust response to be published, got %d", len(published))
 	}
-	if published[0].subject != "clawsynapse.trust."+peerID.nodeID+".response" {
+	if published[0].subject != "clawsynapse.trust."+peerID.botID+".response" {
 		t.Fatalf("unexpected publish subject: %s", published[0].subject)
 	}
 	resp, ok := published[0].payload.(protocol.TrustResponse)
 	if !ok {
 		t.Fatalf("expected trust response payload, got %T", published[0].payload)
 	}
-	if resp.Decision != "approve" || resp.RequestID != "req-1" || resp.To != peerID.nodeID {
+	if resp.Decision != "approve" || resp.RequestID != "req-1" || resp.To != peerID.botID {
 		t.Fatalf("unexpected trust response: %+v", resp)
 	}
 	if !identity.Verify(svc.identity.PublicKey, []byte(svc.trustResponseSignatureInput(resp)), resp.Signature) {
@@ -98,18 +109,18 @@ func TestHandleTrustRequestAutoApprovesValidRequest(t *testing.T) {
 }
 
 type trustTestIdentity struct {
-	nodeID string
-	id     *identity.Identity
+	botID string
+	id    *identity.Identity
 }
 
 func newTrustTestService(t *testing.T, trustAutoApprove bool) (*Service, *discovery.Registry, trustTestIdentity) {
 	t.Helper()
 
 	self := newIdentity(t)
-	peerID := trustTestIdentity{nodeID: "node-beta", id: newIdentity(t)}
+	peerID := trustTestIdentity{botID: "bot-beta", id: newIdentity(t)}
 	peers := discovery.NewRegistry()
 	peers.Upsert(types.Peer{
-		NodeID:      peerID.nodeID,
+		BotID:       peerID.botID,
 		AuthStatus:  types.AuthAuthenticated,
 		TrustStatus: types.TrustNone,
 		Metadata: map[string]any{
@@ -121,7 +132,7 @@ func newTrustTestService(t *testing.T, trustAutoApprove bool) (*Service, *discov
 	if err := fs.EnsureLayout(); err != nil {
 		t.Fatalf("ensure store layout: %v", err)
 	}
-	svc, err := NewService(slog.Default(), peers, nil, fs, "node-alpha", self, trustAutoApprove)
+	svc, err := NewService(slog.Default(), peers, nil, fs, "bot-alpha", self, trustAutoApprove)
 	if err != nil {
 		t.Fatalf("new trust service: %v", err)
 	}
@@ -142,7 +153,7 @@ func signedTrustRequest(t *testing.T, svc *Service, peerID trustTestIdentity, to
 	req := protocol.TrustRequest{
 		MessageID:   "msg-" + requestID,
 		MessageType: "trust.request",
-		From:        peerID.nodeID,
+		From:        peerID.botID,
 		To:          to,
 		RequestID:   requestID,
 		Reason:      "test trust",

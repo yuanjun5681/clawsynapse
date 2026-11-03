@@ -11,6 +11,9 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"clawsynapse/internal/store"
+	"clawsynapse/pkg/types"
 )
 
 const (
@@ -19,7 +22,6 @@ const (
 	defaultHeartbeatInterval   = 15 * time.Second
 	defaultAnnounceTTL         = 30 * time.Second
 	defaultAgentProduct        = "clawsynapse"
-	defaultCapabilities        = "chat,tools"
 	defaultTrustMode           = "tofu"
 	defaultAgentAdapter        = "default"
 	defaultAgentAdapterTimeout = 10 * time.Minute
@@ -34,39 +36,54 @@ const (
 )
 
 type Config struct {
-	NATSServers         []string `json:"natsServers"`
-	LocalAPIAddr        string   `json:"localApiAddr"`
-	DataDir             string   `json:"dataDir"`
-	IdentityKeyPath     string   `json:"identityKeyPath"`
-	IdentityPubPath     string   `json:"identityPubPath"`
-	HeartbeatInterval   string   `json:"heartbeatInterval"`
-	AnnounceTTL         string   `json:"announceTtl"`
-	AgentProduct        string   `json:"agentProduct"`
-	AgentVersion        string   `json:"agentVersion"`
-	Capabilities        []string `json:"capabilities"`
-	TrustMode           string   `json:"trustMode"`
-	TrustAutoApprove    bool     `json:"trustAutoApprove"`
-	AgentAdapter        string   `json:"agentAdapter"`
-	AgentAdapterTimeout string   `json:"agentAdapterTimeout"`
-	WebhookURL          string   `json:"webhookUrl"`
-	WebhookAuthToken    string   `json:"-"`
-	LogLevel            string   `json:"logLevel"`
-	LogFormat           string   `json:"logFormat"`
-	LogFilePath         string   `json:"logFilePath"`
-	LogRotateMaxSizeMB  int      `json:"logRotateMaxSizeMb"`
-	LogRotateMaxBackups int      `json:"logRotateMaxBackups"`
-	LogRotateMaxAgeDays int      `json:"logRotateMaxAgeDays"`
-	LogRotateCompress   bool     `json:"logRotateCompress"`
-	DeliverablePrefixes []string `json:"deliverablePrefixes"`
-	TransferDir         string   `json:"transferDir"`
-	TransferMaxFileSize int64    `json:"transferMaxFileSize"`
-	TransferTTL         string   `json:"transferTtl"`
-	LogAddSource        bool     `json:"logAddSource"`
-	CheckConfig         bool     `json:"checkConfig"`
-	ConfigPath          string   `json:"-"`
+	Role                string       `json:"role,omitempty"`
+	APITokenPath        string       `json:"apiTokenPath"`
+	APITLSCertFile      string       `json:"apiTLSCertFile"`
+	APITLSKeyFile       string       `json:"apiTLSKeyFile"`
+	Production          bool         `json:"production"`
+	NATSCredentialsFile string       `json:"natsCredentialsFile"`
+	NATSTLSCAFile       string       `json:"natsTLSCAFile"`
+	NATSTLSCertFile     string       `json:"natsTLSCertFile"`
+	NATSTLSKeyFile      string       `json:"natsTLSKeyFile"`
+	NATSTLSServerName   string       `json:"natsTLSServerName"`
+	NATSServers         []string     `json:"natsServers"`
+	LocalAPIAddr        string       `json:"localApiAddr"`
+	DataDir             string       `json:"dataDir"`
+	IdentityKeyPath     string       `json:"identityKeyPath"`
+	IdentityPubPath     string       `json:"identityPubPath"`
+	HeartbeatInterval   string       `json:"heartbeatInterval"`
+	AnnounceTTL         string       `json:"announceTtl"`
+	AgentProduct        string       `json:"agentProduct"`
+	AgentVersion        string       `json:"agentVersion"`
+	DisplayName         string       `json:"displayName"`
+	Labels              types.Labels `json:"labels,omitempty"`
+	TrustMode           string       `json:"trustMode"`
+	TrustAutoApprove    bool         `json:"trustAutoApprove"`
+	AgentAdapter        string       `json:"agentAdapter"`
+	AgentAllowedIDs     []string     `json:"agentAllowedIds"`
+	AgentAdapterTimeout string       `json:"agentAdapterTimeout"`
+	WebhookURL          string       `json:"webhookUrl"`
+	WebhookAuthToken    string       `json:"-"`
+	LogLevel            string       `json:"logLevel"`
+	LogFormat           string       `json:"logFormat"`
+	LogFilePath         string       `json:"logFilePath"`
+	LogRotateMaxSizeMB  int          `json:"logRotateMaxSizeMb"`
+	LogRotateMaxBackups int          `json:"logRotateMaxBackups"`
+	LogRotateMaxAgeDays int          `json:"logRotateMaxAgeDays"`
+	LogRotateCompress   bool         `json:"logRotateCompress"`
+	DeliverablePrefixes []string     `json:"deliverablePrefixes"`
+	TransferDir         string       `json:"transferDir"`
+	TransferMaxFileSize int64        `json:"transferMaxFileSize"`
+	TransferTTL         string       `json:"transferTtl"`
+	LogAddSource        bool         `json:"logAddSource"`
+	CheckConfig         bool         `json:"checkConfig"`
+	ConfigPath          string       `json:"-"`
 }
 
 func Validate(cfg Config) error {
+	if err := ValidateSecurity(cfg); err != nil {
+		return err
+	}
 	if len(cfg.NATSServers) == 0 {
 		return errors.New("nats servers is empty")
 	}
@@ -74,21 +91,38 @@ func Validate(cfg Config) error {
 	if mode != "open" && mode != "tofu" && mode != "explicit" {
 		return errors.New("trust mode must be one of: open|tofu|explicit")
 	}
+	if err := types.ValidateDisplayName(cfg.DisplayName); err != nil {
+		return fmt.Errorf("display name: %w", err)
+	}
+	if _, err := types.NormalizeLabels(cfg.Labels); err != nil {
+		return fmt.Errorf("labels: %w", err)
+	}
+	// An empty role is accepted only by the legacy single-Bot configuration
+	// model used by offline migration. New Bot configs validate role explicitly.
 	adapterName := strings.ToLower(strings.TrimSpace(cfg.AgentAdapter))
-	if adapterName == "" {
-		adapterName = defaultAgentAdapter
-	}
-	if adapterName != "default" && adapterName != "openclaw" && adapterName != "opencode" && adapterName != "webhook" {
-		return errors.New("agent adapter must be one of: default|openclaw|opencode|webhook")
-	}
-	if strings.TrimSpace(cfg.AgentAdapterTimeout) != "" {
-		d, err := time.ParseDuration(strings.TrimSpace(cfg.AgentAdapterTimeout))
-		if err != nil || d <= 0 {
-			return errors.New("agent adapter timeout must be a positive duration")
+	switch cfg.Role {
+	case RoleConsole:
+		if cfg.AgentAdapter != "" || cfg.AgentAdapterTimeout != "" || cfg.WebhookURL != "" || len(cfg.AgentAllowedIDs) != 0 {
+			return errors.New("console has no execution Harness configuration")
 		}
-	}
-	if adapterName == "webhook" && strings.TrimSpace(cfg.WebhookURL) == "" {
-		return errors.New("webhook url is required when agent adapter is webhook")
+	case "", RoleAgent:
+		if cfg.Role == "" && adapterName == "" {
+			adapterName = defaultAgentAdapter
+		}
+		if !supportedAgentAdapter(adapterName) && !(cfg.Role == "" && adapterName == "console") {
+			return errors.New("unsupported agent adapter")
+		}
+		if strings.TrimSpace(cfg.AgentAdapterTimeout) != "" {
+			d, err := time.ParseDuration(strings.TrimSpace(cfg.AgentAdapterTimeout))
+			if err != nil || d <= 0 {
+				return errors.New("agent adapter timeout must be a positive duration")
+			}
+		}
+		if adapterName == "webhook" && strings.TrimSpace(cfg.WebhookURL) == "" {
+			return errors.New("webhook url is required when agent adapter is webhook")
+		}
+	default:
+		return errors.New("role must be console or agent")
 	}
 	level := strings.ToLower(strings.TrimSpace(cfg.LogLevel))
 	if level != "debug" && level != "info" && level != "warn" && level != "error" {
@@ -118,19 +152,12 @@ func SaveToFile(path string, cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
-		return fmt.Errorf("write config: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("rename config: %w", err)
-	}
-	return nil
+	return store.WriteAtomic(path, data, 0o600)
 }
 
 type runtimeConfig struct {
-	NATSServers         []string
+	NATSServers []string
+	SecurityValues
 	LocalAPIAddr        string
 	DataDir             string
 	IdentityKeyPath     string
@@ -139,10 +166,12 @@ type runtimeConfig struct {
 	AnnounceTTL         time.Duration
 	AgentProduct        string
 	AgentVersion        string
-	Capabilities        []string
+	DisplayName         string
+	Labels              types.Labels
 	TrustMode           string
 	TrustAutoApprove    bool
 	AgentAdapter        string
+	AgentAllowedIDs     []string
 	AgentAdapterTimeout time.Duration
 	WebhookURL          string
 	LogFilePath         string
@@ -161,7 +190,8 @@ type runtimeConfig struct {
 }
 
 type configValues struct {
-	NATSServers         []string
+	NATSServers []string
+	SecurityValues
 	LocalAPIAddr        string
 	DataDir             string
 	IdentityKeyPath     string
@@ -170,11 +200,13 @@ type configValues struct {
 	AnnounceTTL         time.Duration
 	AgentProduct        string
 	AgentVersion        string
-	Capabilities        []string
+	DisplayName         string
+	Labels              types.Labels
 	TrustMode           string
 	TrustAutoApprove    bool
 	TrustAutoApproveSet bool
 	AgentAdapter        string
+	AgentAllowedIDs     []string
 	AgentAdapterTimeout time.Duration
 	WebhookURL          string
 	WebhookAuthToken    string
@@ -198,6 +230,7 @@ func (c Config) Runtime() runtimeConfig {
 	tt, _ := time.ParseDuration(c.TransferTTL)
 	at, _ := time.ParseDuration(c.AgentAdapterTimeout)
 	return runtimeConfig{
+		SecurityValues:      securityValuesFromConfig(c),
 		NATSServers:         c.NATSServers,
 		LocalAPIAddr:        c.LocalAPIAddr,
 		DataDir:             c.DataDir,
@@ -207,10 +240,12 @@ func (c Config) Runtime() runtimeConfig {
 		AnnounceTTL:         t,
 		AgentProduct:        c.AgentProduct,
 		AgentVersion:        c.AgentVersion,
-		Capabilities:        cloneStrings(c.Capabilities),
+		DisplayName:         c.DisplayName,
+		Labels:              cloneLabels(c.Labels),
 		TrustMode:           c.TrustMode,
 		TrustAutoApprove:    c.TrustAutoApprove,
 		AgentAdapter:        c.AgentAdapter,
+		AgentAllowedIDs:     cloneStrings(c.AgentAllowedIDs),
 		AgentAdapterTimeout: at,
 		WebhookURL:          c.WebhookURL,
 		LogFilePath:         c.LogFilePath,
@@ -247,12 +282,29 @@ func LoadFromOS(args []string) (Config, error) {
 		return Config{}, err
 	}
 	merged := mergeConfigValues(defaults, loaded)
-	merged = mergeConfigValues(merged, loadDotEnvValues())
-	merged = mergeConfigValues(merged, loadOSEnvValues())
+	dotenv, err := loadDotEnvValues()
+	if err != nil {
+		return Config{}, err
+	}
+	merged = mergeConfigValues(merged, dotenv)
+	envValues, err := loadOSEnvValues()
+	if err != nil {
+		return Config{}, err
+	}
+	merged = mergeConfigValues(merged, envValues)
 
 	fs := flag.NewFlagSet("clawsynapsed", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var (
+		apiTokenPath        = fs.String("api-token-path", merged.APITokenPath, "local API bearer token file")
+		apiTLSCertFile      = fs.String("api-tls-cert-file", merged.APITLSCertFile, "API TLS certificate file")
+		apiTLSKeyFile       = fs.String("api-tls-key-file", merged.APITLSKeyFile, "API TLS private key file")
+		production          = fs.Bool("production", merged.Production, "require authenticated TLS NATS and non-open trust")
+		natsCredentialsFile = fs.String("nats-credentials-file", merged.NATSCredentialsFile, "NATS credentials file")
+		natsTLSCAFile       = fs.String("nats-tls-ca-file", merged.NATSTLSCAFile, "NATS trusted CA file")
+		natsTLSCertFile     = fs.String("nats-tls-cert-file", merged.NATSTLSCertFile, "NATS TLS client certificate")
+		natsTLSKeyFile      = fs.String("nats-tls-key-file", merged.NATSTLSKeyFile, "NATS TLS client private key")
+		natsTLSServerName   = fs.String("nats-tls-server-name", merged.NATSTLSServerName, "NATS TLS server name to verify")
 		natsServers         = fs.String("nats-servers", strings.Join(merged.NATSServers, ","), "comma separated nats servers")
 		apiAddr             = fs.String("local-api-addr", merged.LocalAPIAddr, "http api address")
 		dataDir             = fs.String("data-dir", merged.DataDir, "state directory")
@@ -262,10 +314,13 @@ func LoadFromOS(args []string) (Config, error) {
 		announceTTL         = fs.Duration("announce-ttl", merged.AnnounceTTL, "announce ttl")
 		agentProduct        = fs.String("agent-product", merged.AgentProduct, "agent product advertised in discovery")
 		agentVersion        = fs.String("agent-version", merged.AgentVersion, "agent version advertised in discovery; defaults to daemon version")
-		capabilities        = fs.String("capabilities", strings.Join(merged.Capabilities, ","), "comma separated capabilities advertised in discovery")
+		displayName         = fs.String("display-name", merged.DisplayName, "human readable Bot name advertised in discovery")
+		labelFlags          = newLabelFlags()
+		capabilities        = fs.String("capabilities", strings.Join(merged.Labels.Caps(), ","), "deprecated: comma separated capabilities folded into labels.caps (use --label caps=<value>)")
 		trustMode           = fs.String("trust-mode", merged.TrustMode, "trust mode: open|tofu|explicit")
 		trustAutoApprove    = fs.Bool("trust-auto-approve", merged.TrustAutoApprove, "automatically approve valid inbound trust requests")
-		agentAdapter        = fs.String("agent-adapter", merged.AgentAdapter, "agent adapter: default|openclaw|opencode|webhook")
+		agentAdapter        = fs.String("agent-adapter", merged.AgentAdapter, "agent adapter: console|default|openclaw|opencode|codex|pi|omp|webhook")
+		agentAllowedIDs     = fs.String("agent-allowed-ids", strings.Join(merged.AgentAllowedIDs, ","), "comma separated authorized local agent routing IDs")
 		agentAdapterTimeout = fs.Duration("agent-adapter-timeout", merged.AgentAdapterTimeout, "timeout for delivering a message to the agent adapter")
 		webhookURLFlag      = fs.String("webhook-url", merged.WebhookURL, "webhook url for webhook adapter")
 		logLevel            = fs.String("log-level", merged.LogLevel, "log level: debug|info|warn|error")
@@ -284,8 +339,23 @@ func LoadFromOS(args []string) (Config, error) {
 		checkConfig         = fs.Bool("check-config", false, "print config and exit")
 	)
 
+	fs.Var(labelFlags, "label", "Bot label key=value; repeat a key to make it a set (reserved key: caps)")
+
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
+	}
+
+	flagsSet := make(map[string]bool)
+	fs.Visit(func(f *flag.Flag) { flagsSet[f.Name] = true })
+
+	labels := cloneLabels(merged.Labels)
+	if flagsSet["label"] {
+		labels = labelFlags.Labels()
+	}
+	if flagsSet["capabilities"] {
+		if _, capsSetByLabel := labels[types.LabelKeyCaps]; !(flagsSet["label"] && capsSetByLabel) {
+			labels = labels.WithCaps(splitCSV(*capabilities))
+		}
 	}
 
 	rawServers := splitCSV(*natsServers)
@@ -301,8 +371,8 @@ func LoadFromOS(args []string) (Config, error) {
 	if adapterName == "" {
 		adapterName = defaultAgentAdapter
 	}
-	if adapterName != "default" && adapterName != "openclaw" && adapterName != "opencode" && adapterName != "webhook" {
-		return Config{}, errors.New("agent adapter must be one of: default|openclaw|opencode|webhook")
+	if adapterName != "console" && !supportedAgentAdapter(adapterName) {
+		return Config{}, errors.New("agent adapter must be one of: console|default|openclaw|opencode|codex|pi|omp|webhook")
 	}
 
 	webhookURL := strings.TrimSpace(*webhookURLFlag)
@@ -350,7 +420,16 @@ func LoadFromOS(args []string) (Config, error) {
 		return Config{}, err
 	}
 
-	return Config{
+	cfg := Config{
+		APITokenPath:        *apiTokenPath,
+		APITLSCertFile:      *apiTLSCertFile,
+		APITLSKeyFile:       *apiTLSKeyFile,
+		Production:          *production,
+		NATSCredentialsFile: *natsCredentialsFile,
+		NATSTLSCAFile:       *natsTLSCAFile,
+		NATSTLSCertFile:     *natsTLSCertFile,
+		NATSTLSKeyFile:      *natsTLSKeyFile,
+		NATSTLSServerName:   *natsTLSServerName,
 		NATSServers:         rawServers,
 		LocalAPIAddr:        strings.TrimSpace(*apiAddr),
 		DataDir:             resolvedDataDir,
@@ -360,10 +439,12 @@ func LoadFromOS(args []string) (Config, error) {
 		AnnounceTTL:         announceTTL.String(),
 		AgentProduct:        strings.TrimSpace(*agentProduct),
 		AgentVersion:        strings.TrimSpace(*agentVersion),
-		Capabilities:        splitCSV(*capabilities),
+		DisplayName:         strings.TrimSpace(*displayName),
+		Labels:              labels,
 		TrustMode:           mode,
 		TrustAutoApprove:    *trustAutoApprove,
 		AgentAdapter:        adapterName,
+		AgentAllowedIDs:     splitCSV(*agentAllowedIDs),
 		AgentAdapterTimeout: agentAdapterTimeout.String(),
 		WebhookURL:          webhookURL,
 		WebhookAuthToken:    merged.WebhookAuthToken,
@@ -381,7 +462,14 @@ func LoadFromOS(args []string) (Config, error) {
 		LogAddSource:        *logAddSource,
 		CheckConfig:         *checkConfig,
 		ConfigPath:          configPath,
-	}, nil
+	}
+	if err := resolveSecurityPaths(&cfg); err != nil {
+		return Config{}, err
+	}
+	if err := ValidateSecurity(cfg); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
 }
 
 func defaultConfigValues(defaultDataDir string) configValues {
@@ -395,7 +483,7 @@ func defaultConfigValues(defaultDataDir string) configValues {
 		Heartbeat:           defaultHeartbeatInterval,
 		AnnounceTTL:         defaultAnnounceTTL,
 		AgentProduct:        defaultAgentProduct,
-		Capabilities:        splitCSV(defaultCapabilities),
+		Labels:              types.Labels{}.WithCaps([]string{"chat", "tools"}),
 		TrustMode:           defaultTrustMode,
 		TrustAutoApprove:    false,
 		TrustAutoApproveSet: true,
@@ -414,6 +502,10 @@ func defaultConfigValues(defaultDataDir string) configValues {
 }
 
 func mergeConfigValues(base, override configValues) configValues {
+	base.SecurityValues = mergeSecurityValues(base.SecurityValues, override.SecurityValues)
+	if len(override.AgentAllowedIDs) > 0 {
+		base.AgentAllowedIDs = append([]string(nil), override.AgentAllowedIDs...)
+	}
 	if len(override.NATSServers) > 0 {
 		base.NATSServers = append([]string(nil), override.NATSServers...)
 	}
@@ -441,8 +533,11 @@ func mergeConfigValues(base, override configValues) configValues {
 	if strings.TrimSpace(override.AgentVersion) != "" {
 		base.AgentVersion = strings.TrimSpace(override.AgentVersion)
 	}
-	if len(override.Capabilities) > 0 {
-		base.Capabilities = cloneStrings(override.Capabilities)
+	if strings.TrimSpace(override.DisplayName) != "" {
+		base.DisplayName = strings.TrimSpace(override.DisplayName)
+	}
+	if len(override.Labels) > 0 {
+		base.Labels = cloneLabels(override.Labels)
 	}
 	if strings.TrimSpace(override.TrustMode) != "" {
 		base.TrustMode = strings.TrimSpace(override.TrustMode)
@@ -526,6 +621,62 @@ func resolveConfigPath(args []string) (string, bool, error) {
 	}
 
 	return defaultPath, false, nil
+}
+
+// labelFlags collects repeated --label key=value occurrences. A key given
+// once stays scalar; a repeated key becomes a set of all given values.
+type labelFlags struct {
+	order  []string
+	values map[string][]string
+}
+
+func newLabelFlags() *labelFlags {
+	return &labelFlags{values: make(map[string][]string)}
+}
+
+func (f *labelFlags) String() string { return "" }
+
+func (f *labelFlags) Set(raw string) error {
+	key, value, ok := strings.Cut(raw, "=")
+	if !ok {
+		return fmt.Errorf("label %q must be key=value", raw)
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return fmt.Errorf("label %q has empty key", raw)
+	}
+	if _, seen := f.values[key]; !seen {
+		f.order = append(f.order, key)
+	}
+	f.values[key] = append(f.values[key], strings.TrimSpace(value))
+	return nil
+}
+
+func (f *labelFlags) Labels() types.Labels {
+	if len(f.values) == 0 {
+		return nil
+	}
+	out := make(types.Labels, len(f.values))
+	for _, key := range f.order {
+		vals := f.values[key]
+		if len(vals) == 1 && key != types.LabelKeyCaps {
+			out[key] = types.LabelString(vals[0])
+			continue
+		}
+		out[key] = types.LabelSet(vals)
+	}
+	return out
+}
+
+func cloneLabels(in types.Labels) types.Labels {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(types.Labels, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func splitCSV(v string) []string {

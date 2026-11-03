@@ -1,6 +1,7 @@
 package main
 
 import (
+	"clawsynapse/internal/config"
 	"context"
 	"errors"
 	"flag"
@@ -113,6 +114,28 @@ func newLogContent(previous, current string) string {
 }
 
 func (p defaultLogProvider) ReadLogs(ctx context.Context, lines int) (string, error) {
+	home, err := serviceUserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	root := filepath.Join(home, ".clawsynapse")
+	if value := os.Getenv("CLAWSYNAPSE_DATA_DIR"); value != "" {
+		root = value
+	}
+	cfg, err := config.LoadDaemon([]string{"--data-dir", root})
+	if err != nil {
+		return "", err
+	}
+	if cfg.LogFilePath != "" {
+		text, err := readLastLines(cfg.LogFilePath, lines)
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(text) == "" {
+			return "no logs available\n", nil
+		}
+		return text, nil
+	}
 	switch serviceGOOS {
 	case "linux":
 		return p.readLinuxLogs(ctx, lines)

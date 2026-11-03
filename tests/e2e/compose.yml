@@ -1,0 +1,12 @@
+services:
+  nats:
+    image: nats:2.11.9
+    command: ["-c", "/etc/nats/nats.conf"]
+    volumes:
+      - ./nats.conf:/etc/nats/nats.conf:ro
+      - jetstream:/data/jetstream
+    ports:
+      - "127.0.0.1:${CLAWSYNAPSE_E2E_NATS_PORT:?runner assigns a private broker port}:4222"
+
+volumes:
+  jetstream:

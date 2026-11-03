@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-ClawSynapse 是面向多 Agent 互操作的本地网络通信层，以 Go 守护进程 (`clawsynapsed`) 运行。通过 NATS 连接远程节点，通过本地 HTTP API 与本地 Agent 集成。
+ClawSynapse 是面向多 Agent 互操作的本地网络通信层，以 Go 守护进程 (`clawsynapsed`) 运行。通过 NATS 连接远程 Bot，通过本地 HTTP API 与本地 Agent 集成。
 
 ## 常用命令
 
@@ -36,7 +36,7 @@ go vet ./...
 - **natsbus** — NATS 客户端封装（transport 层）
 - **protocol** — 消息格式定义、subject 规范、验证器、错误码
 - **identity** — Ed25519 密钥对管理（签名/验证/指纹）
-- **discovery** — 节点发现，心跳广播，peer 注册表与 TTL 过期
+- **discovery** — Bot 发现，心跳广播，peer 注册表与 TTL 过期
 - **auth** — challenge-response 认证握手，含 ReplayGuard 防重放
 - **trust** — 信任请求/响应流程（open/tofu/explicit 三种模式）
 - **messaging** — 消息发布到远端 inbox，本地消息接收与缓存

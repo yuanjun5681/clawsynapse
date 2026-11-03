@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"clawsynapse/internal/config"
+	"clawsynapse/internal/store"
 	"errors"
 	"flag"
 	"fmt"
@@ -9,44 +11,23 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 const (
-	initDefaultNATSServers         = "nats://220.168.146.21:9414"
-	initDefaultLocalAPIAddr        = "127.0.0.1:18080"
-	initDefaultTrustMode           = "tofu"
-	initDefaultAgentAdapter        = "default"
-	initDefaultAgentAdapterTimeout = "10m"
-	initDefaultDeliverablePrefixes = "chat,task"
-	initDefaultHeartbeat           = "15s"
-	initDefaultAnnounceTTL         = "30s"
-	initDefaultTransferMaxFileSize = "104857600"
-	initDefaultTransferTTL         = "24h"
-	initDefaultLogLevel            = "info"
-	initDefaultLogFormat           = "json"
+	initDefaultNATSServers  = "nats://220.168.146.21:9414"
+	initDefaultLocalAPIAddr = "127.0.0.1:18080"
+	initDefaultLogLevel     = "info"
+	initDefaultLogFormat    = "json"
 )
 
 type initConfig struct {
-	ConfigPath          string
-	NATSServers         string
-	LocalAPIAddr        string
-	TrustMode           string
-	TrustAutoApprove    bool
-	AgentAdapter        string
-	AgentAdapterTimeout string
-	WebhookURL          string
-	DeliverablePrefixes string
-	DataDir             string
-	TransferDir         string
-	HeartbeatInterval   string
-	AnnounceTTL         string
-	TransferMaxFileSize string
-	TransferTTL         string
-	LogLevel            string
-	LogFormat           string
-	Overwrite           bool
-	transferDirExplicit bool
+	ConfigPath   string
+	NATSServers  string
+	LocalAPIAddr string
+	DataDir      string
+	LogLevel     string
+	LogFormat    string
+	Overwrite    bool
 }
 
 func runInit(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
@@ -76,7 +57,6 @@ func runInit(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 
 	fmt.Fprintf(stdout, "config written: %s\n", cfg.ConfigPath)
 	fmt.Fprintf(stdout, "natsServers: %s\n", cfg.NATSServers)
-	fmt.Fprintf(stdout, "agentAdapter: %s\n", cfg.AgentAdapter)
 	fmt.Fprintf(stdout, "next: run `clawsynapse service restart` to apply changes\n")
 	return nil
 }
@@ -88,22 +68,14 @@ func parseInitArgs(args []string, stderr io.Writer) (initConfig, error) {
 	}
 
 	defaultDataDir := filepath.Join(home, ".clawsynapse")
-	defaultConfigPath := filepath.Join(defaultDataDir, "config.yaml")
+	defaultConfigPath := filepath.Join(defaultDataDir, "config.json")
 	cfg := initConfig{
-		ConfigPath:          defaultConfigPath,
-		NATSServers:         initDefaultNATSServers,
-		LocalAPIAddr:        initDefaultLocalAPIAddr,
-		TrustMode:           initDefaultTrustMode,
-		AgentAdapter:        initDefaultAgentAdapter,
-		AgentAdapterTimeout: initDefaultAgentAdapterTimeout,
-		DeliverablePrefixes: initDefaultDeliverablePrefixes,
-		DataDir:             defaultDataDir,
-		HeartbeatInterval:   initDefaultHeartbeat,
-		AnnounceTTL:         initDefaultAnnounceTTL,
-		TransferMaxFileSize: initDefaultTransferMaxFileSize,
-		TransferTTL:         initDefaultTransferTTL,
-		LogLevel:            initDefaultLogLevel,
-		LogFormat:           initDefaultLogFormat,
+		ConfigPath:   defaultConfigPath,
+		NATSServers:  initDefaultNATSServers,
+		LocalAPIAddr: initDefaultLocalAPIAddr,
+		DataDir:      defaultDataDir,
+		LogLevel:     initDefaultLogLevel,
+		LogFormat:    initDefaultLogFormat,
 	}
 
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
@@ -111,18 +83,7 @@ func parseInitArgs(args []string, stderr io.Writer) (initConfig, error) {
 	fs.StringVar(&cfg.ConfigPath, "config", cfg.ConfigPath, "config file path")
 	fs.StringVar(&cfg.NATSServers, "nats-servers", cfg.NATSServers, "comma-separated NATS servers")
 	fs.StringVar(&cfg.LocalAPIAddr, "local-api-addr", cfg.LocalAPIAddr, "local API address")
-	fs.StringVar(&cfg.TrustMode, "trust-mode", cfg.TrustMode, "trust mode: open|tofu|explicit")
-	fs.BoolVar(&cfg.TrustAutoApprove, "trust-auto-approve", false, "automatically approve valid inbound trust requests")
-	fs.StringVar(&cfg.AgentAdapter, "agent-adapter", cfg.AgentAdapter, "agent adapter: default|openclaw|webhook")
-	fs.StringVar(&cfg.AgentAdapterTimeout, "agent-adapter-timeout", cfg.AgentAdapterTimeout, "timeout for delivering a message to the agent adapter")
-	fs.StringVar(&cfg.WebhookURL, "webhook-url", cfg.WebhookURL, "webhook URL when using webhook adapter")
-	fs.StringVar(&cfg.DeliverablePrefixes, "deliverable-prefixes", cfg.DeliverablePrefixes, "comma-separated deliverable prefixes")
 	fs.StringVar(&cfg.DataDir, "data-dir", cfg.DataDir, "state directory")
-	fs.StringVar(&cfg.TransferDir, "transfer-dir", cfg.TransferDir, "transfer directory")
-	fs.StringVar(&cfg.HeartbeatInterval, "heartbeat", cfg.HeartbeatInterval, "heartbeat interval")
-	fs.StringVar(&cfg.AnnounceTTL, "announce-ttl", cfg.AnnounceTTL, "announce ttl")
-	fs.StringVar(&cfg.TransferMaxFileSize, "transfer-max-file-size", cfg.TransferMaxFileSize, "max transfer file size in bytes")
-	fs.StringVar(&cfg.TransferTTL, "transfer-ttl", cfg.TransferTTL, "transfer object TTL")
 	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level: debug|info|warn|error")
 	fs.StringVar(&cfg.LogFormat, "log-format", cfg.LogFormat, "log format: json|text")
 	fs.BoolVar(&cfg.Overwrite, "overwrite", false, "overwrite an existing config file without prompting")
@@ -134,7 +95,6 @@ func parseInitArgs(args []string, stderr io.Writer) (initConfig, error) {
 	if len(fs.Args()) > 0 {
 		return initConfig{}, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
-	cfg.transferDirExplicit = hasFlag(args, "--transfer-dir")
 
 	return cfg, nil
 }
@@ -147,33 +107,10 @@ func promptInitConfig(stdin io.Reader, stdout io.Writer, cfg *initConfig) error 
 	if cfg.NATSServers, err = promptValue(reader, stdout, "NATS servers (comma-separated)", cfg.NATSServers); err != nil {
 		return err
 	}
-	if cfg.AgentAdapter, err = promptChoice(reader, stdout, "Agent adapter", cfg.AgentAdapter, []string{"default", "openclaw", "webhook"}); err != nil {
-		return err
-	}
-	if cfg.AgentAdapter == "webhook" {
-		if cfg.WebhookURL, err = promptRequired(reader, stdout, "Webhook URL", cfg.WebhookURL); err != nil {
-			return err
-		}
-	} else {
-		cfg.WebhookURL = ""
-	}
-	if cfg.TrustMode, err = promptChoice(reader, stdout, "Trust mode", cfg.TrustMode, []string{"open", "tofu", "explicit"}); err != nil {
-		return err
-	}
 	if cfg.LocalAPIAddr, err = promptValue(reader, stdout, "Local API address", cfg.LocalAPIAddr); err != nil {
 		return err
 	}
-	if cfg.DeliverablePrefixes, err = promptValue(reader, stdout, "Deliverable prefixes (comma-separated)", cfg.DeliverablePrefixes); err != nil {
-		return err
-	}
 	if cfg.DataDir, err = promptValue(reader, stdout, "Data directory", cfg.DataDir); err != nil {
-		return err
-	}
-	transferCurrent := cfg.TransferDir
-	if !cfg.transferDirExplicit && strings.TrimSpace(transferCurrent) == "" {
-		transferCurrent = filepath.Join(cfg.DataDir, "transfers")
-	}
-	if cfg.TransferDir, err = promptValue(reader, stdout, "Transfer directory", transferCurrent); err != nil {
 		return err
 	}
 	if cfg.LogLevel, err = promptChoice(reader, stdout, "Log level", cfg.LogLevel, []string{"debug", "info", "warn", "error"}); err != nil {
@@ -189,17 +126,7 @@ func finalizeInitConfig(cfg *initConfig) error {
 	cfg.ConfigPath = strings.TrimSpace(cfg.ConfigPath)
 	cfg.NATSServers = strings.TrimSpace(cfg.NATSServers)
 	cfg.LocalAPIAddr = strings.TrimSpace(cfg.LocalAPIAddr)
-	cfg.TrustMode = strings.ToLower(strings.TrimSpace(cfg.TrustMode))
-	cfg.AgentAdapter = strings.ToLower(strings.TrimSpace(cfg.AgentAdapter))
-	cfg.AgentAdapterTimeout = strings.TrimSpace(cfg.AgentAdapterTimeout)
-	cfg.WebhookURL = strings.TrimSpace(cfg.WebhookURL)
-	cfg.DeliverablePrefixes = strings.TrimSpace(cfg.DeliverablePrefixes)
 	cfg.DataDir = strings.TrimSpace(cfg.DataDir)
-	cfg.TransferDir = strings.TrimSpace(cfg.TransferDir)
-	cfg.HeartbeatInterval = strings.TrimSpace(cfg.HeartbeatInterval)
-	cfg.AnnounceTTL = strings.TrimSpace(cfg.AnnounceTTL)
-	cfg.TransferMaxFileSize = strings.TrimSpace(cfg.TransferMaxFileSize)
-	cfg.TransferTTL = strings.TrimSpace(cfg.TransferTTL)
 	cfg.LogLevel = strings.ToLower(strings.TrimSpace(cfg.LogLevel))
 	cfg.LogFormat = strings.ToLower(strings.TrimSpace(cfg.LogFormat))
 
@@ -214,28 +141,6 @@ func finalizeInitConfig(cfg *initConfig) error {
 	}
 	if cfg.DataDir == "" {
 		return errors.New("data directory is required")
-	}
-	if cfg.AgentAdapterTimeout == "" {
-		cfg.AgentAdapterTimeout = initDefaultAgentAdapterTimeout
-	}
-	if d, err := time.ParseDuration(cfg.AgentAdapterTimeout); err != nil || d <= 0 {
-		return fmt.Errorf("invalid agent adapter timeout: %s", cfg.AgentAdapterTimeout)
-	}
-	if !cfg.transferDirExplicit || cfg.TransferDir == "" {
-		cfg.TransferDir = filepath.Join(cfg.DataDir, "transfers")
-	}
-	switch cfg.TrustMode {
-	case "open", "tofu", "explicit":
-	default:
-		return fmt.Errorf("invalid trust mode: %s", cfg.TrustMode)
-	}
-	switch cfg.AgentAdapter {
-	case "default", "openclaw", "webhook":
-	default:
-		return fmt.Errorf("invalid agent adapter: %s", cfg.AgentAdapter)
-	}
-	if cfg.AgentAdapter == "webhook" && cfg.WebhookURL == "" {
-		return errors.New("webhook url is required when agent adapter is webhook")
 	}
 	switch cfg.LogLevel {
 	case "debug", "info", "warn", "error":
@@ -257,11 +162,7 @@ func finalizeInitConfig(cfg *initConfig) error {
 	if err != nil {
 		return err
 	}
-	cfg.TransferDir, err = expandHomePath(cfg.TransferDir)
-	if err != nil {
-		return err
-	}
-	return nil
+	return config.ValidateDaemon(daemonInitConfig(*cfg))
 }
 
 func maybeConfirmOverwrite(stdin io.Reader, stdout io.Writer, interactive bool, cfg initConfig) error {
@@ -296,64 +197,19 @@ func writeInitConfig(cfg initConfig) error {
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return fmt.Errorf("create data directory: %w", err)
 	}
-	if err := os.MkdirAll(cfg.TransferDir, 0o700); err != nil {
-		return fmt.Errorf("create transfer directory: %w", err)
-	}
 
-	tmp, err := os.CreateTemp(filepath.Dir(cfg.ConfigPath), ".clawsynapse-config-*.yaml")
-	if err != nil {
-		return fmt.Errorf("create temp config: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-
-	content := renderInitConfig(cfg)
-	if _, err := tmp.WriteString(content); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write config: %w", err)
-	}
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("chmod config: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close config: %w", err)
-	}
-	if err := os.Rename(tmpName, cfg.ConfigPath); err != nil {
-		return fmt.Errorf("replace config: %w", err)
-	}
-	return nil
+	return store.WriteJSONAtomic(cfg.ConfigPath, daemonInitConfig(cfg), 0o600)
 }
 
-func renderInitConfig(cfg initConfig) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "natsServers:\n")
-	for _, item := range splitCSVList(cfg.NATSServers) {
-		fmt.Fprintf(&b, "  - %s\n", item)
-	}
-	fmt.Fprintf(&b, "localApiAddr: %s\n", cfg.LocalAPIAddr)
-	fmt.Fprintf(&b, "trustMode: %s\n", cfg.TrustMode)
-	fmt.Fprintf(&b, "trustAutoApprove: %t\n", cfg.TrustAutoApprove)
-	fmt.Fprintf(&b, "agentAdapter: %s\n", cfg.AgentAdapter)
-	fmt.Fprintf(&b, "agentAdapterTimeout: %s\n", cfg.AgentAdapterTimeout)
-	if cfg.WebhookURL != "" {
-		fmt.Fprintf(&b, "webhookUrl: %s\n", cfg.WebhookURL)
-	}
-	fmt.Fprintf(&b, "heartbeatInterval: %s\n", cfg.HeartbeatInterval)
-	fmt.Fprintf(&b, "announceTtl: %s\n", cfg.AnnounceTTL)
-	fmt.Fprintf(&b, "dataDir: %s\n", cfg.DataDir)
-	fmt.Fprintf(&b, "identityKeyPath: %s\n", filepath.Join(cfg.DataDir, "identity.key"))
-	fmt.Fprintf(&b, "identityPubPath: %s\n", filepath.Join(cfg.DataDir, "identity.pub"))
-	fmt.Fprintf(&b, "deliverablePrefixes:\n")
-	for _, item := range splitCSVList(cfg.DeliverablePrefixes) {
-		fmt.Fprintf(&b, "  - %s\n", item)
-	}
-	fmt.Fprintf(&b, "transferDir: %s\n", cfg.TransferDir)
-	fmt.Fprintf(&b, "transferMaxFileSize: %s\n", cfg.TransferMaxFileSize)
-	fmt.Fprintf(&b, "transferTtl: %s\n", cfg.TransferTTL)
-	fmt.Fprintf(&b, "logLevel: %s\n", cfg.LogLevel)
-	fmt.Fprintf(&b, "logFormat: %s\n", cfg.LogFormat)
-	return b.String()
+func daemonInitConfig(cfg initConfig) config.DaemonConfig {
+	d := config.DefaultDaemonConfig()
+	d.DataDir = cfg.DataDir
+	d.NATSServers = splitCSVList(cfg.NATSServers)
+	d.LocalAPIAddr = cfg.LocalAPIAddr
+	d.LogLevel = cfg.LogLevel
+	d.LogFormat = cfg.LogFormat
+	d.LogFilePath = filepath.Join(cfg.DataDir, "log", "clawsynapsed.log")
+	return d
 }
 
 func splitCSVList(v string) []string {
@@ -367,15 +223,6 @@ func splitCSVList(v string) []string {
 		out = append(out, part)
 	}
 	return out
-}
-
-func hasFlag(args []string, name string) bool {
-	for _, arg := range args {
-		if arg == name || strings.HasPrefix(arg, name+"=") {
-			return true
-		}
-	}
-	return false
 }
 
 func expandHomePath(path string) (string, error) {
@@ -422,19 +269,6 @@ func promptValue(reader *bufio.Reader, stdout io.Writer, label, current string) 
 		return current, nil
 	}
 	return line, nil
-}
-
-func promptRequired(reader *bufio.Reader, stdout io.Writer, label, current string) (string, error) {
-	for {
-		value, err := promptValue(reader, stdout, label, current)
-		if err != nil {
-			return "", err
-		}
-		if strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value), nil
-		}
-		fmt.Fprintln(stdout, "value is required")
-	}
 }
 
 func promptChoice(reader *bufio.Reader, stdout io.Writer, label, current string, allowed []string) (string, error) {

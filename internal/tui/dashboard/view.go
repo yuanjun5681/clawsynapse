@@ -2,10 +2,12 @@ package dashboard
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -14,7 +16,10 @@ import (
 )
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(m.refreshCmd(), dashboardTickCmd())
+	if len(m.botID) == 35 && strings.HasPrefix(m.botID, "n1-") {
+		return tea.Batch(m.refreshCmd(), dashboardTickCmd())
+	}
+	return tea.Batch(m.botsCmd(), dashboardTickCmd())
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -24,8 +29,40 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.recalcLayout()
 	case tea.KeyPressMsg:
+		if msg.String() == "ctrl+c" {
+			return m, tea.Quit
+		}
+		if m.selectingBot {
+			switch msg.String() {
+			case "q":
+				return m, tea.Quit
+			case "down", "j":
+				m.botCursor = clampInt(m.botCursor+1, 0, maxInt(0, len(m.bots)-1))
+			case "up", "k":
+				m.botCursor = clampInt(m.botCursor-1, 0, maxInt(0, len(m.bots)-1))
+			case "enter":
+				if len(m.bots) > 0 {
+					m.selectBot(m.bots[m.botCursor].BotID)
+					return m, m.refreshCmd()
+				}
+			case "r":
+				return m, m.botsCmd()
+			case "escape":
+				if m.botID != "" {
+					m.selectingBot = false
+				}
+			}
+			return m, nil
+		}
 		if m.activeTab == 4 && m.cfgState.editing {
 			return m.handleConfigEditKey(msg)
+		}
+		if m.activeTab == 1 && m.peerFilter.editing {
+			return m.handlePeerFilterKey(msg)
+		}
+		if msg.String() == "b" {
+			m.selectingBot = true
+			return m, m.botsCmd()
 		}
 		switch msg.String() {
 		case "ctrl+c", "q":
@@ -64,6 +101,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.offsets[3] = 0
 				m.logsFollowTail = false
 			}
+		case "/":
+			if m.activeTab == 1 {
+				m.peerFilter.editing = true
+				m.peerFilter.buf = m.peerFilter.raw
+			}
+		case "escape":
+			if m.activeTab == 1 && strings.TrimSpace(m.peerFilter.raw) != "" {
+				m.peerFilter.raw = ""
+				m.cursors[1] = 0
+				m.offsets[1] = 0
+			}
 		case "enter", "e":
 			if m.activeTab == 4 {
 				return m.startConfigEdit()
@@ -77,19 +125,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.refreshCmd()
 		}
 	case configSaveMsg:
+		if msg.scope != m.scope {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.cfgState.statusMsg = "Save failed: " + msg.err.Error()
 		} else {
-			m.cfgState.statusMsg = "Saved. Restart daemon to apply."
+			m.cfgState.statusMsg = "Saved selected Bot configuration."
 			m.cfgState.dirty = false
 			for i := range m.cfgState.fields {
 				m.cfgState.fields[i].Changed = false
 			}
+			m.cfgState.statusAt = time.Now()
+			return m, m.refreshCmd()
 		}
 		m.cfgState.statusAt = time.Now()
 	case refreshMsg:
+		if msg.scope != m.scope {
+			return m, nil
+		}
 		m.loading = false
 		if msg.err != nil {
+			if msg.snapshot.ConfigData != nil {
+				m.snapshot = msg.snapshot
+				m.syncConfigFields(msg.snapshot.ConfigData)
+			}
 			m.errText = msg.err.Error()
 			return m, nil
 		}
@@ -98,7 +158,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.errText = ""
 		m.clampSelections()
 		m.syncConfigFields(msg.snapshot.ConfigData)
+	case botsMsg:
+		if msg.err != nil {
+			m.loading = false
+			m.errText = msg.err.Error()
+			return m, nil
+		}
+		m.bots = msg.bots
+		m.botCursor = clampInt(m.botCursor, 0, maxInt(0, len(m.bots)-1))
+		if m.botID != "" && !m.selectingBot {
+			id, err := resolveBotSelection(m.botID, m.bots)
+			if err != nil {
+				m.loading = false
+				m.errText = err.Error()
+				m.selectingBot = true
+				return m, nil
+			}
+			m.selectBot(id)
+			return m, m.refreshCmd()
+		}
+		m.loading = false
 	case time.Time:
+		if m.selectingBot || m.botID == "" {
+			return m, dashboardTickCmd()
+		}
 		if m.loading {
 			return m, dashboardTickCmd()
 		}
@@ -111,9 +194,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) View() tea.View {
 	if m.width > 0 && m.width < dashboardMinWidth || m.height > 0 && m.height < dashboardMinHeight {
-		hint := fmt.Sprintf("Terminal too small (%dx%d). Need at least %dx%d.\nPress q to quit.",
-			m.width, m.height, dashboardMinWidth, dashboardMinHeight)
+		hint := fmt.Sprintf("Active Bot: %s\nTerminal too small (%dx%d). Need at least %dx%d.\nPress q to quit.",
+			fallbackString(m.botID, "NONE"), m.width, m.height, dashboardMinWidth, dashboardMinHeight)
 		v := tea.NewView(hint)
+		v.AltScreen = true
+		return v
+	}
+	if m.selectingBot {
+		lines := []string{"Select a local Bot explicitly (j/k, enter; r refresh).", ""}
+		for i, bot := range m.bots {
+			marker := "  "
+			if i == m.botCursor {
+				marker = "> "
+			}
+			lines = append(lines, marker+bot.BotID+"  "+bot.DisplayName+"  "+fallbackString(bot.Role, "unknown")+"  "+bot.State)
+		}
+		if len(m.bots) == 0 {
+			lines = append(lines, "No local Bots. Create one with clawsynapse bot create.")
+		}
+		if m.errText != "" {
+			lines = append(lines, m.errText)
+		}
+		v := tea.NewView(m.headerView(maxInt(m.width, 40)) + "\n" + strings.Join(lines, "\n"))
 		v.AltScreen = true
 		return v
 	}
@@ -203,6 +305,7 @@ func (m model) headerView(width int) string {
 			),
 		}
 	}
+	lines = append(lines, "Active Bot: "+fallbackString(m.botID, "NONE")+"  | b: choose Bot")
 	if m.errText != "" {
 		lines = append(lines, taggedLine(dashboardTagBad, "Last refresh failed: "+truncateRight(m.errText, maxInt(12, width-22))))
 	}
@@ -273,7 +376,7 @@ func (m model) overviewView(width, height int) string {
 	}
 
 	cards := []string{
-		renderMetricPanel("Peers", fmt.Sprintf("%d", len(m.snapshot.Peers)), "discovered nodes", cardWidth),
+		renderMetricPanel("Peers", fmt.Sprintf("%d", len(m.snapshot.Peers)), "discovered Bots", cardWidth),
 		renderMetricPanel("NATS", boolWord(m.snapshot.Health.NATS.Connected, "connected", "offline"), fallbackString(m.snapshot.Health.NATS.Status, "unknown"), cardWidth),
 		renderMetricPanel("Inbound", fmt.Sprintf("%d msgs", m.snapshot.Health.NATS.InMsgs), formatBytes(m.snapshot.Health.NATS.InBytes), cardWidth),
 		renderMetricPanel("Outbound", fmt.Sprintf("%d msgs", m.snapshot.Health.NATS.OutMsgs), formatBytes(m.snapshot.Health.NATS.OutBytes), cardWidth),
@@ -345,7 +448,7 @@ func (m model) overviewActivityLines() []string {
 			break
 		}
 		lines = append(lines, taggedLine(dashboardTagAccent, fmt.Sprintf("  %s %s %s %s", arrowR, compactType(item.Type), fallbackString(item.From, "-"), fallbackString(item.To, "-"))))
-		lines = append(lines, taggedLine(dashboardTagMuted, "    "+truncateRight(strings.TrimSpace(item.Content), 48)))
+		lines = append(lines, taggedLine(dashboardTagMuted, "    "+truncateRight(strings.TrimSpace(messagePreview(item)), 48)))
 	}
 	return lines
 }
@@ -369,18 +472,27 @@ func (m model) peersView(width, height int) string {
 }
 
 func (m model) peerListLines(contentHeight, contentWidth int) []string {
-	cols := peerColumnsForWidth(contentWidth, m.snapshot.Peers)
-	lines := []string{
-		taggedLine(dashboardTagDim, formatPeerListHeader(cols)),
+	peers := m.filteredPeers()
+	cols := peerColumnsForWidth(contentWidth, peers)
+	var lines []string
+	if m.peerFilter.editing {
+		lines = append(lines, taggedLine(dashboardTagAccent, "  filter: "+m.peerFilter.buf+"_"))
+	} else if strings.TrimSpace(m.peerFilter.raw) != "" {
+		lines = append(lines, taggedLine(dashboardTagAccent,
+			fmt.Sprintf("  filter: %s %s %d/%d peers", m.peerFilter.raw, boxV, len(peers), len(m.snapshot.Peers))))
 	}
-	if len(m.snapshot.Peers) == 0 {
-		return append(lines, taggedLine(dashboardTagMuted, "  no peers discovered"))
+	lines = append(lines, taggedLine(dashboardTagDim, formatPeerListHeader(cols)))
+	if len(peers) == 0 {
+		if len(m.snapshot.Peers) == 0 {
+			return append(lines, taggedLine(dashboardTagMuted, "  no peers discovered"))
+		}
+		return append(lines, taggedLine(dashboardTagMuted, "  no peers match filter"))
 	}
 
-	visibleRows := maxInt(1, contentHeight-1)
-	offset := ensureVisible(m.offsets[1], m.cursors[1], len(m.snapshot.Peers), visibleRows)
-	for row := offset; row < len(m.snapshot.Peers) && len(lines) < contentHeight; row++ {
-		peer := m.snapshot.Peers[row]
+	visibleRows := maxInt(1, contentHeight-len(lines))
+	offset := ensureVisible(m.offsets[1], m.cursors[1], len(peers), visibleRows)
+	for row := offset; row < len(peers) && len(lines) < contentHeight; row++ {
+		peer := peers[row]
 		prefix := " "
 		tag := ""
 		if row == m.cursors[1] {
@@ -389,32 +501,59 @@ func (m model) peerListLines(contentHeight, contentWidth int) []string {
 		}
 		lines = append(lines, taggedLine(tag, formatPeerRow(prefix, peer, cols)))
 	}
-	if offset+visibleRows < len(m.snapshot.Peers) {
-		lines = append(lines, taggedLine(dashboardTagMuted, fmt.Sprintf("  ... %d more peers", len(m.snapshot.Peers)-(offset+visibleRows))))
+	if offset+visibleRows < len(peers) {
+		lines = append(lines, taggedLine(dashboardTagMuted, fmt.Sprintf("  ... %d more peers", len(peers)-(offset+visibleRows))))
 	}
 	return lines
 }
 
 func (m model) selectedPeerLines() []string {
-	if len(m.snapshot.Peers) == 0 {
+	peers := m.filteredPeers()
+	if len(peers) == 0 {
 		return []string{taggedLine(dashboardTagMuted, "No peer selected."), "", "Use tab to move between views."}
 	}
-	peer := m.snapshot.Peers[m.cursors[1]]
+	peer := peers[m.cursors[1]]
 	authDot := peerAuthDot(peer.AuthStatus)
 	trustDot := peerTrustDot(peer.TrustStatus)
-	return []string{
-		taggedLine(dashboardTagAccent, fmt.Sprintf("  nodeId  %s", peer.NodeID)),
-		taggedLine(dashboardPeerAuthTag(peer.AuthStatus), fmt.Sprintf("  auth    %s %s", authDot, fallbackString(peer.AuthStatus, "unknown"))),
-		taggedLine(dashboardPeerTrustTag(peer.TrustStatus), fmt.Sprintf("  trust   %s %s", trustDot, fallbackString(peer.TrustStatus, "none"))),
-		fmt.Sprintf("  product %s", fallbackString(peer.AgentProduct, "-")),
-		fmt.Sprintf("  version %s", fallbackString(peer.Version, "-")),
-		fmt.Sprintf("  inbox   %s", fallbackString(peer.Inbox, "-")),
+	lines := []string{
+		taggedLine(dashboardTagAccent, fmt.Sprintf("  botId       %s", peer.BotID)),
+		taggedLine(dashboardTagMuted, fmt.Sprintf("  fingerprint %s", peerFingerprint(peer))),
+		taggedLine(dashboardPeerAuthTag(peer.AuthStatus), fmt.Sprintf("  auth        %s %s", authDot, fallbackString(peer.AuthStatus, "unknown"))),
+		taggedLine(dashboardPeerTrustTag(peer.TrustStatus), fmt.Sprintf("  trust       %s %s", trustDot, fallbackString(peer.TrustStatus, "none"))),
+		fmt.Sprintf("  product     %s", fallbackString(peer.AgentProduct, "-")),
+		fmt.Sprintf("  version     %s", fallbackString(peer.Version, "-")),
+		fmt.Sprintf("  inbox       %s", fallbackString(peer.Inbox, "-")),
+		"",
+		taggedLine(dashboardTagSection, arrowR+" Naming"),
+		fmt.Sprintf("  displayName %s", fallbackString(normalizeSingleLine(peer.DisplayName), "-")),
+		fmt.Sprintf("  localAlias  %s", fallbackString(normalizeSingleLine(peer.LocalAlias), "-")),
+	}
+	if desc := normalizeSingleLine(peer.LocalDescription); desc != "" {
+		lines = append(lines, fmt.Sprintf("  description %s", desc))
+	}
+
+	lines = append(lines, "", taggedLine(dashboardTagSection, arrowR+" Remote Labels"))
+	if labelLines := formatLabelsLines(peer.Labels, "  "); len(labelLines) > 0 {
+		lines = append(lines, labelLines...)
+	} else {
+		lines = append(lines, taggedLine(dashboardTagMuted, "  (none)"))
+	}
+
+	lines = append(lines, "", taggedLine(dashboardTagSection, arrowR+" Local Labels"))
+	if labelLines := formatLabelsLines(peer.LocalLabels, "  "); len(labelLines) > 0 {
+		lines = append(lines, labelLines...)
+	} else {
+		lines = append(lines, taggedLine(dashboardTagMuted, "  (none)"))
+	}
+
+	lines = append(lines,
 		"",
 		taggedLine(dashboardTagSection, arrowR+" Fleet Summary"),
 		taggedLine(dashboardTagGood, fmt.Sprintf("  %s trusted peers   %d", dotFull, countPeersByTrust(m.snapshot.Peers, types.TrustTrusted))),
 		taggedLine(dashboardTagWarn, fmt.Sprintf("  %s auth pending    %d", dotHalf, countPeersByAuth(m.snapshot.Peers, types.AuthPending))),
 		taggedLine(dashboardTagMuted, fmt.Sprintf("  %s seen only      %d", dotEmpty, countPeersByAuth(m.snapshot.Peers, types.AuthSeen))),
-	}
+	)
+	return lines
 }
 
 func (m model) messagesView(width, height int) string {
@@ -472,13 +611,16 @@ func (m model) selectedMessageLines() []string {
 		fmt.Sprintf("  to   %s", fallbackString(item.To, "-")),
 		fmt.Sprintf("  key  %s", fallbackString(item.SessionKey, "-")),
 		fmt.Sprintf("  ts   %s", formatUnixMilli(item.Ts)),
+		fmt.Sprintf("  request %s", fallbackString(item.RequestID, "-")),
+		fmt.Sprintf("  run %s / seq %d", fallbackString(item.RunID, "-"), item.Seq),
 		"",
-		taggedLine(dashboardTagSection, arrowR+" Content"),
+		taggedLine(dashboardTagSection, arrowR+" Payload"),
 	}
-	if strings.TrimSpace(item.Content) == "" {
-		lines = append(lines, taggedLine(dashboardTagMuted, "  -"))
+	payload, err := json.MarshalIndent(item.Payload, "", "  ")
+	if err != nil {
+		lines = append(lines, taggedLine(dashboardTagMuted, "  invalid payload"))
 	} else {
-		lines = append(lines, "  "+item.Content)
+		lines = append(lines, string(payload))
 	}
 	if len(item.Metadata) > 0 {
 		lines = append(lines, "", taggedLine(dashboardTagSection, arrowR+" Metadata"))
@@ -542,8 +684,8 @@ func (m model) logsView(_ int, height int) string {
 			if entry.Peer != "" {
 				ctx = append(ctx, "peer="+entry.Peer)
 			}
-			if entry.NodeID != "" {
-				ctx = append(ctx, "nodeId="+entry.NodeID)
+			if entry.BotID != "" {
+				ctx = append(ctx, "botId="+entry.BotID)
 			}
 			if entry.From != "" {
 				ctx = append(ctx, "from="+entry.From)
@@ -624,7 +766,14 @@ func (m model) footerView(width int) string {
 	}
 
 	var left string
-	if m.activeTab == 4 && m.cfgState.editing {
+	if m.activeTab == 1 && m.peerFilter.editing {
+		left = fmt.Sprintf(" Filter: k=v exact %s k~=v set member %s text substring %s Enter apply %s Esc clear", boxV, boxV, boxV, boxV)
+	} else if m.activeTab == 1 {
+		left = fmt.Sprintf(" / filter %s j/k navigate %s tab switch", boxV, boxV)
+		if strings.TrimSpace(m.peerFilter.raw) != "" {
+			left = fmt.Sprintf(" filter %q %s Esc clear %s / edit %s j/k navigate", m.peerFilter.raw, boxV, boxV, boxV)
+		}
+	} else if m.activeTab == 4 && m.cfgState.editing {
 		left = fmt.Sprintf(" Enter confirm %s Esc cancel %s j/k cycle (enum)", boxV, boxV)
 	} else if m.activeTab == 4 {
 		left = fmt.Sprintf(" Enter/e edit %s S save %s j/k navigate %s tab switch", boxV, boxV, boxV)
@@ -641,23 +790,24 @@ func (m model) footerView(width int) string {
 }
 
 func (m model) refreshCmd() tea.Cmd {
-	client := m.client
+	client := scopedClient{Client: m.client, botID: m.botID}
 	logs := m.logs
 	timeout := m.timeout
 	logLines := m.logLines
+	scope := m.scope
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 
 		snapshot, err := loadSnapshot(ctx, client, logs, logLines)
-		return refreshMsg{snapshot: snapshot, err: err}
+		return refreshMsg{scope: scope, snapshot: snapshot, err: err}
 	}
 }
 
 func (m *model) moveSelection(delta int) {
 	switch m.activeTab {
 	case 1:
-		m.cursors[1] = clampInt(m.cursors[1]+delta, 0, maxInt(0, len(m.snapshot.Peers)-1))
+		m.cursors[1] = clampInt(m.cursors[1]+delta, 0, maxInt(0, len(m.filteredPeers())-1))
 	case 2:
 		m.cursors[2] = clampInt(m.cursors[2]+delta, 0, maxInt(0, len(m.snapshot.Messages)-1))
 	case 3:
@@ -673,7 +823,7 @@ func (m *model) moveSelection(delta int) {
 }
 
 func (m *model) clampSelections() {
-	m.cursors[1] = clampInt(m.cursors[1], 0, maxInt(0, len(m.snapshot.Peers)-1))
+	m.cursors[1] = clampInt(m.cursors[1], 0, maxInt(0, len(m.filteredPeers())-1))
 	m.cursors[2] = clampInt(m.cursors[2], 0, maxInt(0, len(m.snapshot.Messages)-1))
 	logLines := splitLogLines(m.snapshot.Logs)
 	if m.logsFollowTail {
@@ -818,11 +968,52 @@ func (m model) configDetailLines() []string {
 		lines = append(lines, taggedLine(dashboardTagMuted, "  Comma-separated values"))
 	case cfkText:
 		lines = append(lines, taggedLine(dashboardTagSection, arrowR+" Text"))
-		lines = append(lines, taggedLine(dashboardTagMuted, "  Type to edit value"))
+		if f.Key == "labels" {
+			lines = append(lines, taggedLine(dashboardTagMuted, `  JSON object, e.g. {"env":"prod","caps":["chat"]}`))
+			lines = append(lines, taggedLine(dashboardTagMuted, "  Empty value clears all labels"))
+		} else {
+			lines = append(lines, taggedLine(dashboardTagMuted, "  Type to edit value"))
+		}
 	}
 
 	lines = append(lines, "", taggedLine(dashboardTagMuted, "  Changes require daemon restart."))
 	return lines
+}
+
+// handlePeerFilterKey captures keys while the peers-tab filter input is
+// active. Enter applies the buffer (empty clears), Esc clears the filter.
+func (m model) handlePeerFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "escape":
+		m.peerFilter.editing = false
+		m.peerFilter.raw = ""
+		m.cursors[1] = 0
+		m.offsets[1] = 0
+		return m, nil
+	case "enter":
+		m.peerFilter.raw = strings.TrimSpace(m.peerFilter.buf)
+		m.peerFilter.editing = false
+		m.cursors[1] = 0
+		m.offsets[1] = 0
+		return m, nil
+	case "backspace":
+		m.peerFilter.buf = trimLastRune(m.peerFilter.buf)
+		return m, nil
+	default:
+		if key := msg.String(); utf8.RuneCountInString(key) == 1 {
+			m.peerFilter.buf += key
+		}
+		return m, nil
+	}
+}
+
+// trimLastRune removes the last UTF-8 rune so backspace works for CJK input.
+func trimLastRune(s string) string {
+	if s == "" {
+		return s
+	}
+	_, size := utf8.DecodeLastRuneInString(s)
+	return s[:len(s)-size]
 }
 
 func (m model) startConfigEdit() (tea.Model, tea.Cmd) {
@@ -860,9 +1051,7 @@ func (m model) handleConfigEditKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "backspace":
 		if f.Kind == cfkText || f.Kind == cfkStringSlice {
-			if len(f.EditBuf) > 0 {
-				f.EditBuf = f.EditBuf[:len(f.EditBuf)-1]
-			}
+			f.EditBuf = trimLastRune(f.EditBuf)
 		}
 		return m, nil
 	case "up", "k":
@@ -909,7 +1098,7 @@ func (m model) handleConfigEditKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	default:
 		key := msg.String()
-		if len(key) == 1 && (f.Kind == cfkText || f.Kind == cfkStringSlice) {
+		if utf8.RuneCountInString(key) == 1 && (f.Kind == cfkText || f.Kind == cfkStringSlice) {
 			f.EditBuf += key
 		}
 		return m, nil
@@ -919,67 +1108,75 @@ func (m model) handleConfigEditKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m model) saveConfigCmd() tea.Cmd {
 	fields := make([]configField, len(m.cfgState.fields))
 	copy(fields, m.cfgState.fields)
-	configPath := m.cfgState.configPath
+	base := m.snapshot.ConfigData
+	client := scopedClient{Client: m.client, botID: m.botID}
+	scope := m.scope
+	timeout := m.timeout
 	return func() tea.Msg {
-		cfg := buildConfigFromFields(fields)
-		if err := appconfig.Validate(cfg); err != nil {
-			return configSaveMsg{err: err}
+		if client.botID == "" {
+			return configSaveMsg{scope: scope, err: fmt.Errorf("select a Bot first")}
 		}
-		if configPath == "" {
-			return configSaveMsg{err: fmt.Errorf("config file path not available")}
+		cfg, err := buildBotConfigFromFields(fields, base)
+		if err == nil {
+			err = appconfig.ValidateBot(cfg)
 		}
-		err := appconfig.SaveToFile(configPath, cfg)
-		return configSaveMsg{err: err}
+		if err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+			_, err = client.Put(ctx, "/config", cfg)
+		}
+		return configSaveMsg{scope: scope, err: err}
 	}
 }
 
-func buildConfigFromFields(fields []configField) appconfig.Config {
-	valMap := make(map[string]configField, len(fields))
+func buildBotConfigFromFields(fields []configField, base map[string]any) (appconfig.BotConfig, error) {
+	data := make(map[string]any, len(base))
+	for k, v := range base {
+		data[k] = v
+	}
 	for _, f := range fields {
-		valMap[f.Key] = f
-	}
-	v := func(key string) string {
-		return valMap[key].Value
-	}
-	csv := func(key string) []string {
-		parts := strings.Split(valMap[key].Value, ",")
-		clean := make([]string, 0, len(parts))
-		for _, p := range parts {
-			p = strings.TrimSpace(p)
-			if p != "" {
-				clean = append(clean, p)
+		if !f.Changed {
+			continue
+		}
+		switch f.Key {
+		case "labels":
+			value, err := parseLabelsField(f.Value)
+			if err != nil {
+				return appconfig.BotConfig{}, err
+			}
+			data[f.Key] = value
+		case "harness":
+			var value any
+			if err := json.Unmarshal([]byte(f.Value), &value); err != nil {
+				return appconfig.BotConfig{}, fmt.Errorf("%s: %w", f.Label, err)
+			}
+			data[f.Key] = value
+		case "maxConcurrent", "maxQueued", "fileQuotaBytes", "transferMaxFileSize":
+			value, err := strconv.ParseInt(f.Value, 10, 64)
+			if err != nil {
+				return appconfig.BotConfig{}, err
+			}
+			data[f.Key] = value
+		default:
+			switch f.Kind {
+			case cfkBool:
+				data[f.Key] = f.Value == "true"
+			case cfkStringSlice:
+				var values []string
+				for _, v := range strings.Split(f.Value, ",") {
+					if v = strings.TrimSpace(v); v != "" {
+						values = append(values, v)
+					}
+				}
+				data[f.Key] = values
+			default:
+				data[f.Key] = f.Value
 			}
 		}
-		return clean
 	}
-	var maxFileSize int64
-	if n, err := strconv.ParseInt(v("transferMaxFileSize"), 10, 64); err == nil {
-		maxFileSize = n
-	}
-	return appconfig.Config{
-		NATSServers:         csv("natsServers"),
-		LocalAPIAddr:        v("localApiAddr"),
-		DataDir:             v("dataDir"),
-		IdentityKeyPath:     v("identityKeyPath"),
-		IdentityPubPath:     v("identityPubPath"),
-		HeartbeatInterval:   v("heartbeatInterval"),
-		AnnounceTTL:         v("announceTtl"),
-		AgentProduct:        v("agentProduct"),
-		AgentVersion:        v("agentVersion"),
-		Capabilities:        csv("capabilities"),
-		TrustMode:           v("trustMode"),
-		TrustAutoApprove:    v("trustAutoApprove") == "true",
-		AgentAdapter:        v("agentAdapter"),
-		AgentAdapterTimeout: v("agentAdapterTimeout"),
-		WebhookURL:          v("webhookUrl"),
-		DeliverablePrefixes: csv("deliverablePrefixes"),
-		TransferDir:         v("transferDir"),
-		TransferMaxFileSize: maxFileSize,
-		TransferTTL:         v("transferTtl"),
-		LogLevel:            v("logLevel"),
-		LogFormat:           v("logFormat"),
-		LogAddSource:        v("logAddSource") == "true",
-	}
+	var cfg appconfig.BotConfig
+	err := decodeInto(data, &cfg)
+	return cfg, err
 }
 
 func dashboardTickCmd() tea.Cmd {

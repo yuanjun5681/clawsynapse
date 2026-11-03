@@ -1,7 +1,7 @@
 package store
 
 import (
-	"encoding/json"
+	"clawsynapse/internal/protocol"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,7 +9,8 @@ import (
 )
 
 type FSStore struct {
-	BaseDir string
+	BaseDir    string
+	SessionDir string
 }
 
 type TrustState struct {
@@ -21,7 +22,7 @@ type TrustState struct {
 }
 
 type TrustPeerState struct {
-	NodeID string `json:"nodeId"`
+	BotID  string `json:"nodeId"`
 	AtMs   int64  `json:"atMs"`
 	Reason string `json:"reason,omitempty"`
 }
@@ -49,16 +50,16 @@ func (s *FSStore) EnsureLayout() error {
 		return errors.New("base dir is empty")
 	}
 
-	if err := os.MkdirAll(s.BaseDir, 0o700); err != nil {
+	if err := EnsurePrivateDir(s.BaseDir); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Join(s.BaseDir, "peers"), 0o700); err != nil {
+	if err := EnsurePrivateDir(filepath.Join(s.BaseDir, "peers")); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Join(s.BaseDir, "sessions"), 0o700); err != nil {
+	if err := EnsurePrivateDir(filepath.Join(s.BaseDir, "sessions")); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Join(s.BaseDir, "transfers"), 0o700); err != nil {
+	if err := EnsurePrivateDir(filepath.Join(s.BaseDir, "transfers")); err != nil {
 		return err
 	}
 
@@ -66,6 +67,9 @@ func (s *FSStore) EnsureLayout() error {
 		return err
 	}
 	if err := s.ensureReplayState(); err != nil {
+		return err
+	}
+	if err := s.ensurePeerAttrsState(); err != nil {
 		return err
 	}
 
@@ -81,8 +85,11 @@ func (s *FSStore) ReplayPath() string {
 }
 
 func (s *FSStore) ensureTrustState() error {
-	if _, err := os.Stat(s.TrustPath()); err == nil {
-		return nil
+	if _, err := os.Lstat(s.TrustPath()); err == nil {
+		_, err = s.LoadTrustState()
+		return err
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 
 	st := TrustState{
@@ -96,8 +103,11 @@ func (s *FSStore) ensureTrustState() error {
 }
 
 func (s *FSStore) ensureReplayState() error {
-	if _, err := os.Stat(s.ReplayPath()); err == nil {
-		return nil
+	if _, err := os.Lstat(s.ReplayPath()); err == nil {
+		_, err = s.LoadReplayState()
+		return err
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 
 	st := ReplayState{
@@ -108,20 +118,17 @@ func (s *FSStore) ensureReplayState() error {
 }
 
 func (s *FSStore) LoadReplayState() (ReplayState, error) {
-	b, err := os.ReadFile(s.ReplayPath())
+	b, err := ReadFile(s.ReplayPath())
 	if err != nil {
 		return ReplayState{}, err
 	}
 
 	var st ReplayState
-	if err := json.Unmarshal(b, &st); err != nil {
+	if err := protocol.DecodeStrictLimit(b, &st, 64<<20); err != nil {
 		return ReplayState{}, err
 	}
-	if st.Entries == nil {
-		st.Entries = map[string]int64{}
-	}
-	if st.SchemaVersion == 0 {
-		st.SchemaVersion = 1
+	if st.SchemaVersion != 1 || st.Entries == nil {
+		return ReplayState{}, errors.New("invalid replay state schema or missing entries")
 	}
 	return st, nil
 }
@@ -137,17 +144,17 @@ func (s *FSStore) SaveReplayState(st ReplayState) error {
 }
 
 func (s *FSStore) LoadTrustState() (TrustState, error) {
-	b, err := os.ReadFile(s.TrustPath())
+	b, err := ReadFile(s.TrustPath())
 	if err != nil {
 		return TrustState{}, err
 	}
 
 	var st TrustState
-	if err := json.Unmarshal(b, &st); err != nil {
+	if err := protocol.DecodeStrictLimit(b, &st, 64<<20); err != nil {
 		return TrustState{}, err
 	}
-	if st.SchemaVersion == 0 {
-		st.SchemaVersion = 1
+	if st.SchemaVersion != 1 {
+		return TrustState{}, errors.New("invalid trust state schema")
 	}
 	if st.Trusted == nil {
 		st.Trusted = []TrustPeerState{}

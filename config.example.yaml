@@ -1,17 +1,44 @@
+# Legacy single-Bot migration input; current daemons use schemaVersion 3 config.json.
 natsServers:
-  - nats://220.168.146.21:9414
+  - nats://127.0.0.1:4222
 localApiAddr: 127.0.0.1:18080
+# Legacy Bot-scoped API credential path; local daemon management needs no token.
+apiTokenPath: ""
+apiTLSCertFile: ""
+apiTLSKeyFile: ""
+# Production requires tls:// or wss:// NATS URLs and credentials or mutual TLS.
+production: false
+natsCredentialsFile: ""
+natsTLSCAFile: ""
+natsTLSCertFile: ""
+natsTLSKeyFile: ""
+natsTLSServerName: ""
 trustMode: tofu
 trustAutoApprove: false
 agentAdapter: default
+# Named OpenClaw/OpenCode agents must be explicitly authorized here.
+agentAllowedIds: []
+agentAdapterTimeout: 10m
 heartbeatInterval: 15s
 announceTtl: 30s
 agentProduct: clawsynapse
 # Empty uses the clawsynapsed build version.
 agentVersion: ""
-capabilities:
-  - chat
-  - tools
+# Human readable Bot name shown to peers (empty = unset).
+displayName: ""
+# Bot attributes advertised in discovery. Values are a string or a list of
+# strings. "caps" is the reserved self-reported capability set.
+labels:
+  env: production
+  role: worker
+  caps:
+    - chat
+    - tools
+# Legacy key: still loads and folds into labels.caps, but is rewritten to
+# labels.caps on save.
+# capabilities:
+#   - chat
+#   - tools
 dataDir: ~/.clawsynapse
 identityKeyPath: ~/.clawsynapse/identity.key
 identityPubPath: ~/.clawsynapse/identity.pub

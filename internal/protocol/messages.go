@@ -1,28 +1,37 @@
 package protocol
 
+import (
+	"encoding/json"
+
+	"clawsynapse/pkg/types"
+)
+
 type DiscoveryAnnounce struct {
-	MessageID    string         `json:"messageId"`
-	MessageType  string         `json:"messageType"`
-	NodeID       string         `json:"nodeId"`
-	DID          string         `json:"did,omitempty"`
-	Version      string         `json:"version"`
-	AgentProduct string         `json:"agentProduct"`
-	Capabilities []string       `json:"capabilities"`
-	Inbox        string         `json:"inbox"`
-	PublicKey    string         `json:"publicKey"`
-	Ts           int64          `json:"ts"`
-	TTLms        int64          `json:"ttlMs"`
-	Metadata     map[string]any `json:"metadata,omitempty"`
-	Signature    string         `json:"signature,omitempty"`
+	ProtocolVersion string         `json:"protocolVersion"`
+	MessageID       string         `json:"messageId"`
+	MessageType     string         `json:"messageType"`
+	BotID           string         `json:"nodeId"`
+	DID             string         `json:"did,omitempty"`
+	Version         string         `json:"version"`
+	AgentProduct    string         `json:"agentProduct"`
+	DisplayName     string         `json:"displayName,omitempty"`
+	Labels          types.Labels   `json:"labels,omitempty"`
+	Inbox           string         `json:"inbox"`
+	PublicKey       string         `json:"publicKey"`
+	Ts              int64          `json:"ts"`
+	TTLms           int64          `json:"ttlMs"`
+	Metadata        map[string]any `json:"metadata,omitempty"`
+	Signature       string         `json:"signature,omitempty"`
 }
 
 type DiscoveryDepart struct {
-	MessageID   string `json:"messageId"`
-	MessageType string `json:"messageType"`
-	NodeID      string `json:"nodeId"`
-	Reason      string `json:"reason,omitempty"`
-	Ts          int64  `json:"ts"`
-	Signature   string `json:"signature,omitempty"`
+	ProtocolVersion string `json:"protocolVersion"`
+	MessageID       string `json:"messageId"`
+	MessageType     string `json:"messageType"`
+	BotID           string `json:"nodeId"`
+	Reason          string `json:"reason,omitempty"`
+	Ts              int64  `json:"ts"`
+	Signature       string `json:"signature,omitempty"`
 }
 
 type AuthChallengeRequest struct {
@@ -113,10 +122,26 @@ type MessageEnvelope struct {
 	AgentID         string         `json:"agentId,omitempty"`
 	From            string         `json:"from"`
 	To              string         `json:"to,omitempty"`
-	Content         string         `json:"content,omitempty"`
+	Payload         MessagePayload `json:"payload"`
 	SessionKey      string         `json:"sessionKey,omitempty"`
 	Ts              int64          `json:"ts"`
+	ExpiresAt       int64          `json:"expiresAt"`
+	RequestID       string         `json:"requestId,omitempty"`
+	RunID           string         `json:"runId,omitempty"`
+	Seq             uint64         `json:"seq,omitempty"`
 	Sig             string         `json:"sig,omitempty"`
 	Metadata        map[string]any `json:"metadata,omitempty"`
 	ProtocolVersion string         `json:"protocolVersion,omitempty"`
+}
+
+// MessagePayload separates user input from transport and execution state.
+type MessagePayload struct {
+	Text          string          `json:"text,omitempty"`
+	Instruction   string          `json:"instruction,omitempty"`
+	Input         json.RawMessage `json:"input,omitempty"`
+	Channel       string          `json:"channel,omitempty"`
+	Code          string          `json:"code,omitempty"`
+	Stage         string          `json:"stage,omitempty"`
+	Indeterminate bool            `json:"indeterminate,omitempty"`
+	AdapterRunID  string          `json:"adapterRunId,omitempty"`
 }

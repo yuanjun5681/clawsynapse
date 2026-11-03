@@ -1,13 +1,16 @@
 package discovery
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,79 +23,123 @@ import (
 )
 
 const (
-	announceSubject         = "clawsynapse.discovery.global.announce"
-	departSubject           = "clawsynapse.discovery.global.depart"
-	legacyAnnounceLogWindow = 5 * time.Minute
+	announceSubject   = "clawsynapse.discovery.global.announce"
+	departSubject     = "clawsynapse.discovery.global.depart"
+	maxDiscoveryAge   = 2 * time.Minute
+	maxFutureSkew     = 30 * time.Second
+	maxDiscoveryBytes = 32 * 1024
+	maxMetadataBytes  = 8 * 1024
+	maxReplayBots     = 4096
+	maxReplayMessages = 16384
 )
 
 var (
 	errAnnouncePublicKeyRequired = errors.New("publicKey is required")
 	errAnnounceDIDRequired       = errors.New("did is required")
 	errAnnounceDIDMismatch       = errors.New("did does not match publicKey")
-	errAnnounceNodeIDMismatch    = errors.New("nodeId does not match did")
+	errAnnounceBotIDMismatch     = errors.New("nodeId does not match did")
 )
 
 type Service struct {
-	log                *slog.Logger
-	bus                *natsbus.Client
-	peers              *Registry
-	store              *store.FSStore
-	nodeID             string
-	did                string
-	publicKey          string
-	ttl                time.Duration
-	heartbeat          time.Duration
-	trustMode          string
-	agentProduct       string
-	agentVersion       string
-	capabilities       []string
-	autoAuth           func(context.Context, string) error
-	authMu             sync.Mutex
-	authing            map[string]struct{}
-	legacyAnnounceMu   sync.Mutex
-	legacyAnnounceSeen map[string]time.Time
+	log             *slog.Logger
+	bus             *natsbus.Client
+	peers           *Registry
+	store           *store.FSStore
+	botID           string
+	did             string
+	publicKey       string
+	ttl             time.Duration
+	heartbeat       time.Duration
+	trustMode       string
+	agentProduct    string
+	agentVersion    string
+	harnessAdapter  string
+	harnessModel    string
+	displayName     string
+	labels          types.Labels
+	autoAuth        func(context.Context, string) error
+	authMu          sync.Mutex
+	authing         map[string]struct{}
+	authCtx         context.Context
+	authWorkers     sync.WaitGroup
+	stopping        bool
+	id              *identity.Identity
+	discoveryMu     sync.Mutex
+	latest          map[string]discoveryClaim
+	seen            map[discoveryMessage]int64
+	nextPruneMs     int64
+	publishMu       sync.Mutex
+	lastPublishedTs int64
+	workers         sync.WaitGroup
 }
 
+type discoveryClaim struct {
+	ts        int64
+	expiresAt int64
+}
+
+type discoveryMessage struct {
+	botID string
+	id    string
+}
+
+// AnnounceConfig contains public declarations covered by the discovery signature.
+// Harness fields describe configuration only, never execution health or a Run.
 type AnnounceConfig struct {
-	AgentProduct string
-	AgentVersion string
-	Capabilities []string
+	Identity       *identity.Identity
+	AgentProduct   string
+	AgentVersion   string
+	HarnessAdapter string
+	HarnessModel   string
+	DisplayName    string
+	Labels         types.Labels
 }
 
-func NewService(log *slog.Logger, bus *natsbus.Client, peers *Registry, fs *store.FSStore, nodeID string, did string, publicKey string, heartbeat, ttl time.Duration, trustMode string, announceConfigs ...AnnounceConfig) *Service {
+func NewService(log *slog.Logger, bus *natsbus.Client, peers *Registry, fs *store.FSStore, botID string, did string, publicKey string, heartbeat, ttl time.Duration, trustMode string, announceConfigs ...AnnounceConfig) *Service {
 	announce := AnnounceConfig{
 		AgentProduct: "clawsynapse",
 		AgentVersion: "v0.1.0",
-		Capabilities: []string{"chat", "tools"},
+		Labels:       types.Labels{}.WithCaps([]string{"chat", "tools"}),
 	}
 	if len(announceConfigs) > 0 {
 		configured := announceConfigs[0]
+		announce.Identity = configured.Identity
+		announce.HarnessAdapter = configured.HarnessAdapter
+		announce.HarnessModel = configured.HarnessModel
 		if configured.AgentProduct != "" {
 			announce.AgentProduct = configured.AgentProduct
 		}
 		if configured.AgentVersion != "" {
 			announce.AgentVersion = configured.AgentVersion
 		}
-		if len(configured.Capabilities) > 0 {
-			announce.Capabilities = configured.Capabilities
+		if configured.DisplayName != "" {
+			announce.DisplayName = configured.DisplayName
+		}
+		if len(configured.Labels) > 0 {
+			announce.Labels = configured.Labels
 		}
 	}
 	return &Service{
-		log:                log,
-		bus:                bus,
-		peers:              peers,
-		store:              fs,
-		nodeID:             nodeID,
-		did:                did,
-		publicKey:          publicKey,
-		ttl:                ttl,
-		heartbeat:          heartbeat,
-		trustMode:          trustMode,
-		agentProduct:       announce.AgentProduct,
-		agentVersion:       announce.AgentVersion,
-		capabilities:       append([]string(nil), announce.Capabilities...),
-		authing:            map[string]struct{}{},
-		legacyAnnounceSeen: map[string]time.Time{},
+		log:            log,
+		bus:            bus,
+		peers:          peers,
+		store:          fs,
+		botID:          botID,
+		did:            did,
+		publicKey:      publicKey,
+		ttl:            ttl,
+		heartbeat:      heartbeat,
+		trustMode:      trustMode,
+		agentProduct:   announce.AgentProduct,
+		agentVersion:   announce.AgentVersion,
+		harnessAdapter: announce.HarnessAdapter,
+		harnessModel:   announce.HarnessModel,
+		displayName:    announce.DisplayName,
+		labels:         announce.Labels,
+		authing:        map[string]struct{}{},
+		id:             announce.Identity,
+		latest:         map[string]discoveryClaim{},
+		seen:           map[discoveryMessage]int64{},
 	}
 }
 
@@ -101,6 +148,15 @@ func (s *Service) SetAutoAuthenticator(fn func(context.Context, string) error) {
 }
 
 func (s *Service) Start(ctx context.Context) error {
+	if err := s.validateLocalIdentity(); err != nil {
+		return err
+	}
+	if s.heartbeat <= 0 || s.ttl <= 0 {
+		return errors.New("discovery heartbeat and TTL must be positive")
+	}
+	s.authMu.Lock()
+	s.authCtx = ctx
+	s.authMu.Unlock()
 	if _, err := s.bus.Subscribe(announceSubject, s.handleAnnounce); err != nil {
 		return err
 	}
@@ -114,8 +170,10 @@ func (s *Service) Start(ctx context.Context) error {
 
 	heartbeatTicker := time.NewTicker(s.heartbeat)
 	gcTicker := time.NewTicker(time.Second)
+	s.workers.Add(1)
 
 	go func() {
+		defer s.workers.Done()
 		defer heartbeatTicker.Stop()
 		defer gcTicker.Stop()
 		for {
@@ -136,8 +194,20 @@ func (s *Service) Start(ctx context.Context) error {
 	return nil
 }
 
+// Wait joins the cancellation/depart loop before the owning Bot closes NATS.
+func (s *Service) Wait() {
+	s.authMu.Lock()
+	s.stopping = true
+	s.authMu.Unlock()
+	s.workers.Wait()
+	s.authWorkers.Wait()
+}
+
 func (s *Service) publishAnnounce() error {
-	msg := s.newAnnounce()
+	msg, err := s.newAnnounce()
+	if err != nil {
+		return err
+	}
 	if err := s.bus.PublishJSON(announceSubject, msg); err != nil {
 		return err
 	}
@@ -145,86 +215,142 @@ func (s *Service) publishAnnounce() error {
 	return nil
 }
 
-func (s *Service) newAnnounce() protocol.DiscoveryAnnounce {
-	return protocol.DiscoveryAnnounce{
-		MessageID:    randID(),
-		MessageType:  "discovery.announce",
-		NodeID:       s.nodeID,
-		DID:          s.did,
-		Version:      s.agentVersion,
-		AgentProduct: s.agentProduct,
-		Capabilities: append([]string(nil), s.capabilities...),
-		Inbox:        "clawsynapse.msg." + s.nodeID + ".inbox",
-		PublicKey:    s.publicKey,
-		Ts:           time.Now().UnixMilli(),
-		TTLms:        s.ttl.Milliseconds(),
+func (s *Service) newAnnounce() (protocol.DiscoveryAnnounce, error) {
+	ttl := s.ttl
+	if ttl > maxDiscoveryAge {
+		ttl = maxDiscoveryAge
 	}
+	// Normalize labels before signing so the signed wire value is
+	// canonical (set members deduplicated and sorted).
+	labels, err := types.NormalizeLabels(s.labels)
+	if err != nil {
+		return protocol.DiscoveryAnnounce{}, fmt.Errorf("normalize announce labels: %w", err)
+	}
+	msg := protocol.DiscoveryAnnounce{
+		ProtocolVersion: "v2",
+		MessageID:       randID(),
+		MessageType:     "discovery.announce",
+		BotID:           s.botID,
+		DID:             s.did,
+		Version:         s.agentVersion,
+		AgentProduct:    s.agentProduct,
+		DisplayName:     strings.TrimSpace(s.displayName),
+		Labels:          labels,
+		Inbox:           "clawsynapse.msg." + s.botID + ".inbox",
+		PublicKey:       s.publicKey,
+		Ts:              s.nextTimestamp(),
+		TTLms:           ttl.Milliseconds(),
+	}
+	if s.harnessAdapter != "" || s.harnessModel != "" {
+		msg.Metadata = make(map[string]any, 2)
+		if s.harnessAdapter != "" {
+			msg.Metadata["harnessAdapter"] = s.harnessAdapter
+		}
+		if s.harnessModel != "" {
+			msg.Metadata["harnessModel"] = s.harnessModel
+		}
+	}
+	signature, err := s.sign(announceSubject, msg)
+	msg.Signature = signature
+	return msg, err
 }
 
 func (s *Service) publishDepart(reason string) error {
 	msg := protocol.DiscoveryDepart{
-		MessageID:   randID(),
-		MessageType: "discovery.depart",
-		NodeID:      s.nodeID,
-		Reason:      reason,
-		Ts:          time.Now().UnixMilli(),
+		ProtocolVersion: "v2",
+		MessageID:       randID(),
+		MessageType:     "discovery.depart",
+		BotID:           s.botID,
+		Reason:          reason,
+		Ts:              s.nextTimestamp(),
 	}
+	signature, err := s.sign(departSubject, msg)
+	if err != nil {
+		return err
+	}
+	msg.Signature = signature
 	return s.bus.PublishJSON(departSubject, msg)
 }
 
-func (s *Service) handleAnnounce(_ string, data []byte) {
+func (s *Service) handleAnnounce(subject string, data []byte) {
 	var msg protocol.DiscoveryAnnounce
-	if err := json.Unmarshal(data, &msg); err != nil {
+	if subject != announceSubject || len(data) > maxDiscoveryBytes {
+		return
+	}
+	if err := protocol.DecodeStrict(data, &msg); err != nil {
 		s.log.Warn("decode announce failed", logging.Error(err))
 		return
 	}
-	if msg.NodeID == s.nodeID {
+	now := time.Now().UnixMilli()
+	if msg.BotID == s.botID || msg.ProtocolVersion != "v2" || msg.MessageType != "discovery.announce" ||
+		!validMessageID(msg.MessageID) || msg.TTLms <= 0 || msg.TTLms > maxDiscoveryAge.Milliseconds() ||
+		!validDiscoveryTime(msg.Ts, now, msg.TTLms) {
 		return
 	}
 	if err := validateAnnounceIdentity(msg); err != nil {
-		s.logInvalidAnnounceIdentity(msg, err)
+		s.log.Warn("reject invalid announce identity", logging.Peer(msg.BotID), logging.Error(err))
+		return
+	}
+	if !validAnnounceAttributes(msg) {
+		return
+	}
+	pub, err := identity.DecodePublicKey(msg.PublicKey)
+	if err != nil {
+		return
+	}
+	signed, err := protocol.SignedBytes(subject, msg)
+	if err != nil || !identity.Verify(pub, signed, msg.Signature) {
 		return
 	}
 
-	authStatus := types.AuthSeen
-	trustStatus := s.persistedTrustStatus(msg.NodeID)
-	metadata := map[string]any{
-		"publicKey": msg.PublicKey,
-		"ttlMs":     msg.TTLms,
+	// Serialise freshness checks and mutations across both subscription callbacks.
+	s.discoveryMu.Lock()
+	existing, ok := s.peers.Get(msg.BotID)
+	if ok {
+		if known, _ := existing.Metadata["publicKey"].(string); known != "" && known != msg.PublicKey {
+			s.discoveryMu.Unlock()
+			return
+		}
 	}
-	existing, ok := s.peers.Get(msg.NodeID)
+	if !s.acceptClaim(msg.BotID, msg.MessageID, msg.Ts, now) {
+		s.discoveryMu.Unlock()
+		return
+	}
+	trustStatus := existing.TrustStatus
+	if !ok {
+		trustStatus = s.persistedTrustStatus(msg.BotID)
+	}
+	harnessAdapter, _ := msg.Metadata["harnessAdapter"].(string)
+	harnessModel, _ := msg.Metadata["harnessModel"].(string)
+	peer := types.Peer{
+		BotID:          msg.BotID,
+		DID:            msg.DID,
+		Version:        msg.Version,
+		AgentProduct:   msg.AgentProduct,
+		HarnessAdapter: harnessAdapter,
+		HarnessModel:   harnessModel,
+		DisplayName:    msg.DisplayName,
+		Labels:         msg.Labels,
+		Inbox:          msg.Inbox,
+		TrustStatus:    trustStatus,
+		LastSeenMs:     now,
+		Metadata: map[string]any{
+			"publicKey": msg.PublicKey,
+			"ttlMs":     msg.TTLms,
+		},
+	}
+	// Remote metadata never supplies local authentication or trust decisions.
+	existing, ok = s.peers.refreshDiscovery(peer)
+	s.discoveryMu.Unlock()
+	authStatus := types.AuthSeen
 	if ok {
 		authStatus = existing.AuthStatus
 		trustStatus = existing.TrustStatus
-		if existing.Metadata != nil {
-			if known, ok := existing.Metadata["publicKey"].(string); ok && known != "" {
-				if s.trustMode == "tofu" || s.trustMode == "explicit" {
-					if msg.PublicKey != "" && known != msg.PublicKey {
-						s.log.Warn("peer public key mismatch detected", logging.Peer(msg.NodeID), slog.String("mode", s.trustMode))
-						authStatus = types.AuthRejected
-						metadata["publicKey"] = known
-					}
-				}
-			}
-		}
 	}
-
-	s.peers.Upsert(types.Peer{
-		NodeID:       msg.NodeID,
-		DID:          msg.DID,
-		Version:      msg.Version,
-		AgentProduct: msg.AgentProduct,
-		Capabilities: msg.Capabilities,
-		Inbox:        msg.Inbox,
-		AuthStatus:   authStatus,
-		TrustStatus:  trustStatus,
-		LastSeenMs:   msg.Ts,
-		Metadata:     metadata,
-	})
 	if !ok {
 		s.log.Info("peer discovered",
 			logging.Event("peer.discovered"),
-			logging.Peer(msg.NodeID),
+			logging.Peer(msg.BotID),
 			slog.String("inbox", msg.Inbox),
 			slog.String("version", msg.Version),
 			slog.String("agentProduct", msg.AgentProduct),
@@ -234,7 +360,7 @@ func (s *Service) handleAnnounce(_ string, data []byte) {
 	} else if existing.Inbox != msg.Inbox || existing.Version != msg.Version || existing.AgentProduct != msg.AgentProduct {
 		s.log.Info("peer refreshed",
 			logging.Event("peer.refreshed"),
-			logging.Peer(msg.NodeID),
+			logging.Peer(msg.BotID),
 			slog.String("inbox", msg.Inbox),
 			slog.String("version", msg.Version),
 			slog.String("agentProduct", msg.AgentProduct),
@@ -244,42 +370,42 @@ func (s *Service) handleAnnounce(_ string, data []byte) {
 	} else {
 		s.log.Debug("peer heartbeat received",
 			logging.Event("peer.heartbeat.received"),
-			logging.Peer(msg.NodeID),
+			logging.Peer(msg.BotID),
 			slog.Int64("ts", msg.Ts),
 		)
 	}
 
-	s.maybeAutoAuthenticate(msg.NodeID)
+	s.maybeAutoAuthenticate(msg.BotID)
 }
 
-func (s *Service) persistedTrustStatus(nodeID string) string {
+func (s *Service) persistedTrustStatus(botID string) string {
 	if s.store == nil {
 		return types.TrustNone
 	}
 
 	st, err := s.store.LoadTrustState()
 	if err != nil {
-		s.log.Warn("load trust state failed", logging.Peer(nodeID), logging.Error(err))
+		s.log.Warn("load trust state failed", logging.Peer(botID), logging.Error(err))
 		return types.TrustNone
 	}
 
 	for _, peer := range st.Trusted {
-		if peer.NodeID == nodeID {
+		if peer.BotID == botID {
 			return types.TrustTrusted
 		}
 	}
 	for _, peer := range st.Pending {
-		if peer.From == nodeID || peer.To == nodeID {
+		if peer.From == botID || peer.To == botID {
 			return types.TrustPending
 		}
 	}
 	for _, peer := range st.Rejected {
-		if peer.NodeID == nodeID {
+		if peer.BotID == botID {
 			return types.TrustRejected
 		}
 	}
 	for _, peer := range st.Revoked {
-		if peer.NodeID == nodeID {
+		if peer.BotID == botID {
 			return types.TrustRevoked
 		}
 	}
@@ -287,12 +413,12 @@ func (s *Service) persistedTrustStatus(nodeID string) string {
 	return types.TrustNone
 }
 
-func (s *Service) maybeAutoAuthenticate(nodeID string) {
+func (s *Service) maybeAutoAuthenticate(botID string) {
 	if s.autoAuth == nil || s.trustMode == "open" {
 		return
 	}
 
-	peer, ok := s.peers.Get(nodeID)
+	peer, ok := s.peers.Get(botID)
 	if !ok {
 		return
 	}
@@ -301,67 +427,104 @@ func (s *Service) maybeAutoAuthenticate(nodeID string) {
 	}
 
 	s.authMu.Lock()
-	if _, exists := s.authing[nodeID]; exists {
+	if s.stopping {
 		s.authMu.Unlock()
 		return
 	}
-	s.authing[nodeID] = struct{}{}
+	if _, exists := s.authing[botID]; exists {
+		s.authMu.Unlock()
+		return
+	}
+	s.authing[botID] = struct{}{}
+	authCtx := s.authCtx
+	if authCtx == nil {
+		authCtx = context.Background()
+	}
+	s.authWorkers.Add(1)
 	s.authMu.Unlock()
 	s.log.Info("starting automatic authentication",
 		logging.Event("auth.auto.start"),
-		logging.Peer(nodeID),
+		logging.Peer(botID),
 	)
 
 	go func() {
-		defer s.clearAutoAuth(nodeID)
+		defer s.clearAutoAuth(botID)
+		defer s.authWorkers.Done()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(authCtx, 10*time.Second)
 		defer cancel()
 
-		if err := s.autoAuth(ctx, nodeID); err != nil {
-			s.log.Warn("auto auth challenge failed", logging.Peer(nodeID), logging.Error(err))
+		if err := s.autoAuth(ctx, botID); err != nil {
+			s.log.Warn("auto auth challenge failed", logging.Peer(botID), logging.Error(err))
 		}
 	}()
 }
 
-func (s *Service) clearAutoAuth(nodeID string) {
+func (s *Service) clearAutoAuth(botID string) {
 	s.authMu.Lock()
 	defer s.authMu.Unlock()
-	delete(s.authing, nodeID)
+	delete(s.authing, botID)
 }
 
-func (s *Service) handleDepart(_ string, data []byte) {
+func (s *Service) handleDepart(subject string, data []byte) {
 	var msg protocol.DiscoveryDepart
-	if err := json.Unmarshal(data, &msg); err != nil {
+	if subject != departSubject || len(data) > maxDiscoveryBytes {
+		return
+	}
+	if err := protocol.DecodeStrict(data, &msg); err != nil {
 		s.log.Warn("decode depart failed", logging.Error(err))
 		return
 	}
-	if msg.NodeID == s.nodeID {
+	now := time.Now().UnixMilli()
+	if msg.BotID == s.botID || msg.ProtocolVersion != "v2" || msg.MessageType != "discovery.depart" ||
+		!validMessageID(msg.MessageID) || len(msg.Reason) > 1024 ||
+		!validDiscoveryTime(msg.Ts, now, maxDiscoveryAge.Milliseconds()) {
 		return
 	}
-	s.peers.Remove(msg.NodeID)
+	s.discoveryMu.Lock()
+	defer s.discoveryMu.Unlock()
+	peer, ok := s.peers.Get(msg.BotID)
+	if !ok {
+		return
+	}
+	known, _ := peer.Metadata["publicKey"].(string)
+	pub, err := identity.DecodePublicKey(known)
+	if err != nil || identity.DeriveBotID(identity.DeriveBotDID(pub)) != msg.BotID {
+		return
+	}
+	signed, err := protocol.SignedBytes(subject, msg)
+	if err != nil || !identity.Verify(pub, signed, msg.Signature) {
+		return
+	}
+	if !s.acceptClaim(msg.BotID, msg.MessageID, msg.Ts, now) {
+		return
+	}
+	s.peers.Remove(msg.BotID)
 	s.log.Info("peer departed",
 		logging.Event("peer.departed"),
-		logging.Peer(msg.NodeID),
+		logging.Peer(msg.BotID),
 		slog.String("reason", msg.Reason),
 	)
 }
 
 func (s *Service) gc() {
+	s.discoveryMu.Lock()
+	defer s.discoveryMu.Unlock()
 	now := time.Now().UnixMilli()
+	s.pruneClaims(now)
 	for _, peer := range s.peers.List() {
-		if peer.NodeID == s.nodeID {
+		if peer.BotID == s.botID {
 			continue
 		}
 		ttlMs := metadataInt64(peer.Metadata, "ttlMs")
-		if ttlMs <= 0 {
-			ttlMs = s.ttl.Milliseconds()
+		if ttlMs <= 0 || ttlMs > maxDiscoveryAge.Milliseconds() {
+			ttlMs = maxDiscoveryAge.Milliseconds()
 		}
 		if now-peer.LastSeenMs > ttlMs {
-			s.peers.Remove(peer.NodeID)
+			s.peers.Remove(peer.BotID)
 			s.log.Info("peer expired",
 				logging.Event("peer.expired"),
-				logging.Peer(peer.NodeID),
+				logging.Peer(peer.BotID),
 				slog.Int64("lastSeenMs", peer.LastSeenMs),
 				slog.Int64("ttlMs", ttlMs),
 			)
@@ -402,47 +565,117 @@ func validateAnnounceIdentity(msg protocol.DiscoveryAnnounce) error {
 		return fmt.Errorf("decode publicKey: %w", err)
 	}
 
-	expectedDID := identity.DeriveNodeDID(pub)
+	expectedDID := identity.DeriveBotDID(pub)
 	if msg.DID != expectedDID {
 		return errAnnounceDIDMismatch
 	}
 
-	expectedNodeID := identity.DeriveNodeID(expectedDID)
-	if msg.NodeID != expectedNodeID {
-		return errAnnounceNodeIDMismatch
+	expectedBotID := identity.DeriveBotID(expectedDID)
+	if msg.BotID != expectedBotID {
+		return errAnnounceBotIDMismatch
 	}
 
 	return nil
 }
 
-func (s *Service) logInvalidAnnounceIdentity(msg protocol.DiscoveryAnnounce, err error) {
-	attrs := []any{
-		logging.Peer(msg.NodeID),
-		slog.String("did", msg.DID),
-		logging.Error(err),
+func (s *Service) validateLocalIdentity() error {
+	if s.id == nil || len(s.id.PrivateKey) != ed25519.PrivateKeySize || len(s.id.PublicKey) != ed25519.PublicKeySize {
+		return errors.New("discovery requires an Ed25519 signing identity")
 	}
-
-	if errors.Is(err, errAnnounceDIDRequired) {
-		if !s.shouldLogLegacyAnnounce(msg.NodeID, time.Now()) {
-			return
-		}
-		s.log.Info("reject legacy announce without did", attrs...)
-		return
+	derived := ed25519.NewKeyFromSeed(s.id.PrivateKey.Seed())
+	if !bytes.Equal(derived, s.id.PrivateKey) || !bytes.Equal(derived.Public().(ed25519.PublicKey), s.id.PublicKey) {
+		return errors.New("discovery identity key pair does not match")
 	}
-
-	s.log.Warn("reject invalid announce identity", attrs...)
+	did := identity.DeriveBotDID(s.id.PublicKey)
+	if s.did != did || s.botID != identity.DeriveBotID(did) ||
+		s.publicKey != base64.RawURLEncoding.EncodeToString(s.id.PublicKey) {
+		return errors.New("discovery identity does not match local Bot")
+	}
+	return nil
 }
 
-func (s *Service) shouldLogLegacyAnnounce(peer string, now time.Time) bool {
-	s.legacyAnnounceMu.Lock()
-	defer s.legacyAnnounceMu.Unlock()
+func (s *Service) sign(subject string, msg any) (string, error) {
+	if err := s.validateLocalIdentity(); err != nil {
+		return "", err
+	}
+	signed, err := protocol.SignedBytes(subject, msg)
+	if err != nil {
+		return "", err
+	}
+	return identity.Sign(s.id.PrivateKey, signed), nil
+}
 
-	last, ok := s.legacyAnnounceSeen[peer]
-	if ok && now.Sub(last) < legacyAnnounceLogWindow {
+func (s *Service) nextTimestamp() int64 {
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+	now := time.Now().UnixMilli()
+	if now <= s.lastPublishedTs {
+		now = s.lastPublishedTs + 1
+	}
+	s.lastPublishedTs = now
+	return now
+}
+
+func validMessageID(id string) bool {
+	return id != "" && len(id) <= 128
+}
+
+func validDiscoveryTime(ts, now, maxAge int64) bool {
+	return ts > 0 && ts <= now+maxFutureSkew.Milliseconds() && ts >= now-maxAge
+}
+
+func validAnnounceAttributes(msg protocol.DiscoveryAnnounce) bool {
+	if msg.Inbox != "clawsynapse.msg."+msg.BotID+".inbox" || len(msg.Version) > 256 ||
+		len(msg.AgentProduct) > 256 || len(msg.Metadata) > 64 {
 		return false
 	}
-	s.legacyAnnounceSeen[peer] = now
+	if err := types.ValidateDisplayName(msg.DisplayName); err != nil {
+		return false
+	}
+	if _, err := types.NormalizeLabels(msg.Labels); err != nil {
+		return false
+	}
+	metadata, err := json.Marshal(msg.Metadata)
+	return err == nil && len(metadata) <= maxMetadataBytes
+}
+
+// acceptClaim is called with discoveryMu held. Unexpired entries are never
+// evicted to make room: saturation fails closed instead of reopening replay.
+func (s *Service) acceptClaim(botID, messageID string, ts, now int64) bool {
+	s.pruneClaims(now)
+	key := discoveryMessage{botID: botID, id: messageID}
+	if _, seen := s.seen[key]; seen {
+		return false
+	}
+	latest, exists := s.latest[botID]
+	if exists && ts <= latest.ts {
+		return false
+	}
+	if (!exists && len(s.latest) >= maxReplayBots) || len(s.seen) >= maxReplayMessages {
+		return false
+	}
+	// Keep depart tombstones until every previously valid claim is too old.
+	expiresAt := now + maxDiscoveryAge.Milliseconds() + maxFutureSkew.Milliseconds()
+	s.latest[botID] = discoveryClaim{ts: ts, expiresAt: expiresAt}
+	s.seen[key] = expiresAt
 	return true
+}
+
+func (s *Service) pruneClaims(now int64) {
+	if now < s.nextPruneMs {
+		return
+	}
+	s.nextPruneMs = now + time.Second.Milliseconds()
+	for botID, claim := range s.latest {
+		if claim.expiresAt < now {
+			delete(s.latest, botID)
+		}
+	}
+	for key, expiresAt := range s.seen {
+		if expiresAt < now {
+			delete(s.seen, key)
+		}
+	}
 }
 
 func randID() string {

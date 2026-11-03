@@ -5,7 +5,7 @@ title: "ClawSynapse Operations"
 
 # ClawSynapse Operations
 
-最后更新：2026-03-12
+最后更新：2026-11-02
 
 ## Go 实现
 
@@ -41,128 +41,141 @@ internal/store/
 pkg/types/
 ```
 
-## 并发模型
+## daemon 与 Bot 运行模型
 
-- 一个 goroutine 管理 NATS 生命周期
-- 一个 goroutine 管理节点心跳
-- subscription handler 按消息独立处理
-- 一个后台清理协程处理过期 peer、握手超时和去重缓存
-- 每个外部调用使用 `context.WithTimeout`
+daemon 共享一个 HTTP listener、catalog、内容存储、日志和全局执行预算；每个 Bot 独占身份、NATS 连接/订阅、发现、认证/信任、备注、消息日志与文件引用。每个 Bot 显式选择 `console` 或 `agent` Role，只有 Agent 装配 Harness 绑定、执行队列、探针和原生 Session。一个 Bot 启动失败记为 failed，不把其他 Bot 的身份或状态借来兜底。业务请求显式带 Bot ID，无默认 Bot。
 
-## 配置
+`bots.json` 是 schemaVersion 3 的持久 catalog，保存 `botId`, `desiredState: running|stopped`, `archived` 及 Console 可选的 `workspaceId`。只加载 catalog 注册项；未知目录不自动激活，列入 daemon health 的 recoveryIssues。旧 schema、Bot 缺失 Role 或仍使用旧 `harness.adapter=console` 时阻止 daemon 正常启动，要求离线修复/迁移；其他配置、身份或状态损坏仍隔离为该 Bot failed。catalog 本身损坏、工作区认领重复/非法则启动失败。
 
-加载优先级如下：
+start/stop 先持久化 desiredState，再异步转换 starting/running/stopping/stopped；API 202 只是接纳，需轮询。显式 stop 持久化 stopped；daemon 退出保留原 desiredState，重启恢复期望 running 的 Bot。archive 必须等待停止，保留全部状态及文件引用，restore 回 stopped，不自动 start。管理接口及 revision CAS 见 [api.md](api.md)。
+
+桌面工作区通过无 token 的本机请求 `POST /v2/workspaces/{workspaceId}/binding`，一次 catalog 原子写入同时注册新 Console 和工作区；重试只交付原 Bot 的 scoped token，不替换普通既有身份。对应 Bot 私有 `workspace-binding.json` 与 catalog 交叉校验。绑定失效/归档、密钥或 api.token 丢失均 fail closed；恢复原 0600 文件与一致性 catalog 后重试，不删除目录“重新初始化”。若创建在 catalog 提交前中断，未注册目录保留为 recoveryIssues，匹配的工作区标记阻止重试另建身份；先人工对照一致性备份恢复原认领，不能按 displayName 猜测接管。
+
+## 配置：daemon config.json + 每 Bot config.json
+
+使用 `clawsynapse init` 创建 `~/.clawsynapse/config.json`。加载顺序：CLI > `CLAWSYNAPSE_*` daemon 专属环境变量 > 选中的 JSON > 默认值。`--config FILE` 明确指定配置；否则 `--data-dir ROOT` / `CLAWSYNAPSE_DATA_DIR` 选择 ROOT/config.json。不读 `.env`、旧 YAML、旧无前缀环境变量或 Bot 配置环境覆盖；旧布局必须停止后显式迁移，不能自动混读。
+
+daemon JSON 字段（路径为部署机器实际绝对路径，示例 `/private/clawsynapse` 请替换）：
+
+```json
+{
+  "schemaVersion": 3,
+  "dataDir": "/private/clawsynapse",
+  "localApiAddr": "127.0.0.1:18080",
+  "natsServers": ["nats://127.0.0.1:4222"],
+  "production": false,
+  "logLevel": "info",
+  "logFormat": "json",
+  "logFilePath": "/private/clawsynapse/log/clawsynapsed.log",
+  "logAddSource": false,
+  "logRotateMaxSizeMb": 100,
+  "logRotateMaxBackups": 10,
+  "logRotateMaxAgeDays": 14,
+  "logRotateCompress": false,
+  "maxConcurrent": 8,
+  "blobMaxBytes": 10737418240,
+  "tempMaxBytes": 1073741824,
+  "workspaceMaxBytes": 10737418240
+}
+```
+
+可选连接字段：`apiTLSCertFile`, `apiTLSKeyFile`（仅本机可选 TLS）, `natsCredentialsFile`, `natsTLSCAFile`, `natsTLSCertFile`, `natsTLSKeyFile`, `natsTLSServerName`。这些是路径/服务器名而非 token 内容。daemon 专属环境支持 `CLAWSYNAPSE_DATA_DIR`, `CLAWSYNAPSE_LOCAL_API_ADDR`, `CLAWSYNAPSE_API_TLS_CERT_FILE`, `CLAWSYNAPSE_API_TLS_KEY_FILE`, `CLAWSYNAPSE_NATS_SERVERS`, `CLAWSYNAPSE_NATS_CREDENTIALS_FILE`, `CLAWSYNAPSE_NATS_TLS_CA_FILE`, `CLAWSYNAPSE_NATS_TLS_CERT_FILE`, `CLAWSYNAPSE_NATS_TLS_KEY_FILE`, `CLAWSYNAPSE_NATS_TLS_SERVER_NAME`, `CLAWSYNAPSE_PRODUCTION`, `CLAWSYNAPSE_LOG_LEVEL`, `CLAWSYNAPSE_LOG_FORMAT`, `CLAWSYNAPSE_LOG_FILE_PATH`。预算/轮转其余值通过 JSON 或对应 daemon CLI flags 配置。
+
+`--check-config` 严格校验并打印 daemon 配置，不生成身份/凭据。未知字段、旧 schema、无效路径、安全设置失败会拒绝启动。dataDir 必须为绝对非根目录；敏感凭据为私有常规文件，目录 0700，文件 0600。禁止通过 symlink/路径逃逸访问其他 Bot。
+
+已有 schemaVersion 3 配置中的旧管理员凭据路径和远程管理开关在读取时移除，不参与运行配置；读取不重写文件，后续正常保存不再输出旧字段。旧凭据文件和所有 Bot 身份/状态保留，不需要手工删除。已有非 loopback 地址仍校验失败，不会静默改写成本机地址；请通过正常配置流程选择 loopback。此兼容读取不替代旧 schema 的显式离线迁移。
+
+BotConfig 保存在 `bots/{botId}/config.json`；通过无 token 的本机 API/CLI create/config 管理，身份不允许手工指定。Role 在创建时必须显式提供，普通完整配置更新不能切换 Role。以下是 Agent 配置字段示意（revision/bindingRevision 由 GET 返回后保留；新建不必提供 bindingRevision）：
+
+```json
+{
+  "revision": 1,
+  "bindingRevision": "server-generated",
+  "displayName": "assistant-a",
+  "role": "agent",
+  "labels": {"env":"production","caps":["chat","tools"]},
+  "trustMode": "explicit",
+  "trustAutoApprove": false,
+  "heartbeatInterval": "15s",
+  "announceTtl": "30s",
+  "agentProduct": "clawsynapse",
+  "agentVersion": "",
+  "harness": {
+    "adapter": "opencode",
+    "model": "zai-coding-plan/glm-5.3-flash",
+    "timeout": "10m",
+    "allowedAgentIds": []
+  },
+  "deliverablePrefixes": ["chat","task"],
+  "transferMaxFileSize": 104857600,
+  "transferTtl": "24h",
+  "maxConcurrent": 2,
+  "maxQueued": 64,
+  "fileQuotaBytes": 1073741824
+}
+```
+
+可选 Bot 连接字段 `natsCredentialsFile`, `natsTLSCAFile`, `natsTLSCertFile`, `natsTLSKeyFile`, `natsTLSServerName` 覆盖 daemon 的同项；不覆盖共享 natsServers/listener。Agent 必须显式提供非空 `harness` 与受支持的 `adapter`，支持 `default|openclaw|opencode|codex|pi|omp|webhook`；`console` 不再是 adapter。Harness 还有 `webhookUrl`, `credentialsFile`, `instance`；凭据是私有文件，不是 JSON 内明文。OpenClaw/Webhook 必须显式 instance，同 adapter 的非归档 Bot 不可共享 instance。OpenClaw/default 不允许 per-call model override；OpenCode/Codex/pi/omp model 传到真实原生命令，而非仅展示字段。pi/omp 原生 CLI 的安装、provider 凭据及会话目录见 [集成文档](./integration.md#pi--omp-接入)。
+
+Console 最小创建配置为 `{"displayName":"inbox","role":"console"}`；必须省略 `harness`（`null`、`{}` 也拒绝）、`maxConcurrent` 和 `maxQueued`。Console 仅持久收件，没有执行 Harness，健康为不适用；公共文件配额、传输限制、信任和网络配置仍适用。缺失、空值、null、未知 Role、`roles[]` 或未实现的 `device` 均拒绝。配置解码先检查字段是否适用，再填充角色默认值，不从 adapter 推断 Role、不为 Agent 猜测 adapter。
+
+更新配置先 stop 并等到停止，再 GET 完整 config、保留原 Role、修改、以当前 revision PUT；陈旧 revision 返回 409，不能覆盖他人更新。Agent Harness 变更生成新 bindingRevision 和 `bots/{botId}/workspace/{bindingRevision}`；原生 CLI 在该目录运行。产品 session 再按 Bot、绑定、产品和发送方/目标 Agent/会话作用域隔离，原生 session ID 持久保存。失效 session 明确报错，不静默重建重跑。纯 schema 迁移保留 Agent 原绑定修订与 Session；Console 可保留旧 bindingRevision 作为历史文件路径元数据，不代表执行 Binding。工作区不是 OS 沙箱，仍须按模型工具权限和宿主账号限制执行。
+
+displayName、labels、产品/版本写入签名 announce，agentVersion 为空使用构建版本；labels 是自报属性，不表示就绪或授权。聊天参与者是 Bot；DSH 每 Bot 一个产品入口，不配置聊天 Agent 目录。`harness.allowedAgentIds` 只是通用 CLI 内部路由的本地 allowlist。
+
+### 凭据与生产连接
+
+本机管理无需 token，daemon 不生成或读取管理员凭据。每个 Bot 仍创建自己的 `credentials/api.token`；显式使用 scoped token 时，只能访问自己的业务，不能列 catalog、配置/生命周期或导入宿主文件。它是可选细粒度调用约束，不是本机进程隔离：任何本机进程可省略 token 管理全部 Bot。错误 token 仍被拒绝。不要把 Bot token 放进 URL、日志或仓库，也不要把本机 API 代理/转发给不可信调用方。
+
+daemon 仅允许 loopback listener，客户端也拒绝非 loopback endpoint（包括 HTTPS），没有远程管理开关。本机可选 TLS 不改变该限制。跨设备 Bot 通信使用 NATS，Bot 间身份、签名、认证和信任检查不变。production 要求 TLS NATS 与身份凭据，拒绝 open 信任、URL 内嵌凭据；可用 credentials 或客户端证书。NATS account/subject ACL 仍由 server/JWT 管理端设置，客户端 TLS 不自动建立隔离。按各 Bot 授权 inbox、必要 discovery/auth/trust 和 ObjectStore API，不应全局放开 `$JS.>`。
+
+普通消息和文件要求实际可用的 JetStream；消息不降级到 Core NATS。持久 outbox 会继续发送已记录 intent，发布失败不代表可安全换 ID 重发。
+
+## 存储、配额与恢复
 
 ```text
-CLI 参数 > OS 环境变量 > 项目根目录 .env > ~/.clawsynapse/config.yaml > 默认值
+DataDir/
+  config.json                 daemon schemaVersion 3
+  bots.json                   注册 catalog
+  bots/{botId}/
+    config.json
+    workspace-binding.json     仅工作区 Console；与 catalog 的 workspaceId 核验
+    credentials/              identity.key, identity.pub, api.token
+    trust.json, replay-cache.json, peer-attrs.json
+    state/messages.jsonl       持久消息/outbox/执行状态
+    sessions/{bindingRevision}/ 产品会话映射
+    transfers/                 持久传输记录
+    workspace/{bindingRevision}/
+  blobs/                      daemon 私有内容存储，不能作为外部下载路径
 ```
 
-推荐把长期稳定配置放到 `~/.clawsynapse/config.yaml`：
+文件内容物理去重，Bot 的持久引用才是访问权。`fileQuotaBytes` 按该 Bot 引用的不同内容大小计逻辑用量；同内容在其他 Bot 已存在也不能绕过本 Bot 配额。同 Bot 多引用同内容只计一次。daemon 的 blobMaxBytes 限制共享物理内容，tempMaxBytes 限制暂存，workspaceMaxBytes 限制管理的工作区物化；文件流还受 transferMaxFileSize 限制。超限明确失败，不降级为任意路径读取或泄露内容路径；外部模型自行写文件仍需宿主机磁盘配额。
 
-```bash
-mkdir -p ~/.clawsynapse
-cp config.example.yaml ~/.clawsynapse/config.yaml
-```
+删除 transfer 只删除当前 Bot 的引用。GC 在启动和每 5 分钟运行，先严格读取 schemaVersion 3 的 bots.json，并核验每个注册 Bot（含 stopped/archived）的目录及权威 transfers 引用目录，再扫描所有目录的引用（也包含尚未注册的遗留目录）。仅回收无引用且未被进行中读取 pin 的内容；catalog、注册目录、引用目录缺失或损坏/不安全时中止 mark，保守暂停回收并告警，不能解释为“没有授权引用”。不手工删除共享 blob、catalog 或归档 Bot 状态来腾空间。
 
-```yaml
-natsServers:
-  - nats://127.0.0.1:4222
-localApiAddr: 127.0.0.1:18080
-trustMode: tofu
-trustAutoApprove: false
-agentAdapter: default
-agentAdapterTimeout: 10m
-heartbeatInterval: 15s
-announceTtl: 30s
-agentProduct: clawsynapse
-# 留空时使用 clawsynapsed 的构建版本
-agentVersion: ""
-capabilities:
-  - chat
-  - tools
-dataDir: ~/.clawsynapse
-identityKeyPath: ~/.clawsynapse/identity.key
-identityPubPath: ~/.clawsynapse/identity.pub
-deliverablePrefixes:
-  - chat
-  - task
-```
+运行中的布局校验、文件写入、列表及 export 都要求既有权威引用目录；丢失的 transfers 目录不能自动创建后当成空历史。只有明确的新 Bot 创建/import 事务可以初始化新引用目录。损坏恢复应保留现状并从一致性备份核对 catalog、Bot 目录、引用和内容，不以空目录/空 catalog 静默重置授权历史。
 
-项目根目录下的 `.env` 适合本地开发覆盖，例如：
+每个 Bot `state/messages.jsonl`（0600）以 fsync 提交发布幂等键/outbox、收到的封套/游标、queued/admitted/done 工作及执行事件。持久挂载整个 DataDir。重启继续 queued 工作和 outbox；崩溃前 admitted 的执行变为 `execution.interrupted` / indeterminate，不自动再次调用模型/外部动作。反馈与文件通知按非执行性语义恢复。当前消息日志不自动裁剪，应规划磁盘和一致性备份；共享 JetStream 消息保留 7 天不等于本地历史裁剪。不能删日志来“修复”不确定执行。
 
-```bash
-cp .env.example .env
-```
+旧数据必须停机显式迁移：版本 2 多 Bot 布局使用 `clawsynapse migrate --data-dir ROOT`，旧单 Bot 使用 `clawsynapse migrate --legacy-config FILE --data-dir ROOT`。只有迁移器可由旧 adapter 推导 Role；未知 adapter、身份/状态/文件引用损坏均阻止提交，不用新身份或默认 Agent 兜底。版本 2 升级包括 stopped/archived Bot，在同文件系统暂存完整布局，持久记录源、暂存、备份和阶段，保留原目录及权限；完成 marker 提交前不开放运行。中断后正常启动拒绝，使用 `clawsynapse migrate --recover --data-dir ROOT` 显式恢复，不混读新旧布局，不清空 pending/outbox/cursor，不自动重放副作用。恢复/升级可重复执行，完成后不重建 Binding；新布局已有写入后不直接以旧备份覆盖。旧单 Bot 的目标可为原根或独立空目录，不可嵌套/覆盖其他有效 daemon；迁移后初始 stopped。Bot export/import 同样要求停止 daemon；普通 import 只接受 schemaVersion 3 manifest，版本 2 导出包先用 `bot convert --file SOURCE --output DEST` 在独立新目录转换，原包不变，未知/更高版本拒绝。导出包含私钥和状态，按敏感备份处理；操作示例见 CLI 文档。
 
-```bash
-NATS_SERVERS=nats://127.0.0.1:4222
-HEARTBEAT_INTERVAL_MS=15000
-ANNOUNCE_TTL_MS=30000
-TRUST_MODE=tofu
-TRUST_AUTO_APPROVE=false
-AGENT_ADAPTER=default
-AGENT_ADAPTER_TIMEOUT=10m
-AGENT_PRODUCT=clawsynapse
-AGENT_VERSION=
-AGENT_CAPABILITIES=chat,tools
-DATA_DIR=~/.clawsynapse
-IDENTITY_KEY_PATH=~/.clawsynapse/identity.key
-IDENTITY_PUB_PATH=~/.clawsynapse/identity.pub
-DELIVERABLE_PREFIXES=chat,task
-LOCAL_API_ADDR=127.0.0.1:18080
-```
-
-`agentProduct`、`agentVersion` 和 `capabilities` 会写入 discovery announce。接入 DeepSeek Harness 时可分别设为 `deepseek-harness`、实际 Harness 版本以及插件真实支持的能力（例如 `chat,task,transfer`）。`agentVersion` 为空时使用 `clawsynapsed` 的构建版本。
-
-`WEBHOOK_AUTH_TOKEN` 是敏感值：可从 daemon 的 OS 进程环境或项目根目录 `.env` 读取，不支持 YAML 或 CLI，且不会由配置 API 返回。
-
-补充配置项：
-
-```bash
-NATS_TOKEN=
-NATS_CREDS_FILE=/path/to/creds
-TRUSTED_KEYS_DIR=~/.clawsynapse/peers/
-BRIDGE_EVENTS=agent_end,message_sent
-```
+版本 2 布局升级的原根备份为 `ROOT.v2-backup-<id>`，同级暂存目录为 `.<root>.roles-*`；恢复依据同级 `ROOT.role-migration.json` 和根内 `role-migration.json`，不要手工删除或改阶段。`--recover` 在尚未持久提交 prepared 的准备阶段恢复原布局；prepared、backed-up 或 published 阶段完整核验暂存后向前完成发布。complete 状态不会回滚，从而避免旧备份覆盖新历史。若源数据校验失败，原数据不变；先显式恢复准备标记、修复数据，再重试升级。导出包转换的目标必须尚不存在且不与源重叠，源包保持不变。
 
 ## 启动流程
 
-具体的 subject 命名、认证消息与控制消息字段，以 `docs/protocol.md` 为准。这里仅描述运行时订阅与启动行为。
-
-```text
-1. 加载或生成 Ed25519 密钥对
-2. 从公钥派生 `did:key` 与 `nodeId`
-3. 连接 NATS
-4. 连接本地 Agent 网关
-5. 订阅本节点 inbox subject
-6. 订阅 discovery 相关 subject
-7. 订阅 auth / trust 所需控制 subject
-8. 发布初始注册信息
-9. 启动心跳定时器
-10. 开始处理入站消息
-```
+daemon 先检查未完成迁移并验证 schema/layout、获取根目录独占锁，打开内容存储、catalog 与唯一 API listener，再恢复期望 running 的 Bot。每 Bot 验证配置/身份匹配，建立独立 NATS 和持久消息上下文，Agent 装配 Harness，Console 不构造执行资源；两者均订阅 inbox/控制/发现，发布签名 announce 和心跳。关停先拒绝写入，再等待请求引用与执行退出，保留 desiredState 以供下次恢复。
 
 ## 部署
 
 ### 前置条件
 
-- 运行中的 NATS Server
-- 本地运行中的 Agent 网关
-
-快速启动 NATS：
+- 启用 JetStream 的 NATS Server。
+- Agent Bot 所选产品的已安装、已认证原生 CLI 或专用 Webhook/OpenClaw 实例；Console 无此依赖。health 探针不替代真实模型任务验收。
 
 ```bash
-docker run -d --name nats -p 4222:4222 nats:latest
-```
-
-### 运行守护进程
-
-```bash
-clawsynapsed \
-  --nats-servers nats://localhost:4222 \
-  --agent-adapter openclaw \
-  --gateway-url ws://127.0.0.1:18789 \
-  --gateway-token "$GATEWAY_TOKEN"
+docker run -d --name nats -p 4222:4222 nats:latest -js
+clawsynapse init --nats-servers nats://127.0.0.1:4222
+clawsynapsed --config "$HOME/.clawsynapse/config.json"
 ```
 
 ### 一键安装为系统服务
@@ -179,17 +192,17 @@ curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/script
 最佳实践约定：
 
 - 二进制由同一个安装脚本分发，避免 CLI 和 daemon 安装来源不一致
-- daemon 服务固定读取 `~/.clawsynapse/config.yaml`
-- 首次安装由脚本生成配置文件，后续升级不覆盖用户配置
-- 交互终端下一键安装脚本可补问 NATS、adapter 等关键参数
-- daemon 以普通用户身份运行，不以 root 直接执行业务进程
-- `nodeId` 由本地身份密钥自动派生，不通过 CLI 或 YAML 手工指定
+- daemon 服务读取 `~/.clawsynapse/config.json`
+- 首次安装生成 daemon 配置，后续升级不覆盖用户配置；旧目录要求先显式停机迁移
+- Bot 由本机 CLI/桌面在 daemon 启动后直接创建、配置、启动，无需管理 token，不自动生成默认身份
+- daemon 以普通用户运行，不以 root 直接执行业务进程
+- Bot ID 由各自 Ed25519 身份派生，不能用配置手工指定
 
 如果是自动化环境，显式传参而不是依赖交互输入：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/scripts/install.sh | \
-  bash -s -- --daemon --nats-servers nats://127.0.0.1:4222 --agent-adapter openclaw
+  bash -s -- --daemon --nats-servers nats://127.0.0.1:4222
 ```
 
 安装完成后，推荐通过 CLI 向导做后续配置调整：
@@ -198,7 +211,7 @@ curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/script
 clawsynapse init
 clawsynapse version
 clawsynapsed --version
-clawsynapse init --overwrite --nats-servers nats://127.0.0.1:4222 --agent-adapter openclaw
+clawsynapse init --overwrite --nats-servers nats://127.0.0.1:4222
 clawsynapse service restart
 ```
 
@@ -323,41 +336,22 @@ CI 自动发布入口：
 - 触发条件：push `v*` tag
 - 发布资产：`clawsynapse` / `clawsynapsed` 多平台二进制 + `checksums.txt`
 
-### 多节点异构部署
+### 多 Bot 与多机部署
 
-```text
-┌──────────────────┐     ┌──────────┐     ┌──────────────────┐
-│ Machine A        │     │          │     │ Machine B        │
-│                  │     │   NATS   │     │                  │
-│ OpenClaw Gateway │     │  Server  │     │ Custom Agent API │
-│ clawsynapsed A ──├─────┤          ├─────┤── clawsynapsed B │
-│ (n1-local-id)    │     │          │     │ (n1-peer-id)     │
-│ adapter=openclaw │     │          │     │ adapter=custom   │
-└──────────────────┘     └────┬─────┘     └──────────────────┘
-                              │
-                    ┌─────────┴────────┐
-                    │ Machine C        │
-                    │                  │
-                    │ 自研 Agent 服务   │
-                    │ clawsynapsed C ─ │
-                    │ (n1-third-node)  │
-                    │ adapter=custom   │
-                    └──────────────────┘
-```
+一台机器可由同一 daemon 托管 Bot A、B，各自绑定不同 workspace/model/session/凭据；远端机器的 Bot R 通过同一 wire v2 与它们通信。共机不合并信任、alias 或文件授权，也不把本地 Bot 当作无需认证的快捷通道。共享 daemon 带来共同的进程、磁盘与全局预算故障域；需要 OS/租户级隔离时使用不同账号、容器或机器。
 
 ## 安全
 
 ### 传输层
 
-- 为 NATS 启用 token、NKey 或凭证文件认证
-- 跨网络部署时启用 TLS
+- 为 NATS 配置 credentials 或双向 TLS，并在服务器限制 account/subject 权限。
+- 正式部署启用 production 校验，使用受信任证书的 TLS；不嵌入共享长期明文密码。
 
 ### 应用层
 
-- 使用 Ed25519 挑战响应握手验证节点身份
-- 对点对点消息进行签名校验
-- 校验消息时间戳，执行重放保护
-- 支持密钥轮换与公钥更新
+- 使用 Ed25519 挑战响应握手验证 Bot 身份
+- 对 wire v2 消息与发现声明执行完整签名、时间和重放检查；消息收件箱去重与 admitted 执行恢复持久化，发现新鲜度不是可恢复执行日志。
+- 不承诺端到端正文加密、外部副作用 exactly-once 或自动密钥轮换。
 
 ### Agent 网关层
 
@@ -378,26 +372,10 @@ CI 自动发布入口：
 | HTTP Webhook 中继 | 低 | 任意 Agent | 中 | 需自行实现 |
 | ClawSynapse + NATS | 低 | 任意 Agent | 低 | Ed25519 内置 |
 
-## 实现阶段
+## 验收边界
 
-### v1
+接口/隔离契约不等于所有外部产品组合已验收。运行环境应分别确认多 Bot 身份与凭据、显式选择、信任/备注、文件授权/配额/恢复，以及所选真实模型的答案与权威终态。health、CLI 存在、仅有答案 delta 或模型名可配置都不能代替完整任务成功；不要用 indeterminate 触发盲目重跑。
 
-- NATS 连接与订阅
-- 节点发现与 peer 表
-- 本节点 inbox 收发
-- `OpenClawAdapter`
-- 本地 `publish` / `peers` API
-- `open` / `tofu` 基础信任模式
+本次实际验收使用 Docker NATS、同 daemon 的 A/B 和外部 R：已覆盖独立身份/scoped 凭据、显式 CLI 选择、信任与 alias 隔离、A 撤销信任不改变 B；真实 OpenCode 模型答案及权威终态；SIGKILL 后 admitted 执行报告不确定且不重跑；共享 blob/可变 workspace 副本隔离、文件引用隔离及归档引用保留。真实 CLI 的停机迁移/export/import 验证了稳定身份、游标、信任、alias、自定义路径、原始备份及可读文件恢复；安装器隔离初始化和 TUI 切换也已实际执行。该证据不扩展为所有故障点、产品版本或操作系统的穷举保证。
 
-### v2
-
-- challenge-response 完整握手
-- 消息签名与重放保护
-- 去重与失败重试
-
-### v3
-
-- 事件转发
-- 死信队列
-- 观测与诊断接口
-- 管理命令集合
+以上为 2026-10-31 多 Bot 版本的历史验收记录，不是本轮 schemaVersion 3／Role 变更的 smoke 通过声明。Role 持续验收边界见 [bot-roles.md](./bot-roles.md)。
