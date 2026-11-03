@@ -523,7 +523,7 @@ Bot ID 与签名在此仅作结构示意，不能直接用于实际验签。
 - 使用精确 inbox subject，按原请求 ID 关联执行事件；终态不重复携带已通过 delta 发出的全文。
 - 正常模式要求双方认证与信任；`open` 仅用于非生产环境，仍要求已发现身份和有效签名。
 - 8 个串行工作分片，按发送方、会话及可选本地 agentId 排序；等待项持久化在本地 journal，不依赖内存队列容量，也不为每条消息启动 goroutine。执行前重新检查认证与信任；未知/尚未恢复认证的 Bot 等待，明确撤销的 Bot 不会执行。
-- 通用任务的 LLM 会话在接收 Bot、Binding 修订、发送方与原会话作用域内隔离；DSH 聊天以 `metadata.dsynapseChat.chatId` 建立 Bot 级单会话，聊天参与者只有 Bot。`agentId` 是 Binding 内允许列表约束的提示，不选择另一个 Bot/Harness。Webhook 保留会话键与事件关联字段。
+- 通用任务的 LLM 会话在接收 Bot、Binding 修订、发送方与原会话作用域内隔离；DSH 聊天以 `metadata.dsynapseChat.chatId` 建立 Bot 级单会话，聊天参与者只有 Bot。`agentId` 是 Binding 内允许列表约束的提示，不选择另一个 Bot/Harness。Webhook 保留会话键与事件关联字段。传给 Harness 的信封 `sessionKey` 保持发送方原始键，供回复时沿用；本地 Harness Session 存储仍使用上述作用域键，二者不能互换。
 - `run.accepted` 只表示异步接纳，`payload.adapterRunId` 可用于业务端回查；`run.completed` 也不等于设备物理动作完成。
 - Console 的普通聊天与反馈只持久收件，不生成 Run。执行请求在认证、授权、去重及持久收件后、执行 admission 前直接确定拒绝：未过期返回 `run.failed`、`payload.code="console.execution_unsupported"`、`indeterminate=false`；已过期沿用 `execution.expired`。拒绝保留 requestId/runId/seq/Session 关联和签名，不发 started、accepted、答案或 completed，不占用 Harness 执行预算。终态先持久提交再由 outbox 发布；重复投递及重启重发原事件，不生成第二个终态。历史已 admitted 请求仍保留不确定性，不改写为确定拒绝。
 - 结果未知时 `run.failed.payload.indeterminate=true`，不能据此自动重跑。

@@ -254,3 +254,37 @@ func assertExecutionCode(t *testing.T, err error, code string) *ExecutionError {
 	}
 	return execution
 }
+
+func TestPromptUsesPeerReplySessionKey(t *testing.T) {
+	prompt, err := formatDeliverMessage("n1-local", DeliverMessageRequest{
+		MessageID:       "m1",
+		Type:            "chat.message",
+		From:            "n1-peer",
+		SessionKey:      "scoped-internal-key",
+		ReplySessionKey: "topic-1",
+		Message:         "hello",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		SessionKey string `json:"sessionKey"`
+	}
+	if err := json.Unmarshal([]byte(prompt), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.SessionKey != "topic-1" {
+		t.Fatalf("prompt session key = %q, want topic-1", envelope.SessionKey)
+	}
+
+	prompt, err = formatDeliverMessage("n1-local", DeliverMessageRequest{MessageID: "m2", SessionKey: "legacy-key", Message: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(prompt), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.SessionKey != "legacy-key" {
+		t.Fatalf("fallback session key = %q, want legacy-key", envelope.SessionKey)
+	}
+}

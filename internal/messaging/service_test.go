@@ -31,6 +31,42 @@ func (a resultAdapter) GetStatus(context.Context) (*adapter.AgentStatus, error) 
 	return &adapter.AgentStatus{Healthy: true}, nil
 }
 
+type captureAdapter struct{ request adapter.DeliverMessageRequest }
+
+func (a *captureAdapter) DeliverMessage(_ context.Context, request adapter.DeliverMessageRequest) (*adapter.DeliverMessageResult, error) {
+	a.request = request
+	return &adapter.DeliverMessageResult{Success: true, Completed: true}, nil
+}
+func (a *captureAdapter) GetStatus(context.Context) (*adapter.AgentStatus, error) {
+	return &adapter.AgentStatus{Healthy: true}, nil
+}
+
+func TestHandlerKeepsPeerReplySessionKeyOutsideHarnessScope(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		session   string
+		messageID string
+		wantReply string
+	}{
+		{"peer-session", "topic-1", "m1", "topic-1"},
+		{"message-id-fallback", "", "m2", "m2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &captureAdapter{}
+			h := NewAdapterMessageHandler(a, time.Second)
+			if _, err := h.HandleMessage(IncomingMessage{MessageID: tc.messageID, Type: "chat.message", From: "peer", SessionKey: tc.session}); err != nil {
+				t.Fatal(err)
+			}
+			if a.request.ReplySessionKey != tc.wantReply {
+				t.Fatalf("reply session key = %q, want %q", a.request.ReplySessionKey, tc.wantReply)
+			}
+			if a.request.SessionKey == tc.wantReply || len(a.request.SessionKey) != 64 {
+				t.Fatalf("harness session key was not scoped: %q", a.request.SessionKey)
+			}
+		})
+	}
+}
+
 func TestPublishValidationUsesBotTerminology(t *testing.T) {
 	svc := &Service{}
 	if _, err := svc.Publish(PublishRequest{}); err == nil || err.Error() != "invalid targetBot" {
