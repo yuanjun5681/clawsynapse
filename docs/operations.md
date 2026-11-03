@@ -288,6 +288,7 @@ make release-prep VERSION=v0.0.4
 
 - 检查工作区是否干净
 - 拉取 `origin/develop`、`origin/main` 和 tags
+- 若本地 `develop` 有未推送的提交，直接报错退出（防止从旧代码打 tag）
 - 切到 `main`
 - 先 fast-forward 到 `origin/main`
 - 再把 `origin/develop` 合入 `main`
