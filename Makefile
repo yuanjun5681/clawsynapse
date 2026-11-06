@@ -44,7 +44,7 @@ dist:
 	GOOS=windows GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/clawsynapse-windows-arm64.exe ./cmd/clawsynapse
 	@echo "binaries in $(DIST_DIR)/"
 
-checksums: dist
+checksums:
 	@rm -f $(CHECKSUMS_FILE)
 	@(cd $(DIST_DIR) && shasum -a 256 $$(find . -maxdepth 1 -type f ! -name 'checksums.txt' ! -name 'release-notes-*' -print | sed 's|^\./||' | sort) > checksums.txt)
 	@echo "checksums: $(CHECKSUMS_FILE)"
@@ -54,7 +54,8 @@ release-notes:
 	./scripts/release-notes.sh --version "$(VERSION)" --output "$(RELEASE_NOTES_FILE)"
 	@echo "release notes: $(RELEASE_NOTES_FILE)"
 
-release-prep: test-unit dist checksums release-notes
+release-prep: test-unit dist
+	$(MAKE) checksums release-notes VERSION="$(VERSION)"
 
 clean:
 	rm -rf $(DIST_DIR) clawsynapse clawsynapsed
