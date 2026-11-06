@@ -17,8 +17,7 @@ set -euo pipefail
 CLI_BINARY="clawsynapse"
 DAEMON_BINARY="clawsynapsed"
 DEFAULT_REPO="yuanjun5681/clawsynapse"
-DEFAULT_INSTALL_DIR="/usr/local/bin"
-FALLBACK_INSTALL_DIR="${HOME}/.local/bin"
+DEFAULT_INSTALL_DIR="${HOME}/.local/bin"
 DEFAULT_CONFIG_ROOT="${HOME}/.clawsynapse"
 DEFAULT_MANIFEST_PATH="${DEFAULT_CONFIG_ROOT}/manifest.json"
 DEFAULT_DATA_DIR="${DEFAULT_CONFIG_ROOT}"
@@ -57,7 +56,7 @@ Install modes:
   --all                Install both CLI and daemon service
 
 Common options:
-  --install-dir DIR    Install binaries into DIR
+  --install-dir DIR    Install binaries into DIR (default: ~/.local/bin)
   --version VERSION    Install a specific release tag instead of latest
   --repo OWNER/REPO    Override GitHub repo (default: yuanjun5681/clawsynapse)
   --uninstall          Uninstall the selected components
@@ -329,28 +328,55 @@ require_sudo() {
     SUDO="sudo"
 }
 
+read_manifest_install_dir() {
+    local manifest="$DEFAULT_MANIFEST_PATH"
+    if [ "$(uname -s)" = Darwin ]; then
+        [ "$(plutil -extract product raw -o - "$manifest")" = clawsynapse ] || return 1
+        plutil -extract installDir raw -o - "$manifest"
+    elif command -v jq >/dev/null 2>&1; then
+        jq -er 'select(.product == "clawsynapse") | .installDir | select(type == "string" and length > 0)' "$manifest"
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 -c 'import json, sys
+with open(sys.argv[1]) as f:
+    manifest = json.load(f)
+path = manifest.get("installDir")
+if manifest.get("product") != "clawsynapse" or not isinstance(path, str) or not path:
+    sys.exit(1)
+print(path)' "$manifest"
+    else
+        error "reading the install manifest requires jq or python3; specify --install-dir explicitly"
+    fi
+}
+
 detect_install_dir() {
     if [ -n "${INSTALL_DIR:-}" ]; then
         INSTALL_DIR="$(expand_path "$INSTALL_DIR")"
+        case "$INSTALL_DIR" in
+            /*) ;;
+            *) INSTALL_DIR="$PWD/$INSTALL_DIR" ;;
+        esac
         return 0
     fi
 
-    if [ -w "$DEFAULT_INSTALL_DIR" ] || { [ ! -e "$DEFAULT_INSTALL_DIR" ] && [ -w "$(dirname "$DEFAULT_INSTALL_DIR")" ]; }; then
-        INSTALL_DIR="$DEFAULT_INSTALL_DIR"
-        return 0
+    if [ "$ACTION" = uninstall ] && [ -f "$DEFAULT_MANIFEST_PATH" ]; then
+        INSTALL_DIR="$(read_manifest_install_dir)" || error "cannot read installDir from $DEFAULT_MANIFEST_PATH; specify --install-dir explicitly"
+        case "$INSTALL_DIR" in
+            /*) return 0 ;;
+            *) error "install manifest contains a non-absolute installDir; specify --install-dir explicitly" ;;
+        esac
     fi
 
-    if command -v sudo >/dev/null 2>&1; then
-        INSTALL_DIR="$DEFAULT_INSTALL_DIR"
-        require_sudo
-        return 0
-    fi
-
-    INSTALL_DIR="$FALLBACK_INSTALL_DIR"
+    INSTALL_DIR="$DEFAULT_INSTALL_DIR"
+    USING_DEFAULT_INSTALL_DIR=1
 }
 
 ensure_install_dir() {
     local dir="$1"
+    if [ "$USING_DEFAULT_INSTALL_DIR" -eq 1 ]; then
+        install -d -m 755 "$dir" || error "cannot create user install directory: $dir; specify a writable --install-dir"
+        [ -w "$dir" ] || error "user install directory is not writable: $dir"
+        return 0
+    fi
     if [ -w "$(dirname "$dir")" ] || { [ -d "$dir" ] && [ -w "$dir" ]; }; then
         install -d -m 755 "$dir"
         return 0
@@ -800,6 +826,20 @@ print_post_install_notes() {
         info "CLI command available at: ${INSTALL_DIR}/${CLI_BINARY}"
         if [[ ":${PATH}:" != *":${INSTALL_DIR}:"* ]]; then
             warn "add ${INSTALL_DIR} to PATH to call ${CLI_BINARY} directly"
+            local quoted_dir shell_name="${SHELL:-sh}"
+            printf -v quoted_dir '%q' "$INSTALL_DIR"
+            case "${shell_name##*/}" in
+                fish)
+                    info "run: fish_add_path $quoted_dir"
+                    ;;
+                bash|zsh|sh|ksh)
+                    info "run: export PATH=$quoted_dir:\"\$PATH\""
+                    info "add that line to your shell startup file to make it persistent"
+                    ;;
+                *)
+                    info "configure your shell to include ${INSTALL_DIR} in PATH"
+                    ;;
+            esac
         fi
     fi
 
@@ -986,6 +1026,7 @@ main() {
     VERSION="${VERSION:-latest}"
     GITHUB_REPO="${GITHUB_REPO:-$DEFAULT_REPO}"
     INSTALL_DIR="${INSTALL_DIR:-}"
+    USING_DEFAULT_INSTALL_DIR=0
     CONFIG_PATH="${CONFIG_PATH:-}"
     DATA_DIR="${DATA_DIR:-$DEFAULT_DATA_DIR}"
     NATS_SERVERS="${NATS_SERVERS:-$DEFAULT_NATS_SERVERS}"
