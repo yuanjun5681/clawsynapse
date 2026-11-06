@@ -23,6 +23,10 @@ curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/script
 curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/scripts/install.sh | bash
 ```
 
+二进制默认安装到 `~/.local/bin`，创建和写入该用户目录不申请 sudo；配置和运行数据仍放在 `~/.clawsynapse/`。可用 `--install-dir DIR` 显式选择其他目录，受保护目录可能需要 sudo。Linux 当前仍安装系统级 systemd 服务，注册服务需要 sudo；macOS 使用用户级 LaunchAgent。
+
+若安装目录不在 PATH，脚本只打印适配当前 shell 的配置命令，不修改启动文件。卸载未指定 `--install-dir` 时，从 `~/.clawsynapse/manifest.json` 读取实际目录；显式参数优先。Linux 读取清单需要 `jq` 或 `python3`，缺少时可显式指定实际目录。没有清单时使用 `~/.local/bin`；旧安装不会自动从其他目录迁移。
+
 只安装 CLI：
 
 ```bash

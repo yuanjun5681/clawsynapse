@@ -48,6 +48,10 @@ Default install includes both the CLI and daemon:
 curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/scripts/install.sh | bash
 ```
 
+Binaries default to `~/.local/bin`; creating and writing this user-level directory does not request sudo. Configuration and runtime data remain in `~/.clawsynapse/`. Use `--install-dir DIR` for another location; an explicitly selected protected directory may require sudo. Linux still requires sudo to register the current system-level systemd service; macOS uses a user LaunchAgent.
+
+If the binary directory is not on PATH, the installer prints a shell-specific command without modifying startup files. Uninstall without `--install-dir` reads the recorded directory from `~/.clawsynapse/manifest.json`; an explicit directory overrides it. On Linux, reading the manifest requires `jq` or `python3`; otherwise specify the actual directory explicitly. If no manifest exists, uninstall targets `~/.local/bin`. Existing installs are not automatically moved from another directory.
+
 Install only the CLI:
 
 ```bash
