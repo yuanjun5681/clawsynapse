@@ -63,6 +63,8 @@ Common options:
   --uninstall          Uninstall the selected components
   --purge              With --daemon --uninstall, also remove config/data files
   --no-start           Install the daemon service but do not start it
+  --skills-dir DIR     Install both Skills into DIR (default: ~/.agents/skills)
+  --no-skills          Skip Skill installation
   -h, --help           Show this help
 
 Daemon bootstrap options (no Bot is created):
@@ -426,6 +428,50 @@ install_binary() {
     rm -f "$tmpfile"
     info "installed: ${dest}"
 }
+
+install_skills() (
+    [ "$INSTALL_SKILLS" -eq 1 ] || return 0
+
+    local platform="$1"
+    local binary="$DAEMON_BINARY"
+    local skill ref stage target tmpfile
+    local use_local=0
+    [ "$INSTALL_CLI" -eq 0 ] || binary="$CLI_BINARY"
+
+    # Match the installer's local-artifact preference; do not mix local binaries
+    # with remote instructions when running from a source checkout.
+    if find_local_artifact "$binary" "$platform" >/dev/null; then
+        if [ -f skills/clawsynapse/SKILL.md ] && [ -f skills/clawsynapse-context/SKILL.md ]; then
+            use_local=1
+        fi
+    fi
+    ref="$VERSION"
+    if [ "$use_local" -eq 0 ] && [ "$ref" = latest ]; then
+        ref="$(read_installed_version "$binary")"
+        [ -n "$ref" ] || error "cannot determine the installed version for Skills"
+    fi
+
+    stage="$(mktemp -d)"
+    trap 'rm -rf "$stage"' EXIT
+    # Fetch both before changing installed files, so a failed download preserves
+    # the previous Skills rather than leaving a mixed-version pair.
+    for skill in clawsynapse clawsynapse-context; do
+        if [ "$use_local" -eq 1 ]; then
+            cp "skills/$skill/SKILL.md" "$stage/$skill.md"
+        else
+            download_to "https://raw.githubusercontent.com/${GITHUB_REPO}/${ref}/skills/${skill}/SKILL.md" "$stage/$skill.md"
+        fi
+    done
+
+    for skill in clawsynapse clawsynapse-context; do
+        target="$SKILLS_DIR/$skill"
+        install -d -m 755 "$target"
+        tmpfile="$(mktemp "$target/.SKILL.md.XXXXXX")"
+        install -m 644 "$stage/$skill.md" "$tmpfile"
+        mv -f "$tmpfile" "$target/SKILL.md"
+        info "installed Skill: $target/SKILL.md"
+    done
+)
 
 
 read_installed_version() {
@@ -813,6 +859,14 @@ parse_args() {
             --no-start)
                 AUTO_START=0
                 ;;
+            --skills-dir)
+                [ $# -ge 2 ] || error "missing value for --skills-dir"
+                SKILLS_DIR="$2"
+                shift
+                ;;
+            --no-skills)
+                INSTALL_SKILLS=0
+                ;;
             --nats-servers)
                 [ $# -ge 2 ] || error "missing value for --nats-servers"
                 NATS_SERVERS="$2"
@@ -865,6 +919,7 @@ normalize_paths() {
     CONFIG_PATH="$(expand_path "$CONFIG_PATH")"
     CONFIG_ROOT="$(dirname "$CONFIG_PATH")"
     DATA_DIR="$(expand_path "$DATA_DIR")"
+    SKILLS_DIR="$(expand_path "$SKILLS_DIR")"
 
 }
 
@@ -901,6 +956,7 @@ install_selected() {
         validate_daemon_config
         install_daemon_service
     fi
+    install_skills "$platform"
 }
 
 uninstall_selected() {
@@ -924,6 +980,8 @@ main() {
     INSTALL_DAEMON=0
     AUTO_START=1
     PURGE=0
+    INSTALL_SKILLS=1
+    SKILLS_DIR="${SKILLS_DIR:-$HOME/.agents/skills}"
     SUDO=""
     VERSION="${VERSION:-latest}"
     GITHUB_REPO="${GITHUB_REPO:-$DEFAULT_REPO}"

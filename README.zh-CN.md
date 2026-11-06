@@ -37,6 +37,17 @@ curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/script
   bash -s -- --daemon
 ```
 
+所有安装模式默认同时安装 `clawsynapse` 和 `clawsynapse-context` 两个 Skill：
+
+```text
+~/.agents/skills/clawsynapse/SKILL.md
+~/.agents/skills/clawsynapse-context/SKILL.md
+```
+
+当前 OpenCode、OpenClaw 支持此用户级目录；其他 Harness 可通过 `--skills-dir DIR` 指定其 Skill 目录，或手动配置加载。使用 `--no-skills` 可跳过。重新安装会更新这两个 `SKILL.md`；如需自定义，请另存副本。卸载 CLI/daemon 时保留 Skill，不会删除用户编辑的指引。
+
+远程安装从对应版本标签获取 Skill（`latest` 使用刚安装的二进制版本），不混用 `main`；从源码目录使用本地 `dist/` 安装时，使用当前源码中的 Skill。已有 Agent 会话可能需要重新打开才能发现新增 Skill。
+
 如果是非交互式安装，建议显式传参：
 
 ```bash

@@ -62,6 +62,17 @@ curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/script
   bash -s -- --daemon
 ```
 
+Every install mode also installs the `clawsynapse` and `clawsynapse-context` Skills:
+
+```text
+~/.agents/skills/clawsynapse/SKILL.md
+~/.agents/skills/clawsynapse-context/SKILL.md
+```
+
+Current OpenCode and OpenClaw support this user-level directory. For other Harnesses, use `--skills-dir DIR` or configure discovery manually. Pass `--no-skills` to skip. Reinstallation updates both `SKILL.md` files; keep customizations separately. CLI/daemon uninstallation preserves Skills.
+
+Remote installs fetch Skills from the matching release tag, not `main`; `latest` uses the newly installed binary's version. Local `dist/` installs from a source checkout use that checkout's Skills. Existing Agent sessions may need to be reopened to discover newly installed Skills.
+
 For non-interactive installs, pass the values explicitly:
 
 ```bash
