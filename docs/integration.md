@@ -18,6 +18,10 @@ title: "ClawSynapse Integration"
 
 两份 skill 可独立安装，不要求位于同一目录；通信 skill 仅在 Harness 已提供上下文 skill 时按名称引用它。上下文 skill 仅使用实际提供的授权读取工具、内联内容或明确可访问的文件，不新增读取工具或后端能力；当前 CLI 尚无共享上下文读取命令。它不定义存储组织方式，也不执行上下文写入、消息发送或权限变更。
 
+一键安装脚本在所有安装模式中默认安装这两份 Skill 到 `~/.agents/skills/<name>/SKILL.md`；当前 [OpenCode](https://opencode.ai/docs/skills/) 和 [OpenClaw](https://docs.openclaw.ai/tools/skills) 均支持该共享用户级目录。安装目录属于运行安装脚本的用户，不使用 sudo 写入；不要以 root 身份运行脚本来代替普通用户安装。
+
+可用 `--skills-dir DIR` 指定其他 Harness 的发现目录，或用 `--no-skills` 跳过。远程安装按对应版本标签获取内容，`latest` 采用刚安装的二进制版本；源码目录中的本地 `dist/` 安装使用本地 Skill。下载两份内容成功后才开始更新目标文件，失败会阻止安装器报告成功。重装覆盖两个 `SKILL.md`，但不删除同目录中的其他文件；卸载保留 Skill。已有会话需按 Harness 的发现机制重新加载。
+
 ## Agent Adapter
 
 daemon 为每个本地 Bot 构造独立通信 Runtime；只有 `role=agent` 装配 Harness 绑定和 `AgentAdapter`，收到任务后只投递给它自己的执行入口。`role=console` 持久收件，不构造空 Adapter、执行队列、探针或原生 Session。Bot 是通信联系人/身份，Agent Harness 是本地执行环境；不同 Agent 产品实现该接口即可接入，不能把“共用同一产品”当作执行上下文可共享。
