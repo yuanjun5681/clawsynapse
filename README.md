@@ -73,7 +73,7 @@ Every install mode also installs the `clawsynapse` and `clawsynapse-context` Ski
 ~/.agents/skills/clawsynapse-context/SKILL.md
 ```
 
-Current OpenCode and OpenClaw support this user-level directory. For other Harnesses, use `--skills-dir DIR` or configure discovery manually. Pass `--no-skills` to skip. Reinstallation updates both `SKILL.md` files; keep customizations separately. CLI/daemon uninstallation preserves Skills.
+Current OpenCode and OpenClaw support this user-level directory. For other Harnesses, use `--skills-dir DIR` or configure discovery manually. Pass `--no-skills` to skip installation. Reinstallation updates both `SKILL.md` files; keep customizations separately. Every uninstall mode removes both Skill directories, including any custom files inside them.
 
 Remote installs fetch Skills from the matching release tag, not `main`; `latest` uses the newly installed binary's version. Local `dist/` installs from a source checkout use that checkout's Skills. Existing Agent sessions may need to be reopened to discover newly installed Skills.
 
@@ -220,23 +220,30 @@ Core real end-to-end behavior has been verified with two independent OpenCode GL
 
 ## Uninstall
 
+Use the remote installer with `--uninstall`; no source checkout or local script is required.
+
 Remove CLI and daemon:
 
 ```bash
-./scripts/install.sh --uninstall
+curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/scripts/install.sh | \
+  bash -s -- --uninstall
 ```
 
 Remove only the daemon:
 
 ```bash
-./scripts/install.sh --daemon --uninstall
+curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/scripts/install.sh | \
+  bash -s -- --daemon --uninstall
 ```
 
-Remove everything, including local state:
+Remove CLI, daemon, and the default local configuration/state directory (`~/.clawsynapse`):
 
 ```bash
-./scripts/install.sh --all --uninstall --purge
+curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/scripts/install.sh | \
+  bash -s -- --all --uninstall --purge
 ```
+
+Without `--purge`, configuration and Bot data are preserved. Every uninstall mode also removes the `clawsynapse` and `clawsynapse-context` directories under `~/.agents/skills`, leaving other Skills untouched. If installed elsewhere, append `--skills-dir /actual/skills/path`; back up any customizations in these two directories before uninstalling. `--no-skills` only skips installation, not removal. Uninstall uses the recorded binary directory; append `--install-dir /actual/bin/path` if the manifest is missing or you need to override it. For a custom configuration path, append `--config /absolute/path/to/config.json`; `--purge` deletes the entire directory containing that file, not a separate `--data-dir`. Back up that directory first and remove any separate data directory manually if intended.
 
 ## More Docs
 

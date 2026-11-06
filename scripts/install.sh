@@ -59,10 +59,10 @@ Common options:
   --install-dir DIR    Install binaries into DIR (default: ~/.local/bin)
   --version VERSION    Install a specific release tag instead of latest
   --repo OWNER/REPO    Override GitHub repo (default: yuanjun5681/clawsynapse)
-  --uninstall          Uninstall the selected components
+  --uninstall          Uninstall selected components and both Skills
   --purge              With --daemon --uninstall, also remove config/data files
   --no-start           Install the daemon service but do not start it
-  --skills-dir DIR     Install both Skills into DIR (default: ~/.agents/skills)
+  --skills-dir DIR     Install/remove both Skills in DIR (default: ~/.agents/skills)
   --no-skills          Skip Skill installation
   -h, --help           Show this help
 
@@ -91,7 +91,8 @@ Examples:
       bash -s -- --daemon
 
   Uninstall the daemon service:
-    ./scripts/install.sh --daemon --uninstall
+    curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/scripts/install.sh | \
+      bash -s -- --daemon --uninstall
 EOF
 }
 
@@ -498,6 +499,15 @@ install_skills() (
         info "installed Skill: $target/SKILL.md"
     done
 )
+
+uninstall_skills() {
+    local skill target
+    for skill in clawsynapse clawsynapse-context; do
+        target="$SKILLS_DIR/$skill"
+        rm -rf -- "$target"
+        info "removed Skill: $target"
+    done
+}
 
 
 read_installed_version() {
@@ -1010,6 +1020,7 @@ uninstall_selected() {
     if [ "$INSTALL_CLI" -eq 1 ]; then
         remove_binary_if_present "$CLI_BINARY"
     fi
+    uninstall_skills
     sync_manifest
 }
 

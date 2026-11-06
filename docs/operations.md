@@ -234,13 +234,21 @@ curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/script
   bash -s -- --cli
 ```
 
-卸载：
+卸载（无需本地源码，默认保留配置和 Bot 数据）：
 
 ```bash
-./scripts/install.sh --uninstall
-./scripts/install.sh --daemon --uninstall
-./scripts/install.sh --all --uninstall --purge
+# 移除 CLI 和 daemon
+curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/scripts/install.sh | \
+  bash -s -- --uninstall
+# 只移除 daemon
+curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/scripts/install.sh | \
+  bash -s -- --daemon --uninstall
+# 同时删除默认配置和数据目录 ~/.clawsynapse，请先备份
+curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/scripts/install.sh | \
+  bash -s -- --all --uninstall --purge
 ```
+
+上述所有卸载模式均删除 `~/.agents/skills` 下的 `clawsynapse` 和 `clawsynapse-context` 两个目录（包括自定义内容），不影响其他 Skill；自定义安装目录需追加 `--skills-dir /actual/skills/path`，请先备份这两个目录中的自定义内容。`--no-skills` 只跳过安装，不跳过卸载。二进制目录默认从安装记录读取；记录丢失或需要覆盖时，追加 `--install-dir /actual/bin/path`。自定义配置路径需追加 `--config /absolute/path/to/config.json`；`--purge` 删除该配置文件所在的整个目录，不会删除独立的 `--data-dir`，请先备份并按需手动清理独立数据目录。
 
 服务管理：
 

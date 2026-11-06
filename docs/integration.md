@@ -20,7 +20,7 @@ title: "ClawSynapse Integration"
 
 一键安装脚本在所有安装模式中默认安装这两份 Skill 到 `~/.agents/skills/<name>/SKILL.md`；当前 [OpenCode](https://opencode.ai/docs/skills/) 和 [OpenClaw](https://docs.openclaw.ai/tools/skills) 均支持该共享用户级目录。安装目录属于运行安装脚本的用户，不使用 sudo 写入；不要以 root 身份运行脚本来代替普通用户安装。
 
-可用 `--skills-dir DIR` 指定其他 Harness 的发现目录，或用 `--no-skills` 跳过。远程安装按对应版本标签获取内容，`latest` 采用刚安装的二进制版本；源码目录中的本地 `dist/` 安装使用本地 Skill。下载两份内容成功后才开始更新目标文件，失败会阻止安装器报告成功。重装覆盖两个 `SKILL.md`，但不删除同目录中的其他文件；卸载保留 Skill。已有会话需按 Harness 的发现机制重新加载。
+可用 `--skills-dir DIR` 指定其他 Harness 的发现目录，或用 `--no-skills` 跳过安装。远程安装按对应版本标签获取内容，`latest` 采用刚安装的二进制版本；源码目录中的本地 `dist/` 安装使用本地 Skill。下载两份内容成功后才开始更新目标文件，失败会阻止安装器报告成功。重装覆盖两个 `SKILL.md`，但不删除同目录中的其他文件。所有卸载模式均删除这两个 Skill 目录及其中的自定义内容，不影响其他 Skill；自定义安装目录需在卸载时再次传入 `--skills-dir DIR`，`--no-skills` 不跳过卸载。请另存自定义内容。已有会话需按 Harness 的发现机制重新加载。
 
 ## Agent Adapter
 

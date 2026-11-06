@@ -48,7 +48,7 @@ curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/script
 ~/.agents/skills/clawsynapse-context/SKILL.md
 ```
 
-当前 OpenCode、OpenClaw 支持此用户级目录；其他 Harness 可通过 `--skills-dir DIR` 指定其 Skill 目录，或手动配置加载。使用 `--no-skills` 可跳过。重新安装会更新这两个 `SKILL.md`；如需自定义，请另存副本。卸载 CLI/daemon 时保留 Skill，不会删除用户编辑的指引。
+当前 OpenCode、OpenClaw 支持此用户级目录；其他 Harness 可通过 `--skills-dir DIR` 指定其 Skill 目录，或手动配置加载。使用 `--no-skills` 可跳过安装。重新安装会更新这两个 `SKILL.md`；如需自定义，请另存副本。所有卸载模式都会删除这两个 Skill 目录，包括目录内的自定义文件。
 
 远程安装从对应版本标签获取 Skill（`latest` 使用刚安装的二进制版本），不混用 `main`；从源码目录使用本地 `dist/` 安装时，使用当前源码中的 Skill。已有 Agent 会话可能需要重新打开才能发现新增 Skill。
 
@@ -222,23 +222,30 @@ clawsynapsed --check-config
 
 ## 卸载
 
+通过远程安装脚本传入 `--uninstall`，无需下载源码或保留本地脚本。
+
 移除 CLI 和 daemon：
 
 ```bash
-./scripts/install.sh --uninstall
+curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/scripts/install.sh | \
+  bash -s -- --uninstall
 ```
 
 只移除 daemon：
 
 ```bash
-./scripts/install.sh --daemon --uninstall
+curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/scripts/install.sh | \
+  bash -s -- --daemon --uninstall
 ```
 
-连同本地配置和数据一起清理：
+移除 CLI、daemon，并删除默认的本地配置和数据目录（`~/.clawsynapse`）：
 
 ```bash
-./scripts/install.sh --all --uninstall --purge
+curl -fsSL https://raw.githubusercontent.com/yuanjun5681/clawsynapse/main/scripts/install.sh | \
+  bash -s -- --all --uninstall --purge
 ```
+
+不加 `--purge` 时保留配置和 Bot 数据。所有卸载模式都会删除 `~/.agents/skills` 下的 `clawsynapse` 和 `clawsynapse-context` 目录，其他 Skill 不受影响；安装到其他位置时，追加 `--skills-dir /actual/skills/path`，卸载前请备份这两个目录中的自定义内容。`--no-skills` 只跳过安装，不跳过卸载。卸载默认读取安装记录中的二进制目录；记录丢失或需要覆盖时，追加 `--install-dir /actual/bin/path`。使用自定义配置路径时，追加 `--config /absolute/path/to/config.json`；`--purge` 删除的是该配置文件所在的整个目录，不会删除单独指定的 `--data-dir`。请先备份该目录，如需清理独立的数据目录，应另行手动删除。
 
 ## 更多文档
 
