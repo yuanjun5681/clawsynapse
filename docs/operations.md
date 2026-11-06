@@ -337,6 +337,46 @@ CI 自动发布入口：
 - 触发条件：push `v*` tag
 - 发布资产：`clawsynapse` / `clawsynapsed` 多平台二进制 + `checksums.txt`
 
+#### macOS 签名与公证
+
+标签发布使用 macOS runner，按标签注入版本号，构建所有平台，再用 Developer ID Application 签名四个 macOS 二进制并提交 Apple 公证。只有公证结果为 `Accepted`、签名 CLI 的本机运行和版本检查通过后，才生成最终校验和并上传 Release。缺少凭据或公证失败都会停止发布，不会降级为未签名发布。
+
+首次使用前，在仓库 Settings → Secrets and variables → Actions 配置以下 Repository secrets：
+
+| Secret | 内容 |
+|---|---|
+| `MACOS_CERTIFICATE_BASE64` | 包含证书和私钥的 `.p12` 文件的 Base64 编码 |
+| `MACOS_CERTIFICATE_PASSWORD` | 导出 `.p12` 时设置的密码 |
+| `MACOS_SIGNING_IDENTITY` | Developer ID Application 证书 SHA-1 指纹；可由 `security find-identity -v -p codesigning` 获取 |
+| `APPLE_ID` | 有权为该团队提交公证的 Apple Account 邮箱 |
+| `APPLE_TEAM_ID` | 团队 ID，本项目发布团队为 `9RG75AM5SX` |
+| `APPLE_APP_PASSWORD` | 在 Apple Account 登录与安全 → App 专用密码中生成的密码，不是账号登录密码 |
+
+`.p12` 和密码不得提交仓库、上传发布资产或发送到聊天。可以在已完成 `gh auth login` 的可信 Mac 上直接传入文件编码，不在终端打印私钥：
+
+```bash
+base64 < "$HOME/DeveloperID-Signing/developer-id.p12" | \
+  gh secret set MACOS_CERTIFICATE_BASE64 --repo yuanjun5681/clawsynapse
+```
+
+其余 secret 可在网页中填写，或通过 `gh secret set NAME --repo yuanjun5681/clawsynapse` 的交互输入设置。配置好后，先提交并推送发布流程变更到 `develop`，再执行：
+
+```bash
+./scripts/cut-release.sh v0.3.3
+```
+
+CI 使用临时钥匙串，结束时清除导入的签名材料。签名和公证逻辑位于 `scripts/sign-macos.sh`，也可在已安装签名身份、设置了上述签名和公证环境变量的 Mac 上运行：
+
+```bash
+CGO_ENABLED=0 make dist VERSION=v0.3.3
+./scripts/sign-macos.sh dist
+make checksums release-notes VERSION=v0.3.3
+```
+
+`make checksums` 只计算现有产物，不再重新构建；`make release-prep` 和 `scripts/release.sh` 仍会重新构建，不能用于上传已签名的 `dist/`。`release-prep` 只是本地未签名产物准备，正式签名自动发布请使用标签工作流。
+
+公证 ZIP 仅用于提交，不作为发布资产。裸二进制无法装订公证票据，Gatekeeper 可能需要联网查询公证结果；当前方案不保证离线 Gatekeeper 验收，也不替代 macOS 隐私权限授权。
+
 ### 多 Bot 与多机部署
 
 一台机器可由同一 daemon 托管 Bot A、B，各自绑定不同 workspace/model/session/凭据；远端机器的 Bot R 通过同一 wire v2 与它们通信。共机不合并信任、alias 或文件授权，也不把本地 Bot 当作无需认证的快捷通道。共享 daemon 带来共同的进程、磁盘与全局预算故障域；需要 OS/租户级隔离时使用不同账号、容器或机器。
