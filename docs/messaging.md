@@ -59,6 +59,8 @@ sequenceDiagram
 - 明确终态不会再次附带已经发出的完整答案；消费者不要重复追加。
 - `run.accepted` 仅表示异步接纳，产品运行标识放在 `payload.adapterRunId`；后续结果依赖权威端查询。
 - 超时、取消或失败可能发生在副作用之后。`payload.indeterminate=true` 时不自动重新执行原动作。
+- 原生 `run.failed` 可携带固定安全摘要 `payload.message`（可选、最多 512 字节）；不包含 native stdout/stderr、原始错误、凭据或提示词。分类仅读取明确的结构化 error 字段，不搜索整条 JSON，`sessionID` 加上 `error.type=unknown` 不等于会话丢失。
+- 已知拒绝分别为 `invalid_model / validation`、`provider_quota / provider`（含 `provider.free-limit`）、`provider_auth / authentication`、`session_unavailable / session_load`。尚无推理、答案或工具活动证据时才可为确定失败；出现这些活动后仍保留 `indeterminate=true`。传输失败为 `native_transport / transport`，未知运行时错误为 `native_failed / execution`，均保留不确定性，不自动重试业务或新建会话。
 - run 事件不进入 LLM，也不产生反馈回复；Webhook 可以消费这些事件。
 - Console Bot 的 `chat.message` 与反馈只提交持久 inbox，不执行模型、不创建虚假 Run、不 echo 或生成 completed。执行请求在公共校验和持久收件后、执行 admission 前拒绝：未过期为 `run.failed`、`payload.code="console.execution_unsupported"`、`indeterminate=false`；过期为 `execution.expired`。保留 requestId/runId/seq/Session 和签名关联，不发 started、accepted、答案或 completed，不占用 Bot/daemon Harness 预算。拒绝终态与工作结果先持久提交，再由 outbox 发布；重复投递/重启只恢复原事件。历史已 admitted 请求仍按不确定性恢复，不伪装为从未执行。Console 正常发布聊天并接收 Agent 答案，Harness 健康为不适用，不是人工任务执行器。
 - 文件传输属于公共通信：`transfer.available` 仍经过授权、配额及持久引用处理；本地 `transfer.received` 回调按 Role 分派。Console 只保存可恢复记录和授权引用，不调用 Harness、不生成执行反馈；桌面关闭不影响 daemon 收件，重开通过原 cursor 和文件读取 API 查看。Agent 保留文件通知与工作副本契约，不自动重放已 admitted 通知。

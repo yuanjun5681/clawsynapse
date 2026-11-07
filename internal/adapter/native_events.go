@@ -62,9 +62,11 @@ type nativeStream struct {
 	sessionID string
 	messageID string
 	completed bool
-	items     map[string]string
-	reply     strings.Builder
-	pi        *piStreamState
+	// Sticky once inference, answer or tool activity makes effects possible.
+	active bool
+	items  map[string]string
+	reply  strings.Builder
+	pi     *piStreamState
 }
 
 func (s *nativeStream) consume(line []byte) error {
@@ -81,13 +83,100 @@ func malformedNative() error {
 	return &ExecutionError{Code: "native_schema", Stage: "decode", Indeterminate: true, Err: errors.New("native CLI emitted unsupported or malformed structured output")}
 }
 
-func nativeFailure(raw json.RawMessage) error {
-	code := "native_failed"
-	lower := strings.ToLower(string(raw))
-	if strings.Contains(lower, "session") && (strings.Contains(lower, "not found") || strings.Contains(lower, "unknown") || strings.Contains(lower, "no recorded") || strings.Contains(lower, "no such")) {
-		code = "session_unavailable"
+// raw must be an explicit error field, never a serialized event or result.
+func nativeFailure(raw json.RawMessage, active bool) error {
+	code, stage, deterministic := classifyNativeError(raw, 0)
+	failure := &ExecutionError{Code: code, Stage: stage, Indeterminate: active || !deterministic}
+	failure.Err = errors.New(failure.SafeMessage())
+	return failure
+}
+
+func classifyNativeError(raw json.RawMessage, depth int) (string, string, bool) {
+	if depth > 4 {
+		return "native_failed", "execution", false
 	}
-	return &ExecutionError{Code: code, Stage: "execution", Indeterminate: true, Err: errors.New("native CLI reported failure; if the prior session is unavailable, create a new session explicitly")}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return classifyNativeErrorText("", text, 0)
+	}
+	var detail struct {
+		Code       string          `json:"code"`
+		Type       string          `json:"type"`
+		Name       string          `json:"name"`
+		Message    string          `json:"message"`
+		StatusCode int             `json:"statusCode"`
+		Data       json.RawMessage `json:"data"`
+		Error      json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(raw, &detail) != nil {
+		return "native_failed", "execution", false
+	}
+	for _, kind := range [...]string{detail.Code, detail.Type, detail.Name} {
+		code, stage, deterministic := classifyNativeErrorText(kind, "", 0)
+		if code != "native_failed" {
+			return code, stage, deterministic
+		}
+	}
+	for _, nested := range [...]json.RawMessage{detail.Error, detail.Data} {
+		if hasNativeError(nested) {
+			code, stage, deterministic := classifyNativeError(nested, depth+1)
+			if code != "native_failed" {
+				return code, stage, deterministic
+			}
+		}
+	}
+	return classifyNativeErrorText("", detail.Message, detail.StatusCode)
+}
+
+func classifyNativeErrorText(kind, message string, status int) (string, string, bool) {
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	message = strings.ToLower(strings.TrimSpace(message))
+	switch kind {
+	case "invalid_model", "model_not_found", "modelnotfounderror", "provider.model-not-found":
+		return "invalid_model", "validation", true
+	case "provider.free-limit", "insufficient_quota", "quota_exceeded", "provider_quota":
+		return "provider_quota", "provider", true
+	case "provider.auth", "authentication_error", "authenticationerror", "providerautherror", "invalid_api_key", "unauthorized":
+		return "provider_auth", "authentication", true
+	case "session_not_found", "sessionnotfounderror", "session_unavailable", "thread_not_found":
+		return "session_unavailable", "session_load", true
+	case "provider.transport", "connection_error", "connectionerror", "network_error", "fetcherror":
+		return "native_transport", "transport", false
+	}
+	switch {
+	case strings.HasPrefix(message, "invalid model reference:"),
+		strings.HasPrefix(message, "model not found:"):
+		return "invalid_model", "validation", true
+	case strings.HasPrefix(message, "provider.free-limit"),
+		strings.HasPrefix(message, "free usage limit exceeded"),
+		strings.HasPrefix(message, "free limit exceeded"),
+		strings.HasPrefix(message, "quota exceeded"),
+		strings.HasPrefix(message, "insufficient quota"):
+		return "provider_quota", "provider", true
+	case status == 401 || status == 403,
+		strings.HasPrefix(message, "provider.auth"),
+		strings.HasPrefix(message, "invalid api key"),
+		strings.HasPrefix(message, "authentication failed"),
+		strings.HasPrefix(message, "unauthorized"):
+		return "provider_auth", "authentication", true
+	case strings.HasPrefix(message, "unknown session"),
+		strings.HasPrefix(message, "session not found"),
+		strings.HasPrefix(message, "no such session"),
+		strings.HasPrefix(message, "no recorded session"),
+		strings.HasPrefix(message, "unknown thread"),
+		strings.HasPrefix(message, "thread not found"),
+		strings.HasPrefix(message, "no recorded rollout"):
+		return "session_unavailable", "session_load", true
+	case strings.HasPrefix(message, "connection reset"),
+		strings.HasPrefix(message, "connection refused"),
+		strings.HasPrefix(message, "connection closed"),
+		strings.HasPrefix(message, "network error"),
+		strings.HasPrefix(message, "fetch failed"),
+		strings.HasPrefix(message, "transport error"):
+		return "native_transport", "transport", false
+	default:
+		return "native_failed", "execution", false
+	}
 }
 
 func hasNativeError(raw json.RawMessage) bool {
@@ -107,6 +196,9 @@ func (s *nativeStream) setSession(id string) error {
 }
 
 func (s *nativeStream) answer(text string) error {
+	if text != "" {
+		s.active = true
+	}
 	if s.completed {
 		return malformedNative()
 	}
@@ -119,6 +211,7 @@ func (s *nativeStream) answer(text string) error {
 func (s *nativeStream) consumeCodex(line []byte) error {
 	var event struct {
 		Type     string `json:"type"`
+		Message  string `json:"message"`
 		ThreadID string `json:"thread_id"`
 		Item     *struct {
 			ID   string `json:"id"`
@@ -134,7 +227,11 @@ func (s *nativeStream) consumeCodex(line []byte) error {
 		if err := s.emitter.flush(); err != nil {
 			return err
 		}
-		return nativeFailure(line)
+		raw := event.Error
+		if !hasNativeError(raw) {
+			raw, _ = json.Marshal(event.Message)
+		}
+		return nativeFailure(raw, s.active)
 	}
 	switch event.Type {
 	case "thread.started":
@@ -143,6 +240,7 @@ func (s *nativeStream) consumeCodex(line []byte) error {
 		}
 		return s.setSession(event.ThreadID)
 	case "turn.started":
+		s.active = true
 		if s.completed {
 			return malformedNative()
 		}
@@ -156,6 +254,7 @@ func (s *nativeStream) consumeCodex(line []byte) error {
 		if event.Item == nil {
 			return malformedNative()
 		}
+		s.active = true
 		if event.Item.Type != "agent_message" {
 			return nil
 		}
@@ -200,15 +299,19 @@ func (s *nativeStream) consumeOpenCode(line []byte) error {
 		if err := s.emitter.flush(); err != nil {
 			return err
 		}
-		return nativeFailure(line)
+		return nativeFailure(event.Error, s.active)
 	}
 	switch event.Type {
+	case "tool_use", "tool_call", "tool_result", "reasoning":
+		s.active = true
 	case "step_start":
+		s.active = true
 		if event.Part != nil && event.Part.MessageID != "" {
 			s.messageID = event.Part.MessageID
 		}
 		s.completed = false
 	case "text":
+		s.active = true
 		text := event.Text
 		if event.Part != nil {
 			// An allowlist, not a denylist: thinking/reasoning/tool parts can
@@ -232,6 +335,7 @@ func (s *nativeStream) consumeOpenCode(line []byte) error {
 		return s.answer(text)
 	case "step_finish":
 		reason := event.Reason
+		s.active = true
 		if event.Part != nil {
 			if event.Part.Type != "step-finish" {
 				return malformedNative()
@@ -249,7 +353,7 @@ func (s *nativeStream) consumeOpenCode(line []byte) error {
 			if err := s.emitter.flush(); err != nil {
 				return err
 			}
-			return nativeFailure(line)
+			return nativeFailure(nil, s.active)
 		default:
 			return malformedNative()
 		}
@@ -293,11 +397,11 @@ func consumeOpenClaw(data []byte) (*DeliverMessageResult, error) {
 		return nil, malformedNative()
 	}
 	if hasNativeError(response.Error) {
-		return nil, nativeFailure(response.Error)
+		return nil, nativeFailure(response.Error, response.Result != nil)
 	}
 	body := response.Result
 	if response.Status != "ok" {
-		return nil, nativeFailure(data)
+		return nil, nativeFailure(nil, body != nil)
 	}
 	if body == nil {
 		return nil, malformedNative()
@@ -305,20 +409,20 @@ func consumeOpenClaw(data []byte) (*DeliverMessageResult, error) {
 	if body.Meta != nil {
 		meta := body.Meta
 		if meta.Aborted || meta.Yielded || meta.ContinuationPending || hasNativeError(meta.Error) {
-			return nil, nativeFailure(data)
+			return nil, nativeFailure(meta.Error, true)
 		}
 		if meta.StopReason != "" {
 			switch meta.StopReason {
 			case "stop", "completed", "end_turn":
 			default:
-				return nil, nativeFailure(data)
+				return nil, nativeFailure(nil, true)
 			}
 		}
 	}
 	var reply strings.Builder
 	for _, part := range body.Payloads {
 		if part.IsError {
-			return nil, nativeFailure(data)
+			return nil, nativeFailure(nil, true)
 		}
 		if !part.IsReasoning {
 			reply.WriteString(part.Text)

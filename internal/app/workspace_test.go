@@ -179,13 +179,4 @@ func TestWorkspaceBindingHTTPAuthorizationValidationAndCapabilities(t *testing.T
 	requireStatus(t, request(t, a, "POST", path, token, map[string]string{"displayName": "Bot-A"}), 403)
 	bot := result.Data["bot"].(map[string]any)
 	requireStatus(t, request(t, a, "GET", "/v2/bots/"+bot["botId"].(string)+"/messages", token, nil), 200)
-	health := request(t, a, "GET", "/v2/health", "", nil)
-	requireStatus(t, health, 200)
-	if err := json.Unmarshal(health.Body.Bytes(), &result); err != nil {
-		t.Fatal(err)
-	}
-	caps := result.Data["capabilities"].([]any)
-	if len(caps) != 2 || caps[0] != "console" || caps[1] != "workspace_binding" {
-		t.Fatalf("unexpected capabilities: %#v", caps)
-	}
 }

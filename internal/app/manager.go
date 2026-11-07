@@ -56,17 +56,18 @@ type managedBot struct {
 }
 
 type Manager struct {
-	mu        sync.RWMutex
-	cfg       config.DaemonConfig
-	version   string
-	bots      map[string]*managedBot
-	catalog   map[string]catalogRecord
-	bindings  map[string]*config.HarnessBinding
-	tokens    map[string][32]byte
-	blobs     *blob.Store
-	scheduler *adapter.Scheduler
-	closing   bool
-	recovery  []string
+	mu         sync.RWMutex
+	cfg        config.DaemonConfig
+	version    string
+	bots       map[string]*managedBot
+	catalog    map[string]catalogRecord
+	bindings   map[string]*config.HarnessBinding
+	tokens     map[string][32]byte
+	blobs      *blob.Store
+	scheduler  *adapter.Scheduler
+	closing    bool
+	recovery   []string
+	modelQuery func(context.Context, string, string) (adapter.ModelCatalog, error)
 }
 
 func newManager(cfg config.DaemonConfig, version string, blobs *blob.Store) (*Manager, error) {
@@ -384,6 +385,9 @@ func (m *Manager) Create(cfg config.BotConfig) (api.BotInfo, error) {
 	if err := config.ValidateBot(cfg); err != nil {
 		return api.BotInfo{}, api.Failure(400, "bot.config_invalid", err.Error())
 	}
+	if err := m.validateExplicitModel(cfg); err != nil {
+		return api.BotInfo{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.createLocked(cfg, "")
@@ -518,6 +522,11 @@ func (m *Manager) Update(id string, cfg config.BotConfig) (api.BotInfo, error) {
 	cfg.Revision++
 	if err = config.ValidateBot(cfg); err != nil {
 		return api.BotInfo{}, api.Failure(400, "bot.config_invalid", err.Error())
+	}
+	if explicitModelChanged(b.cfg.Harness, cfg.Harness) {
+		if err := m.validateExplicitModel(cfg); err != nil {
+			return api.BotInfo{}, err
+		}
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()

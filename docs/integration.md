@@ -150,7 +150,7 @@ Console 的 BotInfo 为 `harnessApplicable=false`；Bot health 的 adapter 为 `
 - 首个答案立即发布，后续小片段按最多 4 KiB 合并，终止时刷新。回调背压同步传到进程，回调错误会取消执行。
 - Unix 使用独立进程组，Windows 使用 Job Object 管理进程树；超时、取消与 WaitDelay 有界。Windows 已交叉编译，实际运行仍需目标 OS 验收。
 - 产品会话读写失败显式报错。仅受当前原生事件契约支持的 CLI 可用；help/auth/health 探针只验证非交互能力，不替代真实模型任务验收。
-- 有 Emit 时结果不再重复返回完整 Reply；失败使用 ExecutionError 的 code、stage 和 indeterminate，不泄露原生 stdout/stderr。
+- 有 Emit 时结果不再重复返回完整 Reply；失败使用 ExecutionError 的 code、stage 和 indeterminate，并在 `run.failed.payload.message` 中提供可选固定安全摘要，不泄露原生 stdout/stderr、原始错误、凭据或提示词。仅检查结构化错误字段；无效模型为 `invalid_model / validation`，provider.free-limit 为 `provider_quota / provider`，不是会话丢失。已观察到推理、工具或答案后，后续拒绝也保留不确定性；传输与未知运行时错误不伪装成确定未执行。错误不触发自动重跑或会话替换，详见 [messaging.md](messaging.md)。
 - DSH 集成只需 Bot 显示名与 labels；不要为聊天配置 Agent 名称或 Agent 目录。通用 CLI 适配器可使用 `harness.allowedAgentIds` 约束本地目标。真实模型任务与第三方 CLI 终态兼容必须单独验收，不能从 health/仅答案输出推断完整 acceptance 通过。
 
 ### pi / omp 接入

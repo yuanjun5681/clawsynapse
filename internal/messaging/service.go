@@ -427,6 +427,9 @@ func validateEnvelope(env protocol.MessageEnvelope, now int64) error {
 	if strings.HasPrefix(env.Type, "run.") && (env.RequestID == "" || env.RunID == "" || env.Seq == 0) {
 		return errors.New("execution event requires requestId, runId and seq")
 	}
+	if env.Payload.Message != "" && (env.Type != "run.failed" || len(env.Payload.Message) > 512 || !utf8.ValidString(env.Payload.Message)) {
+		return errors.New("failure message must be a bounded UTF-8 run.failed diagnostic")
+	}
 	return nil
 }
 
@@ -792,6 +795,7 @@ func (s *Service) deliver(work admittedWork) bool {
 		var execErr *adapter.ExecutionError
 		if errors.As(err, &execErr) {
 			payload.Code, payload.Stage, payload.Indeterminate = execErr.Code, execErr.Stage, execErr.Indeterminate
+			payload.Message = execErr.SafeMessage()
 			if execErr.Code == "webhook_failed" && execErr.Err != nil {
 				payload.Text = execErr.Err.Error()
 				if len(payload.Text) > 1000 {
@@ -801,6 +805,9 @@ func (s *Service) deliver(work admittedWork) bool {
 		} else if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			payload.Code, payload.Indeterminate = "execution.interrupted", true
 		}
+		// Published answer output is evidence of possible effects, even when an
+		// adapter incorrectly reports a later validation rejection as certain.
+		payload.Indeterminate = payload.Indeterminate || streamed
 		return s.emit(&work, "run.failed", payload, "done") == nil
 	}
 	if !streamed && result.Reply != "" {

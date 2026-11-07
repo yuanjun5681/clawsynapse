@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"clawsynapse/internal/adapter"
 	"clawsynapse/internal/config"
 	"clawsynapse/pkg/types"
 )
@@ -97,7 +98,7 @@ func NewDaemonServer(cfg config.DaemonConfig, manager BotManager) (*DaemonServer
 				failed++
 			}
 		}
-		data := map[string]any{"activeBots": active, "failedBots": failed, "botsCount": len(items), "capabilities": []string{"console", "workspace_binding"}}
+		data := map[string]any{"activeBots": active, "failedBots": failed, "botsCount": len(items), "capabilities": []string{"console", "workspace_binding", "harness_models"}}
 		if source, ok := manager.(interface{ Version() string }); ok {
 			data["version"] = source.Version()
 		}
@@ -105,6 +106,22 @@ func NewDaemonServer(cfg config.DaemonConfig, manager BotManager) (*DaemonServer
 			data["recoveryIssues"] = source.RecoveryIssues()
 		}
 		success(w, 200, "daemon.healthy", data)
+	})
+	mux.HandleFunc("GET /v2/harnesses/{adapter}/models", func(w http.ResponseWriter, r *http.Request) {
+		source, ok := manager.(interface {
+			Models(context.Context, string, string, string) (adapter.ModelCatalog, error)
+		})
+		if !ok {
+			respondError(w, Failure(503, "harness.models_unavailable", "model directory is unavailable"))
+			return
+		}
+		catalog, err := source.Models(r.Context(), r.PathValue("adapter"), r.URL.Query().Get("workspaceId"), r.URL.Query().Get("botId"))
+		if err != nil {
+			respondError(w, err)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		success(w, 200, "harness.models", map[string]any{"catalog": catalog})
 	})
 	mux.HandleFunc("POST /v2/workspaces/{workspaceID}/binding", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {

@@ -507,7 +507,7 @@ Bot ID 与签名在此仅作结构示意，不能直接用于实际验签。
 | `agentId` | 否 | 本地授权列表内的 Agent；Codex 不支持命名 Agent 路由 |
 | `from` | 是 | 发送方 Bot ID |
 | `to` | 是 | 精确目标 Bot ID，必须与 subject 一致 |
-| `payload` | 是 | 结构化正文；支持 text、instruction、input，以及执行事件的 channel、code、stage、indeterminate、adapterRunId |
+| `payload` | 是 | 结构化正文；支持 text、instruction、input，以及执行事件的 channel、code、stage、message、indeterminate、adapterRunId |
 | `sessionKey` | 否 | 会话标识 |
 | `ts` | 是 | 发送时间戳 |
 | `expiresAt` | 是 | Unix 毫秒有效期；默认 10 分钟，最大 ts + 10 分钟，排队后执行前再次检查 |
@@ -527,6 +527,7 @@ Bot ID 与签名在此仅作结构示意，不能直接用于实际验签。
 - `run.accepted` 只表示异步接纳，`payload.adapterRunId` 可用于业务端回查；`run.completed` 也不等于设备物理动作完成。
 - Console 的普通聊天与反馈只持久收件，不生成 Run。执行请求在认证、授权、去重及持久收件后、执行 admission 前直接确定拒绝：未过期返回 `run.failed`、`payload.code="console.execution_unsupported"`、`indeterminate=false`；已过期沿用 `execution.expired`。拒绝保留 requestId/runId/seq/Session 关联和签名，不发 started、accepted、答案或 completed，不占用 Harness 执行预算。终态先持久提交再由 outbox 发布；重复投递及重启重发原事件，不生成第二个终态。历史已 admitted 请求仍保留不确定性，不改写为确定拒绝。
 - 结果未知时 `run.failed.payload.indeterminate=true`，不能据此自动重跑。
+- `run.failed.payload.message` 为可选 UTF-8 字符串，最多 512 字节，仅允许用于失败事件，并与其余 payload 一同签名；旧事件可省略。原生 Harness 只生成固定安全摘要，不透传 CLI 错误原文、密钥、提示词或任意原生 JSON。`code`、`stage` 仍供机器判断，`message` 用于显示而非重试决策。
 - 点对点收件箱使用文件存储的共享 JetStream `CLAWSYNAPSE_MESSAGES` stream，subject 为 `clawsynapse.msg.*.inbox`，Limits retention 默认 7 天。初始化不改写现有 stream 的其他 subject，也不清除其他 Bot 消息；不兼容的现有 stream 失败关闭。
 - 每 Bot 使用固定 durable pull consumer、explicit ACK。有效签名消息和待投递工作在本地 fsync 后才 ACK；重投按发送 Bot+消息 ID 去重。签名历史消息可归档，过期命令生成 execution.expired，而历史反馈仅作为数据消费。
 - 本地 publication/outbox、幂等键、接收游标、admitted work 均持久化。发布接口成功只表示 JetStream durable ACK，不回退 Core NATS。输出事件先与工作序号原子写入本地 outbox，再按执行顺序重试发送；原始目标 agentId 与 metadata.dsynapseChat 的 chatId/messageId 保留，历史上下文不重复到每个 delta。

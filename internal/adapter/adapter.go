@@ -71,3 +71,23 @@ func (e *ExecutionError) Error() string {
 }
 
 func (e *ExecutionError) Unwrap() error { return e.Err }
+
+// SafeMessage returns an allowlisted public diagnostic, never the wrapped error.
+func (e *ExecutionError) SafeMessage() string {
+	switch e.Code {
+	case "invalid_model":
+		return "The selected model is invalid or unavailable. Choose a model supported by this Harness."
+	case "provider_quota":
+		return "The model provider's quota or free usage limit has been reached."
+	case "provider_auth":
+		return "The model provider rejected authentication. Check the provider credentials and access."
+	case "native_transport":
+		return "The connection to the model provider failed; execution may have started."
+	case "session_unavailable":
+		return "The native session is unavailable; create a new session explicitly."
+	case "native_failed":
+		return "The native Harness reported an execution failure."
+	default:
+		return ""
+	}
+}

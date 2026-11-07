@@ -29,7 +29,8 @@ daemon 只监听 loopback；无 `Authorization` 的本机请求可完整管理�
 
 | 方法与路径 | 成功状态 / code | data |
 |---|---|---|
-| `GET /v2/health` | 200 `daemon.healthy` | `activeBots`, `failedBots`, `botsCount`, `version`, `recoveryIssues`, `capabilities: ["console","workspace_binding"]` |
+| `GET /v2/health` | 200 `daemon.healthy` | `activeBots`, `failedBots`, `botsCount`, `version`, `recoveryIssues`, `capabilities: ["console","workspace_binding","harness_models"]` |
+| `GET /v2/harnesses/{adapter}/models` | 200 `harness.models` | `catalog: {adapter, models: [{id, displayName}], defaultModel, defaultKnown}` |
 | `GET /v2/bots` | 200 `bots.list` | `items: BotInfo[]`，按 botId 排序 |
 | `POST /v2/bots` | 201 `bot.created` | `bot: BotInfo` |
 | `POST /v2/workspaces/{workspaceId}/binding` | 200 `workspace.bound` | `bot: BotInfo`, `token: string`（该 Bot 的 scoped token） |
@@ -58,6 +59,18 @@ Console 示例：`{"displayName":"inbox","role":"console"}`。Role 不是管理�
 配置更新是**完整替换 + revision CAS**：先 GET `data.config`，修改后原样 PUT，必须提交当前 `revision` 和原 `role`。缺失 Role 或普通更新切换 Role 均拒绝，即使同时调整 Harness 也不允许。运行/过渡中更新返回 409 `bot.must_stop`；revision 过期为 409 `bot.revision_conflict`。成功递增 revision；Agent 的 `bindingRevision` 由服务器控制，Harness 绑定变更会产生新绑定和独立工作区/产品会话，纯 schema 迁移保留原修订。Console 不构造执行 Binding；旧 bindingRevision 可保留为历史文件路径元数据。校验失败为 400 `bot.config_invalid`。完整字段、默认值见 operations。
 
 生命周期请求无须 body。start/stop 是异步接纳，轮询 Bot 信息直到 running/stopped/failed；202 不表示已经就绪。状态有 `stopped|starting|running|stopping|failed|archived`。archive 必须先停止并等待，保留身份、状态、文件引用；restore 只恢复到 stopped。未知 Bot 为 404 `bot.not_found`；归档 Bot 启动为 409 `bot.archived`；冲突为 409 `bot.transition_conflict` / `bot.must_stop`。OpenClaw/Webhook 缺少明确 instance 为 400 `bot.binding_invalid`，未归档 Bot 共享同种 adapter 的 instance 为 409 `bot.binding_shared`。
+
+### 原生 Harness 模型目录
+
+`GET /v2/harnesses/{adapter}/models?workspaceId=<desktop-workspace-id>` 使用 daemon 继承的环境（含 PATH、HOME、原生引擎配置与认证），不是桌面应用的 shell。可选 `workspaceId` 仅校验上述标识符格式，不是文件路径，不认领或切换任何 Harness 工作区；工作区绑定对应 Console，而非 Agent Binding。可选 `botId` 验证现有 Bot 与 adapter 一致，但查询仍使用新 Binding 的上下文：每次在 daemon `dataDir/bots` 下建立空白 0700 临时目录，退出后移除，不读取旧会话或进入桌面项目。创建及模型更新校验使用相同查询方式。
+
+响应例：`{"ok":true,"code":"harness.models","data":{"catalog":{"adapter":"opencode","models":[{"id":"provider/native-model","displayName":"provider/native-model"}],"defaultModel":"","defaultKnown":false}},"ts":1710000000000}`。该例仅展示结构，不是内置目录。`models` 按原生 ID 排序并去重，空目录保持空；不生成备选模型。OpenCode/omp/pi 的 ID 是 `provider/model`；Codex 使用 `model/list` 的 `model`，不是展示别名。
+
+读取命令：OpenCode `models --standalone`；omp `models --json --no-extensions`；pi `--list-models --no-extensions --no-mcp --no-skills --no-context-files --no-approve`；Codex `app-server --listen stdio://`，依次 `initialize`、`initialized`、分页 `model/list`，再只读取 `config/read` 的已解析 `config.model`。不发送模型 prompt，不执行推理，不修改用户配置，不刷新目录，不加载项目扩展。每次查询最长 30 秒，总原生输出有界，退出/取消清理子进程树；目录响应为 `Cache-Control: no-store`。
+
+只有 Codex 的实际已解析配置明确返回模型且属于该目录时，`defaultKnown=true`、`defaultModel` 为该 ID。其他引擎以及无法解析的 Codex 默认均为 `defaultKnown=false`、`defaultModel=""`，不依据第一项、`isDefault`、历史会话或客户端猜测默认值。OpenClaw（含 `default` adapter）返回 400 `harness.models_instance_managed`：模型由专属引擎实例管理，不允许逐 Bot 覆盖；不支持的 Harness 返回 400 `harness.models_unsupported`。
+
+创建 Agent 时非空 `harness.model` 必须属于实际目录；完整配置更新仅在非空显式模型或其 adapter 改变时查询，纯名称等更新及清空模型不探测引擎。非法模型在持久化身份/配置前返回 400 `harness.model_invalid`。查询不可用、格式不兼容、失败、超时分别返回 503 `harness.models_unavailable`、502 `harness.models_invalid`、502 `harness.models_failed`、504 `harness.models_timeout`；输出超限为 502 `harness.models_output_limit`。安全错误不包含原生 stdout/stderr、提示词或凭据。与其他 daemon 管理操作一样，目录只接受本机管理请求，Bot scoped token 无权调用。
 
 ## Bot 业务路由
 

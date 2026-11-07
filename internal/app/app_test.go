@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"clawsynapse/internal/adapter"
 	"clawsynapse/internal/config"
 	"clawsynapse/pkg/types"
 )
@@ -113,6 +114,9 @@ func TestBotCreationIdentityAndCredentialIsolation(t *testing.T) {
 
 func TestConfigCASBindingChangeAndArchiveKeepIdentity(t *testing.T) {
 	a := testDaemon(t)
+	a.manager.modelQuery = func(context.Context, string, string) (adapter.ModelCatalog, error) {
+		return adapter.ModelCatalog{Adapter: "opencode", Models: []adapter.ModelInfo{{ID: "opencode/glm-5.3-flash-free", DisplayName: "test"}}}, nil
+	}
 	id := newTestBot(t, a, "before")
 	before, _ := a.manager.Info(id)
 	cfg, _ := a.manager.Config(id)

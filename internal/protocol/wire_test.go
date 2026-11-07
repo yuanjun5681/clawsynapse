@@ -3,6 +3,7 @@ package protocol
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"testing"
 )
 
@@ -90,5 +91,46 @@ func TestSignatureSurvivesStructuredInputRoundTripWithoutNumberLoss(t *testing.T
 	}
 	if ed25519.Verify(pub, changed, sig) {
 		t.Fatal("rounded numeric value verified")
+	}
+}
+
+func TestRunFailedMessageStrictRoundTrip(t *testing.T) {
+	data := []byte(`{"type":"run.failed","payload":{"code":"invalid_model","stage":"validation","message":"The selected model is invalid."}}`)
+	var first MessageEnvelope
+	if err := DecodeStrict(data, &first); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var second MessageEnvelope
+	if err := DecodeStrict(encoded, &second); err != nil || second.Payload.Message != first.Payload.Message || second.Payload.Message == "" {
+		t.Fatalf("failure message did not round trip: %#v / %v", second, err)
+	}
+	original, err := SignedBytes("subject", first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.Payload.Message = "changed"
+	changed, err := SignedBytes("subject", second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(original) == string(changed) {
+		t.Fatal("failure message was not signature-bound")
+	}
+	for _, invalid := range []string{
+		`{"type":"run.failed","payload":{"message":123}}`,
+		`{"type":"run.failed","payload":{"message":{}}}`,
+		`{"type":"run.failed","payload":{"message":"one","message":"two"}}`,
+	} {
+		if err := DecodeStrict([]byte(invalid), &second); err == nil {
+			t.Fatalf("accepted invalid failure message: %s", invalid)
+		}
+	}
+	var legacy MessageEnvelope
+	if err := DecodeStrict([]byte(`{"type":"run.failed","payload":{"code":"native_failed"}}`), &legacy); err != nil || legacy.Payload.Message != "" {
+		t.Fatalf("optional message broke existing failures: %#v / %v", legacy, err)
 	}
 }

@@ -45,7 +45,7 @@ func (s *nativeStream) consumePiFamily(line []byte) error {
 		return malformedNative()
 	}
 	if event.Type == "error" || event.Type == "aborted" || event.Aborted || hasNativeError(event.Error) {
-		return s.failPiNative(line)
+		return s.failPiNative(event.Error)
 	}
 	if s.pi == nil {
 		s.pi = &piStreamState{}
@@ -61,7 +61,10 @@ func (s *nativeStream) consumePiFamily(line []byte) error {
 		return malformedNative()
 	}
 	switch event.Type {
+	case "tool_execution_start", "tool_execution_update", "tool_execution_end":
+		s.active = true
 	case "agent_start", "turn_start":
+		s.active = true
 		state.role = ""
 		state.deltas = false
 		state.terminal = false
@@ -72,6 +75,9 @@ func (s *nativeStream) consumePiFamily(line []byte) error {
 			return malformedNative()
 		}
 		state.role = event.Message.Role
+		if state.role != "user" {
+			s.active = true
+		}
 		if state.role == "assistant" {
 			state.deltas = false
 			state.terminal = false
@@ -83,8 +89,15 @@ func (s *nativeStream) consumePiFamily(line []byte) error {
 			return malformedNative()
 		}
 		if update.Type == "error" || hasNativeError(update.Error) || update.Type == "done" && update.Reason != "stop" && update.Reason != "toolUse" {
-			return s.failPiNative(line)
+			if hasNativeError(update.Error) {
+				return s.failPiNative(update.Error)
+			}
+			if event.Message != nil {
+				return s.failPiMessage(event.Message.ErrorMessage)
+			}
+			return s.failPiNative(nil)
 		}
+		s.active = true
 		// Only an assistant's incremental text may stream. Thinking and tool
 		// deltas are ignored even when they carry a delta/text property.
 		if update.Type != "text_delta" {
@@ -109,13 +122,13 @@ func (s *nativeStream) consumePiFamily(line []byte) error {
 			return malformedNative()
 		}
 		if event.Message.Role == "assistant" {
-			return s.finishPiMessage(event.Message, line)
+			return s.finishPiMessage(event.Message)
 		}
 	case "turn_end":
 		if event.Message == nil || event.Message.Role != "assistant" {
 			return malformedNative()
 		}
-		return s.finishPiMessage(event.Message, line)
+		return s.finishPiMessage(event.Message)
 	case "agent_end":
 		// agent_end includes snapshots for the entire run. Inspect the last
 		// assistant terminal but never publish these snapshots a second time.
@@ -125,7 +138,7 @@ func (s *nativeStream) consumePiFamily(line []byte) error {
 				return malformedNative()
 			}
 			if last.StopReason != "stop" || last.ErrorMessage != "" {
-				return s.failPiNative(line)
+				return s.failPiMessage(last.ErrorMessage)
 			}
 		}
 		if !state.terminal || state.stopReason != "stop" {
@@ -142,19 +155,19 @@ func (s *nativeStream) consumePiFamily(line []byte) error {
 	return nil
 }
 
-func (s *nativeStream) finishPiMessage(message *piMessage, line []byte) error {
+func (s *nativeStream) finishPiMessage(message *piMessage) error {
 	if s.completed {
 		return malformedNative()
 	}
 	if message.ErrorMessage != "" {
-		return s.failPiNative(line)
+		return s.failPiMessage(message.ErrorMessage)
 	}
 	switch message.StopReason {
 	case "stop", "toolUse":
 	case "":
 		return malformedNative()
 	default:
-		return s.failPiNative(line)
+		return s.failPiNative(nil)
 	}
 	state := s.pi
 	if state.terminal {
@@ -188,9 +201,14 @@ func (s *nativeStream) finishPiMessage(message *piMessage, line []byte) error {
 	return s.emitter.flush()
 }
 
-func (s *nativeStream) failPiNative(line []byte) error {
+func (s *nativeStream) failPiMessage(message string) error {
+	raw, _ := json.Marshal(message)
+	return s.failPiNative(raw)
+}
+
+func (s *nativeStream) failPiNative(raw json.RawMessage) error {
 	if err := s.emitter.flush(); err != nil {
 		return err
 	}
-	return nativeFailure(line)
+	return nativeFailure(raw, s.active)
 }

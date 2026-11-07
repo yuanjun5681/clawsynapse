@@ -136,12 +136,14 @@ type MessageEnvelope struct {
 
 // MessagePayload separates user input from transport and execution state.
 type MessagePayload struct {
-	Text          string          `json:"text,omitempty"`
-	Instruction   string          `json:"instruction,omitempty"`
-	Input         json.RawMessage `json:"input,omitempty"`
-	Channel       string          `json:"channel,omitempty"`
-	Code          string          `json:"code,omitempty"`
-	Stage         string          `json:"stage,omitempty"`
-	Indeterminate bool            `json:"indeterminate,omitempty"`
-	AdapterRunID  string          `json:"adapterRunId,omitempty"`
+	Text        string          `json:"text,omitempty"`
+	Instruction string          `json:"instruction,omitempty"`
+	Input       json.RawMessage `json:"input,omitempty"`
+	Channel     string          `json:"channel,omitempty"`
+	Code        string          `json:"code,omitempty"`
+	Stage       string          `json:"stage,omitempty"`
+	// Message is an optional sanitized diagnostic for run.failed, not native output.
+	Message       string `json:"message,omitempty"`
+	Indeterminate bool   `json:"indeterminate,omitempty"`
+	AdapterRunID  string `json:"adapterRunId,omitempty"`
 }
