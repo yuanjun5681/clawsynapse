@@ -802,3 +802,34 @@ func TestAnnounceHarnessBindingRefreshAndMissingFields(t *testing.T) {
 		})
 	}
 }
+
+func TestNewDepartureMessageSignsVerifiableEnvelope(t *testing.T) {
+	id := testIdentity(9)
+	msg, err := newDepartureMessage(id, "bot-alpha", "shutdown", 123456789)
+	if err != nil {
+		t.Fatalf("new departure message: %v", err)
+	}
+	if msg.ProtocolVersion != "v2" || msg.MessageType != "discovery.depart" || msg.BotID != "bot-alpha" || msg.Reason != "shutdown" || msg.Ts != 123456789 {
+		t.Fatalf("unexpected departure message: %+v", msg)
+	}
+	if msg.MessageID == "" {
+		t.Fatal("departure message id is empty")
+	}
+	signed, err := protocol.SignedBytes(departSubject, msg)
+	if err != nil {
+		t.Fatalf("signed bytes: %v", err)
+	}
+	if !identity.Verify(id.PublicKey, signed, msg.Signature) {
+		t.Fatal("departure signature did not verify")
+	}
+}
+
+func TestPublishDepartureRequiresBusAndIdentity(t *testing.T) {
+	id := testIdentity(10)
+	if err := PublishDeparture(nil, id, "bot-alpha", "shutdown"); err == nil {
+		t.Fatal("expected error for nil bus")
+	}
+	if err := PublishDeparture(nil, nil, "bot-alpha", "shutdown"); err == nil {
+		t.Fatal("expected error for nil identity")
+	}
+}

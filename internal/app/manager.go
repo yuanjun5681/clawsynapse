@@ -65,6 +65,7 @@ type Manager struct {
 	tokens     map[string][32]byte
 	blobs      *blob.Store
 	scheduler  *adapter.Scheduler
+	purges     sync.WaitGroup
 	closing    bool
 	recovery   []string
 	modelQuery func(context.Context, string, string) (adapter.ModelCatalog, error)
@@ -269,6 +270,10 @@ func (m *Manager) Info(id string) (api.BotInfo, error) {
 		return api.BotInfo{}, err
 	}
 	b.mu.Lock()
+	if b.info.State == "deleting" {
+		b.mu.Unlock()
+		return api.BotInfo{}, api.Failure(409, "bot.busy", "Bot is deleting")
+	}
 	info := b.info
 	r := b.runtime
 	if r != nil && b.info.State == "running" {
@@ -312,6 +317,9 @@ func (m *Manager) Config(id string) (config.BotConfig, error) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.info.State == "deleting" {
+		return config.BotConfig{}, api.Failure(409, "bot.busy", "Bot is deleting")
+	}
 	return cloneConfig(b.cfg), nil
 }
 func (m *Manager) Authenticate(token string) (string, bool) {
@@ -505,6 +513,9 @@ func (m *Manager) Update(id string, cfg config.BotConfig) (api.BotInfo, error) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.info.State == "deleting" {
+		return api.BotInfo{}, api.Failure(409, "bot.busy", "Bot is deleting")
+	}
 	if b.info.State == "running" || b.info.State == "starting" || b.info.State == "stopping" {
 		return api.BotInfo{}, api.Failure(409, "bot.must_stop", "stop Bot before changing configuration")
 	}
@@ -559,6 +570,9 @@ func (m *Manager) Transition(id, op string) (api.BotInfo, error) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.info.State == "deleting" {
+		return api.BotInfo{}, api.Failure(409, "bot.busy", "Bot is deleting")
+	}
 	m.mu.RLock()
 	closing := m.closing
 	m.mu.RUnlock()
@@ -698,6 +712,10 @@ func (m *Manager) Acquire(id string, write bool) (http.Handler, func(), error) {
 		return nil, nil, err
 	}
 	b.mu.Lock()
+	if b.info.State == "deleting" {
+		b.mu.Unlock()
+		return nil, nil, api.Failure(409, "bot.busy", "Bot is deleting")
+	}
 	if b.info.State == "running" && b.runtime != nil {
 		b.refs.Add(1)
 		handler := b.runtime.Handler()
@@ -726,7 +744,10 @@ func (m *Manager) Resume() {
 	m.mu.RUnlock()
 	for _, b := range entries {
 		b.mu.Lock()
-		if b.info.DesiredState == "running" && !b.info.Archived {
+		m.mu.RLock()
+		closing := m.closing
+		m.mu.RUnlock()
+		if !closing && b.info.DesiredState == "running" && !b.info.Archived && (b.info.State == "stopped" || b.info.State == "failed") && b.runtime == nil {
 			b.info.State = "starting"
 			b.transition.Add(1)
 			go m.start(b)
@@ -776,6 +797,9 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 			}(b)
 		}
 		wg.Wait()
+		// A purge can remove its Bot before this shutdown snapshots the catalog.
+		// Closing prevents new registrations; join removed Bots' cleanup as well.
+		m.purges.Wait()
 		m.scheduler.Close()
 		close(done)
 	}()

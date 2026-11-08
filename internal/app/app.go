@@ -38,6 +38,7 @@ type Runtime struct {
 	auth      *auth.Service
 	trust     *trust.Service
 	messaging *messaging.Service
+	identity  *identity.Identity
 	transfer  *transfer.Service
 	bus       *natsbus.Client
 	harness   adapter.AgentAdapter
@@ -69,6 +70,7 @@ func NewRuntime(d config.DaemonConfig, b config.BotConfig, botID, version string
 	if err != nil {
 		return nil, err
 	}
+	r.identity = id
 	busCtx, busCancel := context.WithCancel(context.Background())
 	r.busCancel = busCancel
 	r.bus, err = natsbus.Connect(busCtx, cfg.NATSServers, "clawsynapsed-"+botID, natsbus.Options{CredentialsFile: cfg.NATSCredentialsFile, TLSCAFile: cfg.NATSTLSCAFile, TLSCertFile: cfg.NATSTLSCertFile, TLSKeyFile: cfg.NATSTLSKeyFile, TLSServerName: cfg.NATSTLSServerName})

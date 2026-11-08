@@ -160,3 +160,41 @@ func TestExpiredExecutionNeverAcquires(t *testing.T) {
 		t.Fatalf("expired execution admitted: %v", err)
 	}
 }
+
+func TestBotLimiterSnapshotReportsRunningAndQueued(t *testing.T) {
+	s := NewScheduler(2)
+	defer s.Close()
+	b := s.ForBot("a", 1, 1)
+
+	_, release, err := b.Acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if running, queued := b.Snapshot(); running != 1 || queued != 0 {
+		t.Fatalf("snapshot = %d running, %d queued; want 1, 0", running, queued)
+	}
+
+	admitted := make(chan func(), 1)
+	go func() {
+		_, done, err := b.Acquire(context.Background())
+		if err != nil {
+			admitted <- nil
+			return
+		}
+		admitted <- done
+	}()
+	waitQueued(t, b, 1)
+	if running, queued := b.Snapshot(); running != 1 || queued != 1 {
+		t.Fatalf("snapshot = %d running, %d queued; want 1, 1", running, queued)
+	}
+
+	release()
+	done := <-admitted
+	if done == nil {
+		t.Fatal("queued execution was not admitted")
+	}
+	done()
+	if running, queued := b.Snapshot(); running != 0 || queued != 0 {
+		t.Fatalf("snapshot = %d running, %d queued; want 0, 0", running, queued)
+	}
+}

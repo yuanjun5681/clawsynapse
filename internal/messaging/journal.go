@@ -32,6 +32,21 @@ type RequestState struct {
 	Events      []protocol.MessageEnvelope `json:"events"`
 }
 
+// IdleState is a point-in-time view of work the messaging service still owns.
+// ActiveWork includes durable work and currently executing local notifications.
+// Inbox is diagnostic: received history is retained after work completes.
+type IdleState struct {
+	PendingPublications int `json:"pendingPublications"`
+	PendingCommands     int `json:"pendingCommands"`
+	ActiveWork          int `json:"activeWork"`
+	Inbox               int `json:"inbox"`
+}
+
+// Idle reports whether all in-flight work has reached a terminal state.
+func (s IdleState) Idle() bool {
+	return s.PendingPublications == 0 && s.PendingCommands == 0 && s.ActiveWork == 0
+}
+
 type publication struct {
 	Message     protocol.MessageEnvelope `json:"message"`
 	Key         string                   `json:"key,omitempty"`

@@ -55,9 +55,25 @@ func (c *Client) MessagingInbox(botID string) (*nats.Subscription, error) {
 	if err := c.EnsureMessagingStream(); err != nil {
 		return nil, err
 	}
-	digest := sha256.Sum256([]byte(botID))
-	durable := "node_" + hex.EncodeToString(digest[:16])
-	return c.JetStream().PullSubscribe("clawsynapse.msg."+botID+".inbox", durable,
+	return c.JetStream().PullSubscribe("clawsynapse.msg."+botID+".inbox", messagingDurable(botID),
 		nats.BindStream(messagesStream), nats.ManualAck(), nats.AckExplicit(),
 		nats.AckWait(30*time.Second), nats.MaxAckPending(128), nats.DeliverAll())
+}
+
+func messagingDurable(botID string) string {
+	digest := sha256.Sum256([]byte(botID))
+	return "node_" + hex.EncodeToString(digest[:16])
+}
+
+// DeleteMessagingConsumer removes only this Bot's durable consumer. The shared
+// stream and every other Bot's messages are left untouched.
+func (c *Client) DeleteMessagingConsumer(botID string) error {
+	js := c.JetStream()
+	if js == nil {
+		return errors.New("JetStream is required for messaging")
+	}
+	if err := js.DeleteConsumer(messagesStream, messagingDurable(botID)); err != nil && !errors.Is(err, nats.ErrConsumerNotFound) {
+		return err
+	}
+	return nil
 }

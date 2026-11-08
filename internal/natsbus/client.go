@@ -299,6 +299,14 @@ func (c *Client) Quiesce() {
 	c.callbacks.Wait()
 }
 
+// ResumeCallbacks reopens a completed Quiesce after a rejected purge. Callers
+// must not resume while Quiesce is still joining admitted callbacks.
+func (c *Client) ResumeCallbacks() {
+	c.callbackMu.Lock()
+	c.quiescing = false
+	c.callbackMu.Unlock()
+}
+
 func (c *Client) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()

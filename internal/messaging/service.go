@@ -34,6 +34,8 @@ const (
 
 var ErrIdempotencyConflict = errors.New("idempotency key already used for different content")
 
+var errAdmissionsFrozen = errors.New("messaging admissions frozen")
+
 type PublishRequest struct {
 	TargetBot      string
 	Type           string
@@ -75,6 +77,8 @@ type Service struct {
 	wake                [workerCount]chan struct{}
 	sub                 *nats.Subscription
 	started             bool
+	admissionsFrozen    bool
+	localActive         int
 	journal             *messageJournal
 	limiter             *adapter.BotLimiter
 }
@@ -124,16 +128,33 @@ func (s *Service) SetMessageHandler(handler MessageHandler) {
 
 // HandleLocalNotification shares role dispatch with inbox deliveries. The file
 // module owns durable file records; Console never turns its callback into a Run.
+// Active callbacks remain visible to IdleState until their handlers return.
 func (s *Service) HandleLocalNotification(msg IncomingMessage) error {
 	s.mu.Lock()
+	if s.ctx.Err() != nil {
+		s.mu.Unlock()
+		return s.ctx.Err()
+	}
+	if s.admissionsFrozen {
+		s.mu.Unlock()
+		return errAdmissionsFrozen
+	}
 	role, handler := s.role, s.handler
-	s.mu.Unlock()
 	if role == config.RoleConsole {
+		s.mu.Unlock()
 		return nil
 	}
 	if handler == nil {
+		s.mu.Unlock()
 		return errors.New("message handler unavailable")
 	}
+	s.localActive++
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.localActive--
+		s.mu.Unlock()
+	}()
 	_, err := handler.HandleMessage(msg)
 	return err
 }
@@ -213,6 +234,23 @@ func (s *Service) Close() {
 	}
 }
 
+// FreezeAdmissions prevents new inbox, external publication, and local callback
+// admissions without canceling the runtime or interrupting existing work.
+// The same lock guards admissions and their idle accounting, including journal
+// mutation, so late inbox fetches cannot introduce work after a frozen idle view.
+func (s *Service) FreezeAdmissions() {
+	s.mu.Lock()
+	s.admissionsFrozen = true
+	s.mu.Unlock()
+}
+
+// ResumeAdmissions reopens admission after an abandoned purge attempt.
+func (s *Service) ResumeAdmissions() {
+	s.mu.Lock()
+	s.admissionsFrozen = false
+	s.mu.Unlock()
+}
+
 func inboxSubject(botID string) string { return "clawsynapse.msg." + botID + ".inbox" }
 
 func validToken(value string) bool {
@@ -287,6 +325,9 @@ func (s *Service) enqueue(req PublishRequest, work *admittedWork) (publication, 
 	defer s.mu.Unlock()
 	if s.ctx.Err() != nil {
 		return publication{}, s.ctx.Err()
+	}
+	if work == nil && s.admissionsFrozen {
+		return publication{}, errAdmissionsFrozen
 	}
 	if s.journal == nil || s.journal.file == nil {
 		return publication{}, errors.New("durable messaging state is required")
@@ -487,6 +528,28 @@ func (s *Service) MessagesAfter(after uint64, limit int) MessagesPage {
 	return cloneJSON(page)
 }
 
+func (s *Service) IdleState() IdleState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state := IdleState{ActiveWork: s.localActive}
+	if s.journal == nil {
+		return state
+	}
+	for _, id := range s.journal.pending {
+		if pub := s.journal.publications[id]; pub != nil && !pub.Published {
+			state.PendingPublications++
+		}
+	}
+	state.PendingCommands = s.journal.pendingCommands
+	for _, work := range s.journal.work {
+		if work.State != "done" {
+			state.ActiveWork++
+		}
+	}
+	state.Inbox = len(s.journal.inbox)
+	return state
+}
+
 func (s *Service) Request(messageID string) (RequestState, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -570,7 +633,7 @@ func (s *Service) handleInbox(subject string, data []byte) bool {
 		return true
 	}
 	s.mu.Lock()
-	if s.journal == nil {
+	if s.admissionsFrozen || s.ctx.Err() != nil || s.journal == nil {
 		s.mu.Unlock()
 		return false
 	}

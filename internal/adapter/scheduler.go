@@ -74,6 +74,13 @@ func (s *Scheduler) ForBot(botID string, maxConcurrent, maxQueued int) *BotLimit
 // work. A receiver can leave excess commands on its durable transport.
 func (b *BotLimiter) Capacity() int { return b.max + b.maxQueued }
 
+// Snapshot reports currently running executions and waiting queue depth.
+func (b *BotLimiter) Snapshot() (running, queued int) {
+	b.scheduler.mu.Lock()
+	defer b.scheduler.mu.Unlock()
+	return b.running, len(b.queue)
+}
+
 // Acquire returns a context canceled by either the caller or this Bot's Close.
 // The caller must release every acquired slot, after the child has exited.
 func (b *BotLimiter) Acquire(ctx context.Context) (context.Context, func(), error) {

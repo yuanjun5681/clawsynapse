@@ -272,6 +272,39 @@ func (s *Service) publishDepart(reason string) error {
 	return s.bus.PublishJSON(departSubject, msg)
 }
 
+// PublishDeparture announces that a Bot is leaving without requiring a
+// running discovery Service, so it remains usable during shutdown.
+func PublishDeparture(bus *natsbus.Client, id *identity.Identity, botID, reason string) error {
+	if bus == nil {
+		return errors.New("nats client is required")
+	}
+	if id == nil {
+		return errors.New("identity is required")
+	}
+	msg, err := newDepartureMessage(id, botID, reason, time.Now().UnixMilli())
+	if err != nil {
+		return err
+	}
+	return bus.PublishJSON(departSubject, msg)
+}
+
+func newDepartureMessage(id *identity.Identity, botID, reason string, ts int64) (protocol.DiscoveryDepart, error) {
+	msg := protocol.DiscoveryDepart{
+		ProtocolVersion: "v2",
+		MessageID:       randID(),
+		MessageType:     "discovery.depart",
+		BotID:           botID,
+		Reason:          reason,
+		Ts:              ts,
+	}
+	signed, err := protocol.SignedBytes(departSubject, msg)
+	if err != nil {
+		return protocol.DiscoveryDepart{}, err
+	}
+	msg.Signature = identity.Sign(id.PrivateKey, signed)
+	return msg, nil
+}
+
 func (s *Service) handleAnnounce(subject string, data []byte) {
 	var msg protocol.DiscoveryAnnounce
 	if subject != announceSubject || len(data) > maxDiscoveryBytes {

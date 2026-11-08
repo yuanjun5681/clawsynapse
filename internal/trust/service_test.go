@@ -171,3 +171,110 @@ func mustJSON(t *testing.T, v any) []byte {
 	}
 	return data
 }
+
+func TestRevokeAllRejectsPendingAndRevokesTargetsWithoutDeadlock(t *testing.T) {
+	svc, _, _ := newTrustTestService(t, false)
+	var published []publishedMessage
+	svc.publishJSON = func(subject string, payload any) error {
+		published = append(published, publishedMessage{subject: subject, payload: payload})
+		return nil
+	}
+
+	svc.mu.Lock()
+	svc.state.Trusted = []store.TrustPeerState{{BotID: "bot-beta"}}
+	svc.state.Pending = []store.TrustPendingState{
+		{RequestID: "out-1", From: "bot-alpha", To: "bot-gamma", Direction: "outbound"},
+		{RequestID: "in-1", From: "bot-delta", To: "bot-alpha", Direction: "inbound"},
+	}
+	svc.mu.Unlock()
+
+	type result struct {
+		revoked  []string
+		warnings []string
+	}
+	done := make(chan result, 1)
+	go func() {
+		revoked, warnings := svc.RevokeAll("purge")
+		done <- result{revoked: revoked, warnings: warnings}
+	}()
+
+	var got result
+	select {
+	case got = <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("RevokeAll deadlocked")
+	}
+	if len(got.warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", got.warnings)
+	}
+	if len(got.revoked) != 2 || got.revoked[0] != "bot-beta" || got.revoked[1] != "bot-gamma" {
+		t.Fatalf("revoked = %v, want [bot-beta bot-gamma]", got.revoked)
+	}
+	if len(svc.state.Trusted) != 0 || len(svc.state.Pending) != 0 {
+		t.Fatalf("trust state not cleared: %+v", svc.state)
+	}
+	if len(svc.state.Revoked) != 2 {
+		t.Fatalf("revoked state = %+v", svc.state.Revoked)
+	}
+	if len(published) != 3 {
+		t.Fatalf("published = %d, want reject + 2 revokes", len(published))
+	}
+}
+
+func TestRemovePeerScrubsTrustStateRegistryAndAttrs(t *testing.T) {
+	svc, peers, peerID := newTrustTestService(t, false)
+	const other = "bot-other"
+	peers.Upsert(types.Peer{BotID: other})
+	peers.SetLocalAttrs(peerID.botID, types.PeerLocalAttrs{Alias: "beta"})
+	peers.SetLocalAttrs(other, types.PeerLocalAttrs{Alias: "other"})
+
+	svc.mu.Lock()
+	svc.state.Trusted = []store.TrustPeerState{{BotID: peerID.botID}, {BotID: other}}
+	svc.state.Pending = []store.TrustPendingState{{RequestID: "in-1", From: peerID.botID, To: "bot-alpha", Direction: "inbound"}}
+	svc.state.Rejected = []store.TrustPeerState{{BotID: peerID.botID}}
+	svc.state.Revoked = []store.TrustPeerState{{BotID: peerID.botID}}
+	svc.mu.Unlock()
+
+	attrs := store.PeerAttrsState{SchemaVersion: 1, Peers: map[string]types.PeerLocalAttrs{
+		peerID.botID: {Alias: "beta"},
+		other:        {Alias: "other"},
+	}}
+	if err := svc.store.SavePeerAttrsState(attrs); err != nil {
+		t.Fatalf("save peer attrs: %v", err)
+	}
+
+	if err := svc.RemovePeer(peerID.botID); err != nil {
+		t.Fatalf("remove peer: %v", err)
+	}
+
+	persisted, err := svc.store.LoadTrustState()
+	if err != nil {
+		t.Fatalf("load trust state: %v", err)
+	}
+	if len(persisted.Trusted) != 1 || persisted.Trusted[0].BotID != other {
+		t.Fatalf("persisted trusted = %+v", persisted.Trusted)
+	}
+	if len(persisted.Pending) != 0 || len(persisted.Rejected) != 0 || len(persisted.Revoked) != 0 {
+		t.Fatalf("persisted trust state retained peer: %+v", persisted)
+	}
+
+	loaded, err := svc.store.LoadPeerAttrsState()
+	if err != nil {
+		t.Fatalf("load peer attrs: %v", err)
+	}
+	if _, ok := loaded.Peers[peerID.botID]; ok {
+		t.Fatal("peer attrs still contain removed peer")
+	}
+	if _, ok := loaded.Peers[other]; !ok {
+		t.Fatal("peer attrs dropped unrelated peer")
+	}
+	if _, ok := peers.Get(peerID.botID); ok {
+		t.Fatal("registry still contains removed peer")
+	}
+	if _, ok := peers.Get(other); !ok {
+		t.Fatal("registry dropped unrelated peer")
+	}
+	if _, ok := peers.LocalAttrsSnapshot()[peerID.botID]; ok {
+		t.Fatal("registry local attrs still contain removed peer")
+	}
+}

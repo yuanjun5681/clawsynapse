@@ -34,6 +34,9 @@ func (securityManager) Update(id string, _ config.BotConfig) (BotInfo, error) {
 func (securityManager) Transition(id string, _ string) (BotInfo, error) {
 	return BotInfo{BotID: id}, nil
 }
+func (securityManager) Purge(id string) (PurgeResult, error) {
+	return PurgeResult{BotID: id, Revoked: []string{}, Warnings: []string{}}, nil
+}
 func (securityManager) Acquire(string, bool) (http.Handler, func(), error) {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		success(w, http.StatusOK, "business.ok", map[string]any{"path": r.URL.Path})

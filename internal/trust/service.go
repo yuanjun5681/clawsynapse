@@ -179,6 +179,91 @@ func (s *Service) Revoke(targetBot, reason string) error {
 	return nil
 }
 
+// RevokeAll withdraws every trust relationship and rejects inbound requests.
+// Deletion is best-effort: failures are reported as warnings, never as an
+// error, so one unreachable peer cannot block local cleanup.
+func (s *Service) RevokeAll(reason string) (revoked []string, warnings []string) {
+	s.mu.Lock()
+	targets := make([]string, 0, len(s.state.Trusted)+len(s.state.Pending))
+	seen := make(map[string]bool, len(s.state.Trusted)+len(s.state.Pending))
+	for _, t := range s.state.Trusted {
+		if !seen[t.BotID] {
+			seen[t.BotID] = true
+			targets = append(targets, t.BotID)
+		}
+	}
+	type inboundRequest struct {
+		requestID string
+		from      string
+	}
+	var inbound []inboundRequest
+	for _, p := range s.state.Pending {
+		switch p.Direction {
+		case "outbound":
+			if !seen[p.To] {
+				seen[p.To] = true
+				targets = append(targets, p.To)
+			}
+		case "inbound":
+			inbound = append(inbound, inboundRequest{requestID: p.RequestID, from: p.From})
+		}
+	}
+	s.mu.Unlock()
+
+	// Reject inbound requests first: Revoke also drops every pending request
+	// for the same Bot, which would make a later Reject fail.
+	for _, req := range inbound {
+		if err := s.Reject(req.requestID, reason); err != nil {
+			warnings = append(warnings, fmt.Sprintf("reject trust request %s from %s: %v", req.requestID, req.from, err))
+		}
+	}
+	for _, target := range targets {
+		if err := s.Revoke(target, reason); err != nil {
+			warnings = append(warnings, fmt.Sprintf("revoke trust for %s: %v", target, err))
+			continue
+		}
+		revoked = append(revoked, target)
+	}
+	return revoked, warnings
+}
+
+// RemovePeer erases every local trace of a Bot: trust state, pending requests,
+// its peer registry entry, and persisted local remarks.
+func (s *Service) RemovePeer(botID string) error {
+	if botID == "" {
+		return errors.New("botID is required")
+	}
+
+	s.mu.Lock()
+	s.removeFromTrustedLocked(botID)
+	s.removeFromRejectedLocked(botID)
+	s.removeFromRevokedLocked(botID)
+	s.removePendingByBotLocked(botID)
+	err := s.persistLocked()
+	s.mu.Unlock()
+
+	if s.peers != nil {
+		s.peers.Remove(botID)
+		s.peers.SetLocalAttrs(botID, types.PeerLocalAttrs{})
+	}
+	if s.store != nil {
+		err = errors.Join(err, s.removePeerAttrs(botID))
+	}
+	return err
+}
+
+func (s *Service) removePeerAttrs(botID string) error {
+	attrs, err := s.store.LoadPeerAttrsState()
+	if err != nil {
+		return err
+	}
+	if _, ok := attrs.Peers[botID]; !ok {
+		return nil
+	}
+	delete(attrs.Peers, botID)
+	return s.store.SavePeerAttrsState(attrs)
+}
+
 func (s *Service) handleTrustRequest(subject string, data []byte) {
 	var req protocol.TrustRequest
 	if err := json.Unmarshal(data, &req); err != nil {

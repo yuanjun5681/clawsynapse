@@ -41,6 +41,7 @@ daemon 只监听 loopback；无 `Authorization` 的本机请求可完整管理�
 | `POST /v2/bots/{botId}/stop` | 202 `bot.stop` | `bot: BotInfo` |
 | `POST /v2/bots/{botId}/archive` | 200 `bot.archive` | `bot: BotInfo` |
 | `POST /v2/bots/{botId}/restore` | 200 `bot.restore` | `bot: BotInfo` |
+| `DELETE /v2/bots/{botId}` | 200 `bot.purged` | `botId`, `revoked: string[]`, `warnings: string[]` |
 
 `BotInfo` 包含 `botId`, `did`, `displayName`, `role`, `desiredState`, `state`, `archived`, `revision`, `bindingRevision`, `networkHealthy`, `harnessHealthy`, `harnessApplicable`，失败时有 `error`。Console 的 `harnessApplicable=false`、`harnessHealthy=false` 表示不适用，而非执行故障；Agent 的 Harness 为 applicable。catalog 列表不主动探测 Harness；读取单个运行 Agent 信息才查询 Harness 健康。daemon health 不等于任何模型任务已验收。
 
@@ -58,7 +59,11 @@ Console 示例：`{"displayName":"inbox","role":"console"}`。Role 不是管理�
 
 配置更新是**完整替换 + revision CAS**：先 GET `data.config`，修改后原样 PUT，必须提交当前 `revision` 和原 `role`。缺失 Role 或普通更新切换 Role 均拒绝，即使同时调整 Harness 也不允许。运行/过渡中更新返回 409 `bot.must_stop`；revision 过期为 409 `bot.revision_conflict`。成功递增 revision；Agent 的 `bindingRevision` 由服务器控制，Harness 绑定变更会产生新绑定和独立工作区/产品会话，纯 schema 迁移保留原修订。Console 不构造执行 Binding；旧 bindingRevision 可保留为历史文件路径元数据。校验失败为 400 `bot.config_invalid`。完整字段、默认值见 operations。
 
-生命周期请求无须 body。start/stop 是异步接纳，轮询 Bot 信息直到 running/stopped/failed；202 不表示已经就绪。状态有 `stopped|starting|running|stopping|failed|archived`。archive 必须先停止并等待，保留身份、状态、文件引用；restore 只恢复到 stopped。未知 Bot 为 404 `bot.not_found`；归档 Bot 启动为 409 `bot.archived`；冲突为 409 `bot.transition_conflict` / `bot.must_stop`。OpenClaw/Webhook 缺少明确 instance 为 400 `bot.binding_invalid`，未归档 Bot 共享同种 adapter 的 instance 为 409 `bot.binding_shared`。
+生命周期请求无须 body。start/stop 是异步接纳，轮询 Bot 信息直到 running/stopped/failed；202 不表示已经就绪。状态有 `stopped|starting|running|stopping|failed|archived|deleting`；`deleting` 只在删除占用期间出现在 catalog 列表。archive 必须先停止并等待，保留身份、状态、文件引用；restore 只恢复到 stopped。未知 Bot 为 404 `bot.not_found`；归档 Bot 启动为 409 `bot.archived`；冲突为 409 `bot.transition_conflict` / `bot.must_stop`。OpenClaw/Webhook 缺少明确 instance 为 400 `bot.binding_invalid`，未归档 Bot 共享同种 adapter 的 instance 为 409 `bot.binding_shared`。
+
+`DELETE /v2/bots/{botId}` 仅用于本机 Agent Bot，Console 或带 workspace binding 的身份返回 403 `bot.protected`。删除先独占该 Bot，拒绝新的生命周期、配置、信息与业务读写请求（409 `bot.busy`），冻结 HTTP 发布、NATS inbox 的持久接纳及本地执行通知，并等待已固定的业务处理器和网络控制回调退出，再作最终空闲检查。已接纳的 work 可继续完成；冻结期间新的 inbox delivery 不写 journal、不确认，拒绝删除后可重投。stopped、archived、failed 都检查持久 journal，不因启动失败而跳过待办保护。存在未完成 publication、排队命令、active work 或执行器待办，以及无法可靠检查持久状态时均返回 409 `bot.busy`，不删除数据、不撤销信任，并恢复原运行状态和新工作接纳；不会为了检查空闲而永久停止运行 Bot。这不是排空 broker 尚未被本 Bot 接纳消息的承诺。
+
+通过检查后先持久移除 catalog 记录；此提交失败时恢复原状态，不进行撤销或关闭 Runtime。提交成功后签名撤销信任并发布 departure，明确检查 NATS flush，再以该 Bot 的认证连接或配置（含独立 NATS credentials/TLS override）清理其 durable consumer，随后关闭 Runtime 并移除 `bots/<botId>`（身份密钥、API token、trust、peer 备注、sessions、transfers、workspace 副本、journal），清理其他本机 Bot 的 peer 引用并触发 blob GC。删除与 daemon 关停相互等待，不会在 Runtime 仍持有文件时删除数据。网络撤销、departure、flush、consumer、本机 peer 引用或文件/GC 清理失败会记录在 `warnings`；catalog 提交后的清理失败不恢复身份。`revoked` 仅列出本地成功提交发布的 revoke，不表示远端确认；即使 flush 成功也不保证离线远端立即清除旧信任。共享 stream 和其他 Bot 的 consumer 不受影响。重复删除已不存在的 Bot 返回 404，调用方应把 404 视为已删除。scoped Bot token 不能调用管理删除。
 
 ### 原生 Harness 模型目录
 

@@ -33,6 +33,13 @@ type BotInfo struct {
 	HarnessApplicable bool   `json:"harnessApplicable"`
 }
 
+// PurgeResult reports local deletion and best-effort peer notification.
+type PurgeResult struct {
+	BotID    string   `json:"botId"`
+	Revoked  []string `json:"revoked"`
+	Warnings []string `json:"warnings"`
+}
+
 // BotManager is the authorized management seam. Acquire pins a runtime until release.
 type BotManager interface {
 	List() []BotInfo
@@ -41,6 +48,7 @@ type BotManager interface {
 	Create(config.BotConfig) (BotInfo, error)
 	Update(string, config.BotConfig) (BotInfo, error)
 	Transition(string, string) (BotInfo, error)
+	Purge(string) (PurgeResult, error)
 	Acquire(string, bool) (http.Handler, func(), error)
 	Authenticate(string) (string, bool)
 	BindWorkspace(string, string) (BotInfo, string, error)
@@ -198,6 +206,18 @@ func NewDaemonServer(cfg config.DaemonConfig, manager BotManager) (*DaemonServer
 			success(w, status, "bot."+op, map[string]any{"bot": b})
 		})
 	}
+	mux.HandleFunc("DELETE /v2/bots/{botID}", func(w http.ResponseWriter, r *http.Request) {
+		result, err := manager.Purge(r.PathValue("botID"))
+		if err != nil {
+			respondError(w, err)
+			return
+		}
+		success(w, 200, "bot.purged", map[string]any{
+			"botId":    result.BotID,
+			"revoked":  result.Revoked,
+			"warnings": result.Warnings,
+		})
+	})
 	mux.HandleFunc("/v2/bots/{botID}/{operation...}", func(w http.ResponseWriter, r *http.Request) {
 		operation := r.PathValue("operation")
 		handler, release, err := manager.Acquire(r.PathValue("botID"), r.Method != http.MethodGet)
