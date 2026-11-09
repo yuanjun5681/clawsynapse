@@ -38,9 +38,23 @@ is unavailable, stop and report that required context cannot be read, without
 performing actions that depend on those facts. Do not change
 permissions, approve safety prompts, or enable tools to bypass a user's settings.
 Runtime routing and progress metadata are available only in the invocation env;
-they are not part of the user's instruction. Return one final assistant answer.
-Report optional visible work only through chat.progress using this invocation's
-routing. Do not publish the answer separately or return ACK/WAITING.
+they are not part of the user's instruction.
+Visible work updates and the final answer are separate deliveries. When the user
+asks for progress, report before starting substantive work and at real phase
+boundaries. For other multi-stage tasks, report meaningful phase changes; a quick
+answer needs no update. Use the permitted native shell tool to execute:
+"$CLAWSYNAPSE_CLI" --api-addr "$CLAWSYNAPSE_API_ADDR" --bot "$CLAWSYNAPSE_BOT_ID" --json publish --type chat.progress --target "$CLAWSYNAPSE_TARGET_BOT" --request-id "$CLAWSYNAPSE_REQUEST_ID" --run-id "$CLAWSYNAPSE_RUN_ID" --session-key "$CLAWSYNAPSE_SESSION_KEY" --agent "$CLAWSYNAPSE_AGENT_ID" --message "<one short sentence describing the current real phase>"
+Replace the message with actual visible work, not private reasoning, secrets or
+an answer. Each update is one line, at most 512 UTF-8 bytes. Publish each update
+when that phase occurs, then continue the task. Shell echo, assistant narration
+and a batch of reports in the final answer do not deliver progress to the user.
+If routing values or a permitted shell tool are unavailable, or publishing fails,
+continue the main task silently; do not substitute staged narration in the final
+answer or claim an update was delivered. Keep the user's permissions unchanged.
+This reporting method is local policy and requires no communication-skill lookup
+or protocol terminology in the user's instruction.
+Return one final assistant answer containing the requested deliverable, not
+progress narration. Do not publish the answer separately or return ACK/WAITING.
 For older public evidence no longer present in native memory, the same authorized
 reader supports --history; that view includes already-known public facts and does
 not replace the mandatory requiredContext read sequence.`

@@ -388,6 +388,13 @@ CLI 优先解析 daemon 同目录的 clawsynapse，然后查真实 PATH；未安
 Harness 必须允许执行该真实 CLI 且能访问本机 endpoint；本功能不绕过工具沙箱或权限，
 报告失败不得终止主任务。没有 progress 工具权限时不伪造进展。
 
+版本化 topic 的本地固定策略直接提供上述完整进度命令与触发条件，不依赖用户提及
+ClawSynapse、`chat.progress` 或模型另行发现通信 skill。用户明确要求过程汇报时，
+在开始实质工作前及真实阶段切换时发布；其他多阶段工作按有意义的阶段汇报，
+快速回答可省略。普通 assistant 叙述、shell echo 和最终回复中的批量阶段总结
+都不算进度投递；最终正文只保留交付物。缺少路由或工具、发布失败时继续主任务，
+不声称已经报告，也不修改权限。部署环境仍需允许实际 CLI；本地策略不扩大权限。
+
 Webhook 的 sessionKey 保持原始可见会话键。仅同机且可访问该 loopback endpoint 的
 receiver 可以在当前 HTTP 调用仍 admitted 时使用 executionContext 发布进展；
 异步 accepted 后或远端 receiver 不具有回调许可，不暴露远程 daemon API。
