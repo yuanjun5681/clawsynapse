@@ -134,7 +134,8 @@ clawsynapse --bot "$BOT_A" --json messages
 
 备注/认证/信任按本地 Bot 隔离，Bot A 的 alias 或信任不影响 B。peer alias/describe 不带值清除；label 一个值为标量，多个值为集合；unlabel 删除键。标量/数组筛选不互换，不以逗号拆分。labels 是自报属性，不是授权。聊天对象是 Bot，不是 Harness 内部 Agent 目录；`publish --agent ID` 只是受接收端 `harness.allowedAgentIds` 限制的可选内部路由，Codex、pi、omp 不支持命名路由。
 
-CLI publish 是文本快捷入口，只支持 `--target`、`--type`、`--agent`、`--message`、`--session-key`、可重复 `--metadata key=value`。结构化 payload、expiresAt、稳定 idempotencyKey、请求查询和游标回放用 HTTP API；没有 publish 等待模型完成选项。发布成功只是持久接纳，messages 包含关联 run.* 事件；持久恢复边界见 [messaging.md](messaging.md)。
+CLI publish 是文本快捷入口，支持 `--target`、`--type`、`--agent`、`--message`、`--session-key`、可重复 `--metadata key=value`、`--idempotency-key`。只有 `--type chat.progress` 另外要求 `--request-id` 和 `--run-id`，沿用原始 session/target/agent，由 daemon 验证当前 admitted 工作并分配独立 seq；不能用这些字段伪造 run.*。结构化 payload、expiresAt、请求查询和游标回放用 HTTP API；没有 publish 等待模型完成选项。发布成功只是持久接纳，messages 包含关联 run.* 与被动 chat.progress；持久恢复边界见 [messaging.md](messaging.md)。
+执行中使用 Harness 提供的完整 `executionContext.progressCommand`（追加一句 text），它已包含真实 CLI 路径与本次 daemon URL，不依赖 workspace 默认配置。原生本地子进程同时有 per-invocation CLAWSYNAPSE_* 环境变量；完整示例与 Gateway/Webhook 边界见 [integration.md](integration.md#执行内发布可见进展)。进展失败不会结束主任务，最终答案仍由 Harness 返回。
 
 ## 文件导入、发送、读取与删除引用
 

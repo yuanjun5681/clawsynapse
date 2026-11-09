@@ -21,12 +21,13 @@ type DeliverMessageRequest struct {
 	// SessionKey scopes the local Harness session store. ReplySessionKey is the
 	// peer-visible key the Harness must use after a successful publish; it must
 	// not be replaced by the scoped internal key.
-	SessionKey      string
-	ReplySessionKey string
-	Message         string
-	From            string
-	Metadata        map[string]any
-	Payload         protocol.MessagePayload
+	SessionKey       string
+	ReplySessionKey  string
+	Message          string
+	From             string
+	Metadata         map[string]any
+	Payload          protocol.MessagePayload
+	ExecutionContext *ExecutionContext
 	// Emit applies synchronous backpressure; an error must stop execution.
 	Emit func(OutputEvent) error
 }
@@ -90,4 +91,9 @@ func (e *ExecutionError) SafeMessage() string {
 	default:
 		return ""
 	}
+}
+
+func workspaceChat(req DeliverMessageRequest) bool {
+	mode, _ := req.Metadata["clawsynapseReplyMode"].(string)
+	return mode == "chat"
 }

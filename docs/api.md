@@ -135,9 +135,25 @@ Console 示例：`{"displayName":"inbox","role":"console"}`。Role 不是管理�
 
 成功 `data` 包含 `targetBot`, `messageId`, `sessionKey`，仅表示 JetStream 已确认持久接纳，不代表执行完成。发布先写本 Bot 持久 outbox；网络失败可能返回 400 `msg.publish_failed` 但 intent 仍待发送。不得改新 ID/新 key 重试副作用。HTTP 调用方应提供 ≤512 字节 `idempotencyKey`：同 key/相同规范化内容跨重启返回同一 messageId，同 key 不同内容为 409 `msg.idempotency_conflict`。未指定 sessionKey/expiresAt 在第一次持久化生成；重试提交相同请求。禁止伪造 `run.*`（403 `control.unauthorized`）。
 
+`type:"chat.progress"` 使用同一 publish 路由，必须另传原请求 `requestId`、
+当前 `runId`、原 `sessionKey`、原发送 Bot `targetBot` 及原 `agentId`（若有）：
+
+```json
+{"targetBot":"n1-11223344556677889900aabbccddeeff","type":"chat.progress","message":"Reading the relevant files.","sessionKey":"report-session","requestId":"original-message-id","runId":"active-run-id","idempotencyKey":"phase-reading"}
+```
+
+daemon 核对本 Bot 当前 admitted 且未过期/终结的原命令，独立生成 progress seq、
+签名并持久 outbox；只能报告该请求，不允许借此向任意会话发进展。payload 只允许
+单行非空 text，最多 512 UTF-8 字节；不接受 seq、不产生 Harness 执行或 run 反馈。
+关联/状态/正文无效返回 400 `msg.publish_failed`；幂等冲突沿用 409。
+同 key 同内容重试返回原持久记录，即使该 Run 已终结；新的进展仍被拒绝。
+非 chat.progress 的 requestId/runId 返回 400 `invalid_argument`。
+正常 peer 认证/信任与本地可选 scoped token 约束不变。
+
+
 `GET B/messages` 默认最近 100 条，可用 `limit=1..1000`。`?after=0&limit=100` 按持久 cursor 升序回放。`data` 为 `{items:[{...完整wire封套,cursor}],cursor}`，空页保持 after；cursor 是本 Bot 本地收件箱序号，不属于签名或 stream 序号。按 Bot 分别持久保存最后成功消费游标。
 
-`GET B/requests/{messageId}` 查询本 Bot 发布记录，未知 ID 为 404 `msg.not_found`。`data` 包含完整 `message`, `publication: pending|published`, `status: sending|sent|running|accepted|completed|failed|indeterminate`, `events`。events 仅关联同一请求、对端、Agent 和会话。accepted 不是完成；indeterminate 不可自动重跑。执行事件语义及恢复见 [messaging.md](messaging.md)。
+`GET B/requests/{messageId}` 查询本 Bot 发布记录，未知 ID 为 404 `msg.not_found`。`data` 包含完整 `message`, `publication: pending|published`, `status: sending|sent|running|accepted|completed|failed|indeterminate`, `events`。events 仅包含关联同一请求、对端、Agent 和会话的 run.*，不包含 chat.progress；进展从 messages cursor 消费。accepted 不是完成；indeterminate 不可自动重跑。执行事件语义及恢复见 [messaging.md](messaging.md)。
 
 ### 文件：引用授权，不暴露全局 blob 路径
 

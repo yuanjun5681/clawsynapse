@@ -69,6 +69,10 @@ func (s *nativeStream) consumePiFamily(line []byte) error {
 		state.deltas = false
 		state.terminal = false
 		state.stopReason = ""
+		if s.finalOnly {
+			s.candidate.Reset()
+			s.candidateReady = false
+		}
 		s.completed = false
 	case "message_start":
 		if event.Message == nil || event.Message.Role == "" || s.completed {
@@ -82,6 +86,10 @@ func (s *nativeStream) consumePiFamily(line []byte) error {
 			state.deltas = false
 			state.terminal = false
 			state.stopReason = ""
+			if s.finalOnly {
+				s.candidate.Reset()
+				s.candidateReady = false
+			}
 		}
 	case "message_update":
 		update := event.AssistantMessageEvent
@@ -170,6 +178,28 @@ func (s *nativeStream) finishPiMessage(message *piMessage) error {
 		return s.failPiNative(nil)
 	}
 	state := s.pi
+	if s.finalOnly && !state.terminal {
+		// The assistant terminal snapshot is the message authority. Discard
+		// text from tool-use messages, including earlier streamed commentary.
+		s.candidate.Reset()
+		s.candidateReady = message.StopReason == "stop"
+		if message.StopReason == "stop" {
+			var content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(message.Content, &content) != nil {
+				return malformedNative()
+			}
+			for _, part := range content {
+				if part.Type == "text" {
+					s.candidate.WriteString(part.Text)
+				}
+			}
+		}
+		state.role, state.terminal, state.stopReason = "assistant", true, message.StopReason
+		return nil
+	}
 	if state.terminal {
 		if state.stopReason != message.StopReason {
 			return malformedNative()

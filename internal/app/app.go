@@ -109,7 +109,11 @@ func NewRuntime(d config.DaemonConfig, b config.BotConfig, botID, version string
 		if err != nil {
 			return nil, err
 		}
-		opts := []messaging.HandlerOption{messaging.WithExecutionLimiter(r.limiter)}
+		apiAddr := "http://" + d.LocalAPIAddr
+		if d.APITLSCertFile != "" {
+			apiAddr = "https://" + d.LocalAPIAddr
+		}
+		opts := []messaging.HandlerOption{messaging.WithExecutionLimiter(r.limiter), messaging.WithPublishContext(apiAddr, adapter.ResolveCLIPath())}
 		if cfg.AgentAdapter == "webhook" {
 			opts = append(opts, messaging.WithFeedbackDelivery())
 		}

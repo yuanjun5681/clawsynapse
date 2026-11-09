@@ -115,8 +115,9 @@ func (a *cliAdapter) DeliverMessage(ctx context.Context, req DeliverMessageReque
 	if a.log != nil {
 		a.log.Info("executing native CLI", slog.String("product", a.product))
 	}
+	finalOnly := workspaceChat(req)
 	emitter := &answerEmitter{emit: req.Emit}
-	stream := &nativeStream{product: a.product, emitter: emitter, items: make(map[string]string)}
+	stream := &nativeStream{product: a.product, emitter: emitter, items: make(map[string]string), finalOnly: finalOnly}
 	if a.isPiFamily() {
 		stream.pi = &piStreamState{expectedSession: sessionID}
 	}
@@ -124,14 +125,21 @@ func (a *cliAdapter) DeliverMessage(ctx context.Context, req DeliverMessageReque
 	if a.product != "openclaw" {
 		onLine = stream.consume
 	}
-	out, err := runProcess(ctx, a.runCommand, args, stdin, onLine, commandTimeout)
+	command := func(ctx context.Context, args ...string) *exec.Cmd {
+		cmd := a.runCommand(ctx, args...)
+		if req.ExecutionContext != nil {
+			cmd.Env = append(cmd.Environ(), req.ExecutionContext.environment()...)
+		}
+		return cmd
+	}
+	out, err := runProcess(ctx, command, args, stdin, onLine, commandTimeout)
 	if err != nil {
 		return nil, err
 	}
 	var result *DeliverMessageResult
 	if a.product == "openclaw" {
-		result, err = consumeOpenClaw(out)
-		if err == nil {
+		result, err = consumeOpenClaw(out, finalOnly)
+		if err == nil && !finalOnly {
 			err = emitter.add(result.Reply)
 		}
 	} else {
@@ -156,14 +164,25 @@ func (a *cliAdapter) DeliverMessage(ctx context.Context, req DeliverMessageReque
 	if err := emitter.flush(); err != nil {
 		return nil, err
 	}
-	if req.Emit != nil {
-		result.Reply = ""
-	}
 	if result.SessionID == "" {
 		result.SessionID = sessionID
 	}
 	if err := a.saveSession(req.SessionKey, result.SessionID); err != nil {
 		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, cancellationError(err, true)
+	}
+	if finalOnly {
+		if err := emitter.add(result.Reply); err != nil {
+			return nil, err
+		}
+		if err := emitter.flush(); err != nil {
+			return nil, err
+		}
+	}
+	if req.Emit != nil {
+		result.Reply = ""
 	}
 	return result, nil
 }
@@ -231,18 +250,19 @@ func formatDeliverMessage(localBotID string, req DeliverMessageRequest) (string,
 		replySessionKey = req.SessionKey
 	}
 	prompt := struct {
-		Source     string                  `json:"source"`
-		BotID      string                  `json:"botId"`
-		MessageID  string                  `json:"messageId,omitempty"`
-		RequestID  string                  `json:"requestId,omitempty"`
-		RunID      string                  `json:"runId,omitempty"`
-		Seq        uint64                  `json:"seq,omitempty"`
-		Type       string                  `json:"type,omitempty"`
-		From       string                  `json:"from,omitempty"`
-		SessionKey string                  `json:"sessionKey,omitempty"`
-		Payload    protocol.MessagePayload `json:"payload"`
-		Metadata   map[string]any          `json:"metadata,omitempty"`
-	}{"clawsynapse", localBotID, req.MessageID, req.RequestID, req.RunID, req.Seq, req.Type, req.From, replySessionKey, payload, req.Metadata}
+		Source           string                  `json:"source"`
+		BotID            string                  `json:"botId"`
+		MessageID        string                  `json:"messageId,omitempty"`
+		RequestID        string                  `json:"requestId,omitempty"`
+		RunID            string                  `json:"runId,omitempty"`
+		Seq              uint64                  `json:"seq,omitempty"`
+		Type             string                  `json:"type,omitempty"`
+		From             string                  `json:"from,omitempty"`
+		SessionKey       string                  `json:"sessionKey,omitempty"`
+		Payload          protocol.MessagePayload `json:"payload"`
+		Metadata         map[string]any          `json:"metadata,omitempty"`
+		ExecutionContext *ExecutionContext       `json:"executionContext,omitempty"`
+	}{"clawsynapse", localBotID, req.MessageID, req.RequestID, req.RunID, req.Seq, req.Type, req.From, replySessionKey, payload, req.Metadata, req.ExecutionContext}
 	data, err := json.Marshal(prompt)
 	if err != nil {
 		return "", &ExecutionError{Code: "invalid_prompt", Stage: "validation", Err: errors.New("request cannot be encoded as structured JSON")}

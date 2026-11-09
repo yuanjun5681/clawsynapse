@@ -495,6 +495,7 @@ Bot ID 与签名在此仅作结构示意，不能直接用于实际验签。
 - `event.forward` — 事件转发
 - `run.started`、`run.output.delta`、`run.completed`、`run.failed`、`run.accepted` — 执行反馈，不进入 LLM；Webhook 可消费，但不产生反馈回复
 - `chat.context` — 经授权共享的聊天历史／群成员观察数据；仅投递 Webhook 数据消费者，与 deliverablePrefixes 无关；不生成 run.started/output/completed，不对观察再发反馈，native Adapter 不执行
+- `chat.progress` — 原请求执行期间的一句可见工作进展；Agent 和 Console 仅持久收件，不调用任何 Harness（包括 Webhook）、不产生 run 反馈，与 deliverablePrefixes 无关
 
 可通过配置 `deliverablePrefixes` 扩展可投递前缀，详见环境变量 `DELIVERABLE_PREFIXES`。
 
@@ -533,6 +534,34 @@ Bot ID 与签名在此仅作结构示意，不能直接用于实际验签。
 - 本地 publication/outbox、幂等键、接收游标、admitted work 均持久化。发布接口成功只表示 JetStream durable ACK，不回退 Core NATS。输出事件先与工作序号原子写入本地 outbox，再按执行顺序重试发送；原始目标 agentId 与 metadata.dsynapseChat 的 chatId/messageId 保留，历史上下文不重复到每个 delta。
 - 进入 Adapter 前先持久标记 admitted。重启发现未终结 admitted command 时生成 `run.failed`、`indeterminate=true`，不盲目重放副作用。仅能证明 HTTP dial 未建立的 Webhook 失败可按同一消息 ID 重试；反馈是非执行数据，可按同一 ID 重投。不能据此宣称外部系统副作用 exactly-once。
 - `GET /v2/bots/{botId}/messages?after=N&limit=N` 提供该 Bot 的本地持久接收游标；`GET /v2/bots/{botId}/requests/{messageId}` 提供发布与关联执行事件查询，详见本地 API 文档。发送目标在本地 API 中为 `targetBot`，编码为 wire v2 的 `to`；旧 `/v1` 单身份入口已移除。
+
+### 被动工作进展 `chat.progress`
+
+复用现有封套的 `requestId`、`runId`、`sessionKey`、`from/to`、`agentId`，
+不增加顶层 wire 字段。`requestId` 是原请求消息 ID；from 是执行 Bot、to 是原发送 Bot；
+其余关联必须与原请求的当前 admitted Run 精确一致。只有 Agent 的有效期内、
+已发出 run.started 且尚未终结的 admitted 命令可发布新的进展；queued、
+过期、终态、Console 和其他 Run 均拒绝。发布接口不允许调用方提供 seq。
+
+`payload` 仅允许 text：非空、单行 UTF-8、最多 512 字节。它描述当前可见工作，
+不是答案、思考链、历史上下文或完成证明。最终答案仍通过 Harness 的 run.output.delta
+和终态返回。正常签名、发现、认证及信任检查保持不变。
+
+面向用户的中文描述建议控制在 15～40 字的一句话；这是文案建议，不增加协议硬校验。
+
+进展 seq 是每个原请求/Run 独立、从 1 正递增的序列，绝不消耗 run.* seq；
+幂等去重、签名 outbox 和前序进展依赖在同一 journal fsync 中提交。
+同 key 同内容重试可在终态后返回原记录，但不能创建新的终态后进展。
+重启恢复原进展 ID/序号/顺序，不重新执行进展，也不生成回复。
+消费者按原请求、精确双方 Bot、Agent、会话及 Run 关联，忽略旧 seq；终态优先，
+迟到进展不得恢复 working 状态。`requests/{messageId}.events` 仍只包含 run.*；
+进展使用持久 messages cursor 回放。
+
+Workspace 的 `metadata.clawsynapseReplyMode="chat"` 将答案限定为权威最终 assistant
+消息。原生工具轮次的 assistant 叙述不属于 run.output.delta 答案，不拼接为完成结果；
+工作进展只使用 chat.progress。Adapter 在执行成功后可把最终消息按传输上限分段交付，
+这些段不是执行期间的草稿流。其他 peer/集成请求保持既有流式契约。
+
 
 ## PubSub
 

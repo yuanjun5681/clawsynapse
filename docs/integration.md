@@ -341,9 +341,60 @@ POST 请求发送 `Accept: application/x-ndjson, application/json`。支持流�
 
 失败终态为 `{"type":"failed","error":"说明","indeterminate":true}`；确定失败可省略 indeterminate 或设为 false。每个 output.text 最多 64 KiB UTF-8，编码后的单行必须小于 128 KiB；没有总答案截断。Daemon 每收到一个 output 就以同步背压写入持久 run.output.delta，再继续读取。结果可在模型完成后分段输出，不要求是真正 token streaming；最后只发送一个终态，不能在 completed 后再输出。
 
+Workspace 请求（`metadata.clawsynapseReplyMode="chat"`）使用独立 final lane：
+过程 `output` frame 不作为答案。接收端在真正最终 assistant 消息确定后，输出
+一个或多个 `{"type":"final","text":"最终答案的一段"}`，最后 `{"type":"completed"}` 并结束响应。
+每个 final.text 沿用 64 KiB 限制；多段只承载同一最终消息，不能夹带工具轮次叙述。
+daemon 等待 completed 及完整 EOF，再发布最终答案；没有 final、失败、
+截断或 completed 后还有 frame 均不发布候选。非 workspace 的 output 流式语义不变；
+单次 JSON completed 响应的 reply 仍被视为明确最终答案。
+
+
 EOF、超限、无效 JSON/未知 frame、或建立连接后的传输中断均表示结果 indeterminate；已收到的 partial output 保留，不能当作 completed 或安全自动重跑。只有 dial 根本未建立才可按相同 messageId 重试。集成必须持久去重 queued/admitted/completed 命令：相同 messageId 不得重复启动模型或外部动作；已完成可返回持久结果，无法确认的 admitted 状态必须显式 failed/indeterminate，不能伪造成功。
 
 普通命令包含 requestId=messageId、Bot 持久 runId 和当前 seq，反馈保持原有关联字段。run.*、chat.context 反馈与 transfer.received 是非唤醒数据，不应按用户命令路由；chat.context 持久投递给 Webhook，由集成保存授权历史，不产生 run 反馈。文件通知在引用持久提交并物化到接收 Bot workspace 后投递；不能借其 localPath 授权其他 Bot。消息日志持久 queued/admitted/done 与 outbox；重启将崩溃前 admitted 的执行报告为 execution.interrupted/indeterminate，而不是重新运行。外部副作用不提供 exactly-once 保证，通知恢复也不能据此推断模型执行完成。
+
+### 执行内发布可见进展
+
+已 admitted 命令的 native JSON 和 Webhook payload 可携带本地 `executionContext`：
+`cliPath`（已解析的绝对可执行路径）、`apiAddr`（当前 daemon 的完整 loopback HTTP(S) URL）、
+`botId`、`targetBot`、`requestId`、`runId`、原始可见 `sessionKey`、可选 `agentId`，
+以及 `progressCommand` argv 前缀。该前缀最后是 `--message`，只需追加一句进展；
+不能从 scoped Harness Session、cwd、其他请求或默认配置推导路由。
+这是本地调用元数据，不是新的 wire envelope 字段。
+
+```bash
+"$CLAWSYNAPSE_CLI" --api-addr "$CLAWSYNAPSE_API_ADDR" --bot "$CLAWSYNAPSE_BOT_ID" --json \
+  publish --type chat.progress --target "$CLAWSYNAPSE_TARGET_BOT" \
+  --request-id "$CLAWSYNAPSE_REQUEST_ID" --run-id "$CLAWSYNAPSE_RUN_ID" \
+  --session-key "$CLAWSYNAPSE_SESSION_KEY" --message "Reading the relevant files."
+# 原请求有 Agent 时另加 --agent "$CLAWSYNAPSE_AGENT_ID"
+```
+
+本地 Codex（stdin，含 resume）、OpenCode、pi、omp（argv，含 resume）和 OpenClaw
+CLI 子进程均按本次调用覆盖上述 CLAWSYNAPSE_* 环境变量（另含 CLAWSYNAPSE_AGENT_ID）。
+相同的完整上下文也放在每次 prompt 中：OpenClaw Gateway 后端未必继承 CLI 环境，
+因此应使用 JSON 中的字面量 progressCommand，而非依赖环境或模型猜测参数。
+CLI 优先解析 daemon 同目录的 clawsynapse，然后查真实 PATH；未安装 CLI、
+不是 admitted 命令或上下文不完整时不提供 executionContext，任务仍正常执行。
+Harness 必须允许执行该真实 CLI 且能访问本机 endpoint；本功能不绕过工具沙箱或权限，
+报告失败不得终止主任务。没有 progress 工具权限时不伪造进展。
+
+Webhook 的 sessionKey 保持原始可见会话键。仅同机且可访问该 loopback endpoint 的
+receiver 可以在当前 HTTP 调用仍 admitted 时使用 executionContext 发布进展；
+异步 accepted 后或远端 receiver 不具有回调许可，不暴露远程 daemon API。
+收到的 chat.progress 永远仅保留在 Bot inbox，不转发给 Webhook，也不产生反馈。
+
+Workspace 原生输出同样采用最终消息语义，而非屏蔽特定词语：Pi/omp 选最后
+stop assistant 的终态 content；toolUse assistant 及更早轮次全部舍弃。Codex 选当前
+成功 turn 的最后 completed agent_message（显式 commentary phase 不作答案），
+后续工具活动会作废此前候选。OpenCode 按 messageID/step 边界选最终 stop 消息，
+没有 step_finish 时仍用持久会话中同一最终 assistant 的 stop/成功 idle 核验。
+OpenClaw 是一次性 Gateway 响应，选最后非 reasoning/commentary 的 assistant payload，
+不把多个历史 assistant payload 串接。只有整次 CLI 调用和会话保存成功后才交付
+最终正文；此前不调用答案 Emit，错误或不确定结果不会将候选正文变成最终答案。
+
+
 
 文件通知另有持久 admission：引用先提交，pending 通知只在绑定 callback 后物化 workspace 副本；callback 前持久写入 admitted。崩溃后的 admitted 通知不自动回调重放，其效果仍可能不确定；不要把持久引用存在等同于通知已被外部产品处理。读取/转发依然可按 Bot 引用查询。
 

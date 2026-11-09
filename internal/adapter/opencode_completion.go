@@ -47,6 +47,9 @@ func (a *cliAdapter) confirmOpenCodeTurn(ctx context.Context, stream *nativeStre
 			return incompleteOpenCodeTurn()
 		}
 		stream.completed = true
+		if stream.finalOnly {
+			stream.candidateReady = true
+		}
 		return nil
 	}
 	return incompleteOpenCodeTurn()

@@ -62,7 +62,7 @@ func TestNativeFailurePreservesPossibleEffects(t *testing.T) {
 }
 
 func TestOpenClawFailureIgnoresPayloadText(t *testing.T) {
-	_, err := consumeOpenClaw([]byte(`{"status":"error","result":{"payloads":[{"text":"unknown session: not found PRIVATE_PROMPT"}]},"error":{"type":"unknown","message":"unexpected PRIVATE_KEY"}}`))
+	_, err := consumeOpenClaw([]byte(`{"status":"error","result":{"payloads":[{"text":"unknown session: not found PRIVATE_PROMPT"}]},"error":{"type":"unknown","message":"unexpected PRIVATE_KEY"}}`), false)
 	failure := assertExecutionCode(t, err, "native_failed")
 	if !failure.Indeterminate || strings.Contains(failure.Error(), "PRIVATE_") {
 		t.Fatalf("unsafe OpenClaw failure: %v", failure)

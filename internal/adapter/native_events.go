@@ -67,6 +67,12 @@ type nativeStream struct {
 	items  map[string]string
 	reply  strings.Builder
 	pi     *piStreamState
+	// Workspace chat selects the last authoritative assistant message, never
+	// the concatenation of text emitted across tool rounds.
+	finalOnly      bool
+	candidate      strings.Builder
+	candidateID    string
+	candidateReady bool
 }
 
 func (s *nativeStream) consume(line []byte) error {
@@ -202,6 +208,13 @@ func (s *nativeStream) answer(text string) error {
 	if s.completed {
 		return malformedNative()
 	}
+	if s.finalOnly {
+		// Pi/omp's terminal message carries the authoritative full snapshot.
+		if s.product != "pi" && s.product != "omp" {
+			s.candidate.WriteString(text)
+		}
+		return nil
+	}
 	if s.emitter.emit == nil {
 		s.reply.WriteString(text)
 	}
@@ -214,9 +227,10 @@ func (s *nativeStream) consumeCodex(line []byte) error {
 		Message  string `json:"message"`
 		ThreadID string `json:"thread_id"`
 		Item     *struct {
-			ID   string `json:"id"`
-			Type string `json:"type"`
-			Text string `json:"text"`
+			ID    string `json:"id"`
+			Type  string `json:"type"`
+			Text  string `json:"text"`
+			Phase string `json:"phase"`
 		} `json:"item"`
 		Error json.RawMessage `json:"error"`
 	}
@@ -255,6 +269,32 @@ func (s *nativeStream) consumeCodex(line []byte) error {
 			return malformedNative()
 		}
 		s.active = true
+		if s.finalOnly {
+			if s.completed {
+				return malformedNative()
+			}
+			if event.Item.Type != "agent_message" {
+				s.candidate.Reset()
+				s.candidateReady = false
+				s.candidateID = ""
+				return nil
+			}
+			if event.Item.Phase != "" && event.Item.Phase != "final_answer" {
+				return nil
+			}
+			if event.Item.ID != s.candidateID || event.Item.ID == "" {
+				s.candidate.Reset()
+				s.candidateReady = false
+				s.candidateID = event.Item.ID
+			}
+			// Completed items are authoritative snapshots, not additional text.
+			if event.Type == "item.completed" {
+				s.candidate.Reset()
+				s.candidateReady = true
+				s.candidate.WriteString(event.Item.Text)
+			}
+			return nil
+		}
 		if event.Item.Type != "agent_message" {
 			return nil
 		}
@@ -302,10 +342,22 @@ func (s *nativeStream) consumeOpenCode(line []byte) error {
 		return nativeFailure(event.Error, s.active)
 	}
 	switch event.Type {
-	case "tool_use", "tool_call", "tool_result", "reasoning":
+	case "reasoning":
 		s.active = true
+	case "tool_use", "tool_call", "tool_result":
+		s.active = true
+		if s.finalOnly {
+			s.candidate.Reset()
+			s.candidateReady = false
+		}
 	case "step_start":
 		s.active = true
+		if s.finalOnly {
+			s.candidate.Reset()
+			s.candidateReady = false
+			s.candidateID = ""
+			s.messageID = ""
+		}
 		if event.Part != nil && event.Part.MessageID != "" {
 			s.messageID = event.Part.MessageID
 		}
@@ -320,6 +372,10 @@ func (s *nativeStream) consumeOpenCode(line []byte) error {
 				return nil
 			}
 			if event.Part.MessageID != "" {
+				if s.finalOnly && event.Part.MessageID != s.candidateID {
+					s.candidate.Reset()
+					s.candidateID = event.Part.MessageID
+				}
 				s.messageID = event.Part.MessageID
 			}
 			text = event.Part.Text
@@ -344,10 +400,15 @@ func (s *nativeStream) consumeOpenCode(line []byte) error {
 		}
 		switch reason {
 		case "stop":
+			s.candidateReady = s.finalOnly
 			s.completed = true
 			return s.emitter.flush()
 		case "tool-calls":
 			s.completed = false
+			if s.finalOnly {
+				s.candidate.Reset()
+				s.candidateReady = false
+			}
 			return s.emitter.flush()
 		case "length", "error", "content-filter", "unknown":
 			if err := s.emitter.flush(); err != nil {
@@ -362,17 +423,22 @@ func (s *nativeStream) consumeOpenCode(line []byte) error {
 }
 
 func (s *nativeStream) result() (*DeliverMessageResult, error) {
-	if !s.completed {
+	if !s.completed || (s.finalOnly && !s.candidateReady) {
 		return nil, &ExecutionError{Code: "incomplete_output", Stage: "completion", Indeterminate: true, Err: errors.New("native CLI exited without a successful terminal event")}
 	}
-	return &DeliverMessageResult{Success: true, Accepted: true, Completed: true, SessionID: s.sessionID, Reply: s.reply.String()}, nil
+	reply := s.reply.String()
+	if s.finalOnly {
+		reply = s.candidate.String()
+	}
+	return &DeliverMessageResult{Success: true, Accepted: true, Completed: true, SessionID: s.sessionID, Reply: reply}, nil
 }
 
 type openClawResult struct {
 	Payloads []struct {
-		Text        string `json:"text"`
-		IsError     bool   `json:"isError"`
-		IsReasoning bool   `json:"isReasoning"`
+		Text         string `json:"text"`
+		IsError      bool   `json:"isError"`
+		IsReasoning  bool   `json:"isReasoning"`
+		IsCommentary bool   `json:"isCommentary"`
 	} `json:"payloads"`
 	Meta *struct {
 		Aborted             bool            `json:"aborted"`
@@ -386,7 +452,7 @@ type openClawResult struct {
 	} `json:"meta"`
 }
 
-func consumeOpenClaw(data []byte) (*DeliverMessageResult, error) {
+func consumeOpenClaw(data []byte, finalOnly bool) (*DeliverMessageResult, error) {
 	var response struct {
 		RunID  string          `json:"runId"`
 		Status string          `json:"status"`
@@ -420,15 +486,24 @@ func consumeOpenClaw(data []byte) (*DeliverMessageResult, error) {
 		}
 	}
 	var reply strings.Builder
+	var finalText string
 	for _, part := range body.Payloads {
 		if part.IsError {
 			return nil, nativeFailure(nil, true)
 		}
-		if !part.IsReasoning {
-			reply.WriteString(part.Text)
+		if !part.IsReasoning && (!finalOnly || !part.IsCommentary) {
+			if finalOnly {
+				// Gateway payloads are assistant messages, not stream deltas.
+				finalText = part.Text
+			} else {
+				reply.WriteString(part.Text)
+			}
 		}
 	}
-	result := &DeliverMessageResult{Success: true, Accepted: true, Completed: true, RunID: response.RunID, Reply: reply.String()}
+	if !finalOnly {
+		finalText = reply.String()
+	}
+	result := &DeliverMessageResult{Success: true, Accepted: true, Completed: true, RunID: response.RunID, Reply: finalText}
 	if body.Meta != nil && body.Meta.AgentMeta != nil {
 		result.SessionID = body.Meta.AgentMeta.SessionID
 	}

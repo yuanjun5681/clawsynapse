@@ -359,6 +359,9 @@ func runPublish(ctx context.Context, client localAPIClient, args []string) (type
 	agentID := fs.String("agent", "", "target agent id override")
 	message := fs.String("message", "", "message content")
 	sessionKey := fs.String("session-key", "", "session key")
+	requestID := fs.String("request-id", "", "original request ID (chat.progress only)")
+	runID := fs.String("run-id", "", "active run ID (chat.progress only)")
+	idempotencyKey := fs.String("idempotency-key", "", "stable publication retry key")
 	var metadataFlags stringList
 	fs.Var(&metadataFlags, "metadata", "metadata key=value; repeatable")
 	if err := fs.Parse(args); err != nil {
@@ -369,6 +372,12 @@ func runPublish(ctx context.Context, client localAPIClient, args []string) (type
 	}
 	if strings.TrimSpace(*message) == "" {
 		return types.APIResult{}, fmt.Errorf("missing --message")
+	}
+	if *msgType == "chat.progress" && (*requestID == "" || *runID == "" || *sessionKey == "") {
+		return types.APIResult{}, fmt.Errorf("chat.progress requires --request-id, --run-id and --session-key")
+	}
+	if *msgType != "chat.progress" && (*requestID != "" || *runID != "") {
+		return types.APIResult{}, fmt.Errorf("--request-id and --run-id require --type chat.progress")
 	}
 	metadata, err := parseMetadata(metadataFlags)
 	if err != nil {
@@ -386,6 +395,12 @@ func runPublish(ctx context.Context, client localAPIClient, args []string) (type
 	if strings.TrimSpace(*agentID) != "" {
 		body["agentId"] = *agentID
 	}
+	if *requestID != "" {
+		body["requestId"], body["runId"] = *requestID, *runID
+	}
+	if *idempotencyKey != "" {
+		body["idempotencyKey"] = *idempotencyKey
+	}
 	return client.Post(ctx, "/publish", body)
 }
 
@@ -400,6 +415,9 @@ func printPublishHelp(stderr *os.File) {
 	fs.String("agent", "", "target agent id override")
 	fs.String("message", "", "message content")
 	fs.String("session-key", "", "session key")
+	fs.String("request-id", "", "original request ID (chat.progress only)")
+	fs.String("run-id", "", "active run ID (chat.progress only)")
+	fs.String("idempotency-key", "", "stable publication retry key")
 	fs.Var(&stringList{}, "metadata", "metadata key=value; repeatable")
 	fs.PrintDefaults()
 }

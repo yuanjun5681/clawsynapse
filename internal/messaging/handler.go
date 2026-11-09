@@ -48,6 +48,8 @@ type AdapterMessageHandler struct {
 	timeout        time.Duration
 	acceptFeedback bool
 	limiter        *adapter.BotLimiter
+	apiAddr        string
+	cliPath        string
 }
 
 type HandlerOption func(*AdapterMessageHandler)
@@ -61,6 +63,11 @@ func WithFeedbackDelivery() HandlerOption {
 // The worker marks its acquired context so the same limiter is not acquired twice.
 func WithExecutionLimiter(limiter *adapter.BotLimiter) HandlerOption {
 	return func(h *AdapterMessageHandler) { h.limiter = limiter }
+}
+
+// WithPublishContext supplies actual local routing independent of Harness cwd.
+func WithPublishContext(apiAddr, cliPath string) HandlerOption {
+	return func(h *AdapterMessageHandler) { h.apiAddr, h.cliPath = apiAddr, cliPath }
 }
 
 type executionContextKey struct{}
@@ -88,7 +95,7 @@ func NewAdapterMessageHandler(agentAdapter adapter.AgentAdapter, timeout time.Du
 }
 
 func (h *AdapterMessageHandler) HandleMessage(msg IncomingMessage) (HandlerResult, error) {
-	if !h.acceptFeedback && isFeedbackType(msg.Type) {
+	if msg.Type == "chat.progress" || (!h.acceptFeedback && isFeedbackType(msg.Type)) {
 		return HandlerResult{}, nil
 	}
 	if h.adapter == nil {
@@ -115,7 +122,11 @@ func (h *AdapterMessageHandler) HandleMessage(msg IncomingMessage) (HandlerResul
 		digest := sha256.Sum256(scope)
 		sessionKey = hex.EncodeToString(digest[:])
 	}
-	result, err := h.adapter.DeliverMessage(ctx, adapter.DeliverMessageRequest{MessageID: msg.MessageID, RequestID: msg.RequestID, RunID: msg.RunID, Seq: msg.Seq, Type: msg.Type, AgentID: msg.AgentID, SessionKey: sessionKey, ReplySessionKey: replySessionKey, Message: msg.Message, Payload: msg.Payload, From: msg.From, Metadata: msg.Metadata, Emit: msg.Emit})
+	var execution *adapter.ExecutionContext
+	if !isFeedbackType(msg.Type) {
+		execution = adapter.NewExecutionContext(h.cliPath, h.apiAddr, msg.To, msg.From, msg.RequestID, msg.RunID, replySessionKey, msg.AgentID)
+	}
+	result, err := h.adapter.DeliverMessage(ctx, adapter.DeliverMessageRequest{MessageID: msg.MessageID, RequestID: msg.RequestID, RunID: msg.RunID, Seq: msg.Seq, Type: msg.Type, AgentID: msg.AgentID, SessionKey: sessionKey, ReplySessionKey: replySessionKey, Message: msg.Message, Payload: msg.Payload, From: msg.From, Metadata: msg.Metadata, ExecutionContext: execution, Emit: msg.Emit})
 	if err != nil {
 		return HandlerResult{}, err
 	}
@@ -132,5 +143,5 @@ func (h *AdapterMessageHandler) HandleMessage(msg IncomingMessage) (HandlerResul
 }
 
 func isFeedbackType(t string) bool {
-	return t == "chat.context" || strings.HasPrefix(t, "run.") || strings.HasSuffix(t, ".response") || strings.HasSuffix(t, ".error")
+	return t == "chat.progress" || t == "chat.context" || strings.HasPrefix(t, "run.") || strings.HasSuffix(t, ".response") || strings.HasSuffix(t, ".error")
 }

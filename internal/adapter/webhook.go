@@ -49,20 +49,21 @@ func NewWebhookAdapter(cfg WebhookConfig) (*WebhookAdapter, error) {
 }
 
 type webhookPayload struct {
-	BotID           string                  `json:"botId"`
-	BindingRevision string                  `json:"bindingRevision"`
-	Instance        string                  `json:"instance"`
-	MessageID       string                  `json:"messageId"`
-	RequestID       string                  `json:"requestId,omitempty"`
-	RunID           string                  `json:"runId,omitempty"`
-	Seq             uint64                  `json:"seq,omitempty"`
-	Type            string                  `json:"type"`
-	AgentID         string                  `json:"agentId,omitempty"`
-	From            string                  `json:"from"`
-	SessionKey      string                  `json:"sessionKey,omitempty"`
-	Message         string                  `json:"message"`
-	Payload         protocol.MessagePayload `json:"payload"`
-	Metadata        map[string]any          `json:"metadata,omitempty"`
+	BotID            string                  `json:"botId"`
+	BindingRevision  string                  `json:"bindingRevision"`
+	Instance         string                  `json:"instance"`
+	MessageID        string                  `json:"messageId"`
+	RequestID        string                  `json:"requestId,omitempty"`
+	RunID            string                  `json:"runId,omitempty"`
+	Seq              uint64                  `json:"seq,omitempty"`
+	Type             string                  `json:"type"`
+	AgentID          string                  `json:"agentId,omitempty"`
+	From             string                  `json:"from"`
+	SessionKey       string                  `json:"sessionKey,omitempty"`
+	Message          string                  `json:"message"`
+	Payload          protocol.MessagePayload `json:"payload"`
+	Metadata         map[string]any          `json:"metadata,omitempty"`
+	ExecutionContext *ExecutionContext       `json:"executionContext,omitempty"`
 }
 
 type webhookResponse struct {
@@ -77,19 +78,24 @@ type webhookResponse struct {
 }
 
 func (a *WebhookAdapter) DeliverMessage(ctx context.Context, req DeliverMessageRequest) (*DeliverMessageResult, error) {
+	replySessionKey := req.ReplySessionKey
+	if replySessionKey == "" {
+		replySessionKey = req.SessionKey
+	}
 	payload := webhookPayload{
 		BotID: a.botID, BindingRevision: a.binding, Instance: a.instance,
-		MessageID:  req.MessageID,
-		RequestID:  req.RequestID,
-		RunID:      req.RunID,
-		Seq:        req.Seq,
-		Type:       req.Type,
-		AgentID:    req.AgentID,
-		From:       req.From,
-		SessionKey: req.SessionKey,
-		Message:    req.Message,
-		Metadata:   req.Metadata,
-		Payload:    req.Payload,
+		MessageID:        req.MessageID,
+		RequestID:        req.RequestID,
+		RunID:            req.RunID,
+		Seq:              req.Seq,
+		Type:             req.Type,
+		AgentID:          req.AgentID,
+		From:             req.From,
+		SessionKey:       replySessionKey,
+		Message:          req.Message,
+		Metadata:         req.Metadata,
+		Payload:          req.Payload,
+		ExecutionContext: req.ExecutionContext,
 	}
 
 	body, err := json.Marshal(payload)
@@ -125,7 +131,7 @@ func (a *WebhookAdapter) DeliverMessage(ctx context.Context, req DeliverMessageR
 
 	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 && mediaType == "application/x-ndjson" {
-		return consumeWebhookStream(resp.Body, req.Emit)
+		return consumeWebhookStream(resp.Body, req.Emit, workspaceChat(req))
 	}
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 4097))
@@ -180,10 +186,11 @@ type webhookFrame struct {
 	Indeterminate bool   `json:"indeterminate,omitempty"`
 }
 
-func consumeWebhookStream(body io.Reader, emit func(OutputEvent) error) (*DeliverMessageResult, error) {
+func consumeWebhookStream(body io.Reader, emit func(OutputEvent) error, finalOnly bool) (*DeliverMessageResult, error) {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 8192), 6*(64<<10)+1024)
 	var reply strings.Builder
+	finalSeen, completed := false, false
 	for scanner.Scan() {
 		var frame webhookFrame
 		decoder := json.NewDecoder(bytes.NewReader(scanner.Bytes()))
@@ -195,10 +202,16 @@ func consumeWebhookStream(body io.Reader, emit func(OutputEvent) error) (*Delive
 		if decoder.Decode(&trailing) != io.EOF {
 			return nil, &ExecutionError{Code: "response_schema", Stage: "webhook", Indeterminate: true}
 		}
+		if completed {
+			return nil, &ExecutionError{Code: "response_schema", Stage: "webhook", Indeterminate: true, Err: errors.New("frame after completed")}
+		}
 		switch frame.Type {
 		case "output":
 			if len(frame.Text) > 64<<10 {
 				return nil, &ExecutionError{Code: "response_limit", Stage: "webhook", Indeterminate: true}
+			}
+			if finalOnly {
+				continue
 			}
 			if emit != nil {
 				if err := emit(OutputEvent{Text: frame.Text}); err != nil {
@@ -207,13 +220,43 @@ func consumeWebhookStream(body io.Reader, emit func(OutputEvent) error) (*Delive
 			} else {
 				reply.WriteString(frame.Text)
 			}
+		case "final":
+			if !finalOnly {
+				return nil, &ExecutionError{Code: "response_schema", Stage: "webhook", Indeterminate: true}
+			}
+			if len(frame.Text) > 64<<10 {
+				return nil, &ExecutionError{Code: "response_limit", Stage: "webhook", Indeterminate: true}
+			}
+			finalSeen = true
+			reply.WriteString(frame.Text)
 		case "completed":
+			if finalOnly {
+				if !finalSeen {
+					return nil, &ExecutionError{Code: "response_incomplete", Stage: "webhook", Indeterminate: true, Err: errors.New("workspace response has no explicit final answer")}
+				}
+				completed = true
+				continue
+			}
 			return &DeliverMessageResult{Success: true, Completed: true, Reply: reply.String()}, nil
 		case "failed":
 			return nil, &ExecutionError{Code: "webhook_failed", Stage: "webhook", Indeterminate: frame.Indeterminate, Err: errors.New(frame.Error)}
 		default:
 			return nil, &ExecutionError{Code: "response_schema", Stage: "webhook", Indeterminate: true}
 		}
+	}
+	if finalOnly && completed && scanner.Err() == nil {
+		text := reply.String()
+		if emit != nil {
+			emitter := &answerEmitter{emit: emit}
+			if err := emitter.add(text); err != nil {
+				return nil, err
+			}
+			if err := emitter.flush(); err != nil {
+				return nil, err
+			}
+			text = ""
+		}
+		return &DeliverMessageResult{Success: true, Completed: true, Reply: text}, nil
 	}
 	return nil, &ExecutionError{Code: "response_incomplete", Stage: "webhook", Indeterminate: true, Err: scanner.Err()}
 }

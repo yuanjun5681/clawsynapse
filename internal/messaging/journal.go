@@ -229,7 +229,11 @@ func (j *messageJournal) apply(record journalRecord) {
 }
 
 func eventKey(env protocol.MessageEnvelope) string {
-	return env.To + "/" + env.RequestID + "/" + env.RunID
+	key := env.To + "/" + env.RequestID + "/" + env.RunID
+	if env.Type == "chat.progress" {
+		return "progress/" + key
+	}
+	return key
 }
 
 func messageKey(env protocol.MessageEnvelope) string { return env.From + "/" + env.ID }

@@ -5,7 +5,7 @@ title: "ClawSynapse Messaging"
 
 # ClawSynapse Messaging
 
-最后更新：2026-10-31
+最后更新：2026-11-09
 
 ## 协议边界
 
@@ -64,6 +64,29 @@ sequenceDiagram
 - run 事件不进入 LLM，也不产生反馈回复；Webhook 可以消费这些事件。
 - Console Bot 的 `chat.message` 与反馈只提交持久 inbox，不执行模型、不创建虚假 Run、不 echo 或生成 completed。执行请求在公共校验和持久收件后、执行 admission 前拒绝：未过期为 `run.failed`、`payload.code="console.execution_unsupported"`、`indeterminate=false`；过期为 `execution.expired`。保留 requestId/runId/seq/Session 和签名关联，不发 started、accepted、答案或 completed，不占用 Bot/daemon Harness 预算。拒绝终态与工作结果先持久提交，再由 outbox 发布；重复投递/重启只恢复原事件。历史已 admitted 请求仍按不确定性恢复，不伪装为从未执行。Console 正常发布聊天并接收 Agent 答案，Harness 健康为不适用，不是人工任务执行器。
 - 文件传输属于公共通信：`transfer.available` 仍经过授权、配额及持久引用处理；本地 `transfer.received` 回调按 Role 分派。Console 只保存可恢复记录和授权引用，不调用 Harness、不生成执行反馈；桌面关闭不影响 daemon 收件，重开通过原 cursor 和文件读取 API 查看。Agent 保留文件通知与工作副本契约，不自动重放已 admitted 通知。
+
+### 当前工作进展
+
+执行中的 Agent 可通过原 publish CLI 报告 `chat.progress`，而不是把进展混入答案。
+daemon 只允许精确关联当前 admitted 原请求/Run、原发送 Bot、Agent 及会话；
+queued、过期和终态后的新进展拒绝。正文是一句单行可见工作（最多 512 UTF-8 字节），
+不是工具原文、思考、历史或完成结果。命令和真实执行上下文见 [integration.md](integration.md)。
+
+进展和 run.* 各有独立的正递增 seq 与 outbox 前序依赖；进展签名、幂等和排序
+在同一次持久提交中写入，不改变 run 序号。网络重试/重启重发同一 ID；
+同 key 同正文可取回已终结请求的原进展记录，不能创建新进展。
+Agent/Console 均只持久收件，进展绝不调用 Harness（包括 Webhook），不占用执行预算、
+不产生 ACK/答案/run 反馈。客户端按 messages cursor 恢复，以精确关联和 seq
+选当前进展；终态优先，旧进展不能覆盖完成或失败。
+requests 查询的 events 仍专属 run.*，进展不成为会话历史或最终答案。
+
+Workspace `metadata.clawsynapseReplyMode="chat"` 的答案单独处理：native Adapter
+按 assistant 消息与工具轮次边界选取权威最终 assistant 消息，不拼接前序工具轮叙述，
+不把当前累计流文本在 completed 时冒充最终答案。候选正文只在本次调用确认成功、
+原生会话持久化成功后发布；失败/不确定时不发布候选。普通 peer 请求的流式契约保持不变。
+工作过程只通过 chat.progress 更新，不进入中央会话或最终答案；此处不做关键词过滤。
+
+
 
 ## 有界执行与会话
 

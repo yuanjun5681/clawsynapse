@@ -103,13 +103,13 @@ func TestWebhookPartialFailureNeverBecomesCompletionOrSafeRetry(t *testing.T) {
 
 func TestWebhookBoundsFramesAndPropagatesOutputBackpressure(t *testing.T) {
 	oversized, _ := json.Marshal(webhookFrame{Type: "output", Text: strings.Repeat("x", 65537)})
-	_, err := consumeWebhookStream(strings.NewReader(string(oversized)+"\n"), func(OutputEvent) error { t.Fatal("oversized output emitted"); return nil })
+	_, err := consumeWebhookStream(strings.NewReader(string(oversized)+"\n"), func(OutputEvent) error { t.Fatal("oversized output emitted"); return nil }, false)
 	var failure *ExecutionError
 	if !errors.As(err, &failure) || failure.Code != "response_limit" || !failure.Indeterminate {
 		t.Fatalf("unbounded output frame: %v", err)
 	}
 	blocked := errors.New("durable output journal unavailable")
-	_, err = consumeWebhookStream(strings.NewReader("{\"type\":\"output\",\"text\":\"answer\"}\n{\"type\":\"completed\"}\n"), func(OutputEvent) error { return blocked })
+	_, err = consumeWebhookStream(strings.NewReader("{\"type\":\"output\",\"text\":\"answer\"}\n{\"type\":\"completed\"}\n"), func(OutputEvent) error { return blocked }, false)
 	if !errors.Is(err, blocked) || !errors.As(err, &failure) || !failure.Indeterminate {
 		t.Fatalf("output backpressure ignored: %v", err)
 	}

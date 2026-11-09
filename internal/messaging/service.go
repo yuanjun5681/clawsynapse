@@ -140,7 +140,7 @@ func (s *Service) HandleLocalNotification(msg IncomingMessage) error {
 		return errAdmissionsFrozen
 	}
 	role, handler := s.role, s.handler
-	if role == config.RoleConsole {
+	if role == config.RoleConsole || msg.Type == "chat.progress" {
 		s.mu.Unlock()
 		return nil
 	}
@@ -339,6 +339,29 @@ func (s *Service) enqueue(req PublishRequest, work *admittedWork) (publication, 
 		}
 		return *pub, nil
 	}
+	if req.Type == "chat.progress" {
+		if work != nil || req.Seq != 0 {
+			return publication{}, errors.New("progress sequence belongs to the daemon")
+		}
+		original := s.journal.work[req.TargetBot+"/"+req.RequestID]
+		if s.role != config.RoleAgent || original == nil || original.State != "admitted" ||
+			original.RunID == "" || original.RunID != req.RunID || original.Seq == 0 ||
+			original.Message.To != s.botID || original.Message.SessionKey != req.SessionKey ||
+			original.Message.AgentID != req.AgentID || original.Message.ExpiresAt <= time.Now().UnixMilli() ||
+			isFeedbackType(original.Message.Type) || original.Message.Type == "transfer.available" {
+			return publication{}, errors.New("progress requires the exact active admitted request")
+		}
+		req.Metadata = eventMetadata(original.Message.Metadata)
+		req.ExpiresAt = original.Message.ExpiresAt
+		key := eventKey(protocol.MessageEnvelope{Type: req.Type, To: req.TargetBot, RequestID: req.RequestID, RunID: req.RunID})
+		req.Seq = 1
+		if previous := s.journal.publications[s.journal.tails[key]]; previous != nil {
+			req.Seq = previous.Message.Seq + 1
+			if req.Seq == 0 {
+				return publication{}, errors.New("progress sequence exhausted")
+			}
+		}
+	}
 	if work == nil {
 		peer, ok := s.peers.Get(req.TargetBot)
 		if !ok {
@@ -467,6 +490,14 @@ func validateEnvelope(env protocol.MessageEnvelope, now int64) error {
 	}
 	if strings.HasPrefix(env.Type, "run.") && (env.RequestID == "" || env.RunID == "" || env.Seq == 0) {
 		return errors.New("execution event requires requestId, runId and seq")
+	}
+	if env.Type == "chat.progress" {
+		if !validToken(env.RequestID) || !validToken(env.RunID) || env.SessionKey == "" || env.Seq == 0 {
+			return errors.New("progress requires requestId, runId, sessionKey and seq")
+		}
+		if err := validateProgressPayload(env.Payload); err != nil {
+			return err
+		}
 	}
 	if env.Payload.Message != "" && (env.Type != "run.failed" || len(env.Payload.Message) > 512 || !utf8.ValidString(env.Payload.Message)) {
 		return errors.New("failure message must be a bounded UTF-8 run.failed diagnostic")
@@ -754,7 +785,7 @@ func (s *Service) deliver(work admittedWork) bool {
 	s.mu.Lock()
 	handler, transfer, role := s.handler, s.transferHandler, s.role
 	s.mu.Unlock()
-	if role == config.RoleConsole && (feedback || env.Type == "chat.message") {
+	if env.Type == "chat.progress" || (role == config.RoleConsole && (feedback || env.Type == "chat.message")) {
 		return s.setWork(work, "done") == nil
 	}
 	if !feedback && env.Type != "transfer.available" && env.ExpiresAt <= time.Now().UnixMilli() {

@@ -47,6 +47,8 @@ type publishReq struct {
 	SessionKey     string                   `json:"sessionKey,omitempty"`
 	Metadata       map[string]any           `json:"metadata,omitempty"`
 	IdempotencyKey string                   `json:"idempotencyKey,omitempty"`
+	RequestID      string                   `json:"requestId,omitempty"`
+	RunID          string                   `json:"runId,omitempty"`
 }
 
 type peerFilter struct {
@@ -512,6 +514,10 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusForbidden, types.APIResult{OK: false, Code: "control.unauthorized", Message: "execution events may only be published by the execution authority", TS: time.Now().UnixMilli()})
 		return
 	}
+	if req.Type != "chat.progress" && (req.RequestID != "" || req.RunID != "") {
+		respondJSON(w, http.StatusBadRequest, types.APIResult{OK: false, Code: "invalid_argument", Message: "requestId and runId require chat.progress", TS: time.Now().UnixMilli()})
+		return
+	}
 	if req.Message != nil && req.Payload != nil {
 		respondJSON(w, http.StatusBadRequest, types.APIResult{OK: false, Code: "invalid_argument", Message: "message and payload are mutually exclusive", TS: time.Now().UnixMilli()})
 		return
@@ -535,6 +541,8 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		SessionKey:     req.SessionKey,
 		Metadata:       req.Metadata,
 		IdempotencyKey: req.IdempotencyKey,
+		RequestID:      req.RequestID,
+		RunID:          req.RunID,
 	})
 	if err != nil {
 		status, code := http.StatusBadRequest, "msg.publish_failed"

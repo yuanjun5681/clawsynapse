@@ -69,7 +69,7 @@ func TestNativeCLIHelperProcess(t *testing.T) {
 	}
 	product, mode := os.Getenv("CLI_PRODUCT"), os.Getenv("CLI_MODE")
 	args := fixtureArgs()
-	if mode == "confirmed-turn" || mode == "stale-turn" || mode == "unfinished-turn" || mode == "failed-turn" {
+	if mode == "confirmed-turn" || mode == "workspace-confirmed-turn" || mode == "stale-turn" || mode == "unfinished-turn" || mode == "failed-turn" {
 		if len(args) > 1 && args[0] == "session" && args[1] == "export" {
 			id, finish, outcome := "msg_current", "stop", "succeeded"
 			if mode == "stale-turn" {
@@ -89,6 +89,11 @@ func TestNativeCLIHelperProcess(t *testing.T) {
 				},
 			})
 			os.Exit(0)
+		}
+		if mode == "workspace-confirmed-turn" {
+			fmt.Println(`{"type":"step_start","sessionID":"ses_current","part":{"type":"step-start","messageID":"msg_before"}}`)
+			fmt.Println(`{"type":"text","sessionID":"ses_current","part":{"type":"text","messageID":"msg_before","id":"before","text":"Earlier tool-round assistant."}}`)
+			fmt.Println(`{"type":"tool_use","sessionID":"ses_current","part":{"type":"tool","messageID":"msg_before"}}`)
 		}
 		fmt.Println(`{"type":"step_start","sessionID":"ses_current","part":{"type":"step-start","messageID":"msg_current"}}`)
 		fmt.Println(`{"type":"text","sessionID":"ses_current","part":{"type":"text","messageID":"msg_current","id":"answer","text":"verified answer"}}`)
@@ -143,7 +148,10 @@ func TestNativeCLIHelperProcess(t *testing.T) {
 	}
 	if record := os.Getenv("CLI_RECORD"); record != "" && mode != "tree" {
 		cwd, _ := os.Getwd()
-		data, _ := json.Marshal(map[string]any{"args": args, "cwd": cwd, "prompt": json.RawMessage(prompt)})
+		data, _ := json.Marshal(map[string]any{"args": args, "cwd": cwd, "prompt": json.RawMessage(prompt), "progressEnv": map[string]string{
+			"apiAddr": os.Getenv("CLAWSYNAPSE_API_ADDR"), "botId": os.Getenv("CLAWSYNAPSE_BOT_ID"),
+			"requestId": os.Getenv("CLAWSYNAPSE_REQUEST_ID"), "sessionKey": os.Getenv("CLAWSYNAPSE_SESSION_KEY"),
+		}})
 		if err := os.WriteFile(record, data, 0600); err != nil {
 			os.Exit(23)
 		}

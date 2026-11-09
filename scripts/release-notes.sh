@@ -76,6 +76,8 @@ trap 'rm -f "$TMP_FILE"' EXIT
 	echo "- ships both \`clawsynapse\` CLI and \`clawsynapsed\` daemon binaries"
 	echo "- supports one-line install with default CLI + daemon deployment"
 	echo "- includes \`checksums.txt\` for release asset verification"
+	echo "- adds passive \`chat.progress\` with exact active-request correlation, independent durable sequencing, and per-invocation CLI/Harness context"
+	echo "- keeps workspace conversation answers final-only by native assistant-message boundaries; work updates stay in \`chat.progress\`"
 	echo
 	echo "## Install"
 	echo
