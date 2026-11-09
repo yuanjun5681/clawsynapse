@@ -137,6 +137,31 @@ clawsynapse --bot "$BOT_A" --json messages
 CLI publish 是文本快捷入口，支持 `--target`、`--type`、`--agent`、`--message`、`--session-key`、可重复 `--metadata key=value`、`--idempotency-key`。只有 `--type chat.progress` 另外要求 `--request-id` 和 `--run-id`，沿用原始 session/target/agent，由 daemon 验证当前 admitted 工作并分配独立 seq；不能用这些字段伪造 run.*。结构化 payload、expiresAt、请求查询和游标回放用 HTTP API；没有 publish 等待模型完成选项。发布成功只是持久接纳，messages 包含关联 run.* 与被动 chat.progress；持久恢复边界见 [messaging.md](messaging.md)。
 执行中使用 Harness 提供的完整 `executionContext.progressCommand`（追加一句 text），它已包含真实 CLI 路径与本次 daemon URL，不依赖 workspace 默认配置。原生本地子进程同时有 per-invocation CLAWSYNAPSE_* 环境变量；完整示例与 Gateway/Webhook 边界见 [integration.md](integration.md#执行内发布可见进展)。进展失败不会结束主任务，最终答案仍由 Harness 返回。
 
+### 当前原生调用的公开上下文
+
+当 topic 输入声明必需的延后上下文时，在同一个原生执行内运行：
+
+```bash
+"$CLAWSYNAPSE_CLI" --json context read --after 0 --limit 32
+```
+
+`context read` 默认从本次 `CLAWSYNAPSE_API_ADDR`、`CLAWSYNAPSE_BOT_ID`、
+`CLAWSYNAPSE_TARGET_BOT`、`CLAWSYNAPSE_REQUEST_ID`、`CLAWSYNAPSE_RUN_ID`
+取路由，并将 `CLAWSYNAPSE_CONTEXT_TOKEN` 放入专用本地 HTTP header。
+能力不进入 argv、URL 或输出；不能从旧对话或 cwd 猜测调用身份。
+可显式指定 `--from`、`--request-id`、`--run-id`，但仍须该请求的有效能力；
+仅知道标识不会获得授权。该命令不会触发模型或发送消息。
+
+从输入声明的 afterRevision 开始，读 `data.page.events`，以
+`data.page.nextRevision` 继续，直到 `data.page.complete`。limit 为 1..100；
+页固定于该请求公开截点，终态后 reader 失效。未读完必需范围不能声称任务完成，
+跳读到尾页不能推进连续读取凭据；拒绝或无读取工具时明确说明，不改变工具权限。
+
+需要重新核对较早公开原文时使用 `context read --history --after 0`；它仍受
+同一调用能力和固定截点约束，但包含已装入过的事实，不用于替代 requiredContext
+的连续必读流程。原生引擎的压缩不删除 daemon 保留的授权公开来源。
+
+
 ## 文件导入、发送、读取与删除引用
 
 ```bash

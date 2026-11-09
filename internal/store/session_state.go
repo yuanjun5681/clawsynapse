@@ -11,13 +11,31 @@ import (
 )
 
 type SessionState struct {
-	SchemaVersion int    `json:"schemaVersion"`
-	Adapter       string `json:"adapter"`
-	SessionKey    string `json:"sessionKey"`
-	SessionID     string `json:"sessionId"`
-	CWD           string `json:"cwd,omitempty"`
-	CreatedAtMs   int64  `json:"createdAtMs"`
-	UpdatedAtMs   int64  `json:"updatedAtMs"`
+	SchemaVersion int                `json:"schemaVersion"`
+	Adapter       string             `json:"adapter"`
+	SessionKey    string             `json:"sessionKey"`
+	SessionID     string             `json:"sessionId"`
+	CWD           string             `json:"cwd,omitempty"`
+	CreatedAtMs   int64              `json:"createdAtMs"`
+	UpdatedAtMs   int64              `json:"updatedAtMs"`
+	Topic         *TopicSessionState `json:"topic,omitempty"`
+}
+
+// TopicSessionState is the verified native basis for the next incremental input.
+// It deliberately stores identities and digests, never another transcript copy.
+type TopicSessionState struct {
+	Epoch               string `json:"epoch"`
+	PolicyVersion       string `json:"policyVersion"`
+	RequestID           string `json:"requestId"`
+	RunID               string `json:"runId"`
+	UserEntryID         string `json:"userEntryId"`
+	ParentEntryID       string `json:"parentEntryId,omitempty"`
+	InputDigest         string `json:"inputDigest"`
+	LastEntryID         string `json:"lastEntryId"`
+	ThroughRevision     uint64 `json:"throughRevision"`
+	RequiredReadThrough uint64 `json:"requiredReadThrough,omitempty"`
+	EntryCount          int    `json:"entryCount"`
+	HistoryDigest       string `json:"historyDigest"`
 }
 
 func (s *FSStore) SessionPath(adapterName, sessionKey string) (string, error) {

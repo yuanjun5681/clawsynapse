@@ -150,6 +150,13 @@ Console 的 BotInfo 为 `harnessApplicable=false`；Bot health 的 adapter 为 `
 - 首个答案立即发布，后续小片段按最多 4 KiB 合并，终止时刷新。回调背压同步传到进程，回调错误会取消执行。
 - Unix 使用独立进程组，Windows 使用 Job Object 管理进程树；超时、取消与 WaitDelay 有界。Windows 已交叉编译，实际运行仍需目标 OS 验收。
 - 产品会话读写失败显式报错。仅受当前原生事件契约支持的 CLI 可用；help/auth/health 探针只验证非交互能力，不替代真实模型任务验收。
+
+版本化 workspace topic 使用独立语义输入 `{instruction,publicContext,requiredContext?}`，
+不把路由/执行状态 JSON 当用户正文。接收端为支持的 native Harness 加载本地固定策略，
+而不将 peer payload 提升为 system 指令。omp/pi 的 topic 正文经 stdin 传递，
+避免位置参数的本地命令分派与 argv 正文暴露；字节与必需上下文预算仍独立校验。
+原生装入记录需核对持久 user entry、实际输入摘要和会话连续性；普通 peer 集成
+仍保留原封套及回复关联契约。完整同步与恢复语义见 [protocol.md](protocol.md#主题公开上下文增量协议)。
 - 有 Emit 时结果不再重复返回完整 Reply；失败使用 ExecutionError 的 code、stage 和 indeterminate，并在 `run.failed.payload.message` 中提供可选固定安全摘要，不泄露原生 stdout/stderr、原始错误、凭据或提示词。仅检查结构化错误字段；无效模型为 `invalid_model / validation`，provider.free-limit 为 `provider_quota / provider`，不是会话丢失。已观察到推理、工具或答案后，后续拒绝也保留不确定性；传输与未知运行时错误不伪装成确定未执行。错误不触发自动重跑或会话替换，详见 [messaging.md](messaging.md)。
 - DSH 集成只需 Bot 显示名与 labels；不要为聊天配置 Agent 名称或 Agent 目录。通用 CLI 适配器可使用 `harness.allowedAgentIds` 约束本地目标。真实模型任务与第三方 CLI 终态兼容必须单独验收，不能从 health/仅答案输出推断完整 acceptance 通过。
 
@@ -352,11 +359,11 @@ daemon 等待 completed 及完整 EOF，再发布最终答案；没有 final、�
 
 EOF、超限、无效 JSON/未知 frame、或建立连接后的传输中断均表示结果 indeterminate；已收到的 partial output 保留，不能当作 completed 或安全自动重跑。只有 dial 根本未建立才可按相同 messageId 重试。集成必须持久去重 queued/admitted/completed 命令：相同 messageId 不得重复启动模型或外部动作；已完成可返回持久结果，无法确认的 admitted 状态必须显式 failed/indeterminate，不能伪造成功。
 
-普通命令包含 requestId=messageId、Bot 持久 runId 和当前 seq，反馈保持原有关联字段。run.*、chat.context 反馈与 transfer.received 是非唤醒数据，不应按用户命令路由；chat.context 持久投递给 Webhook，由集成保存授权历史，不产生 run 反馈。文件通知在引用持久提交并物化到接收 Bot workspace 后投递；不能借其 localPath 授权其他 Bot。消息日志持久 queued/admitted/done 与 outbox；重启将崩溃前 admitted 的执行报告为 execution.interrupted/indeterminate，而不是重新运行。外部副作用不提供 exactly-once 保证，通知恢复也不能据此推断模型执行完成。
+普通命令包含 requestId=messageId、Bot 持久 runId 和当前 seq，反馈保持原有关联字段。run.*、chat.context 与 transfer.received 是非唤醒数据；识别的 topic-sync/topic-receipt 由 daemon 持久处理，其余 chat.context 仍可投递 Webhook 保存授权观察数据，均不产生模型 Run。文件通知在引用持久提交并物化到接收 Bot workspace 后投递；不能借其 localPath 授权其他 Bot。消息日志持久 queued/admitted/done 与 outbox；重启将崩溃前 admitted 的执行报告为 execution.interrupted/indeterminate，不重新运行；topic 会话同代际后续执行同时暂停。外部副作用不提供 exactly-once 保证。
 
 ### 执行内发布可见进展
 
-已 admitted 命令的 native JSON 和 Webhook payload 可携带本地 `executionContext`：
+普通 admitted peer 命令的 native JSON 和 Webhook payload 可携带本地 `executionContext`；版本化 native topic 不把它放入模型输入，只使用调用环境：
 `cliPath`（已解析的绝对可执行路径）、`apiAddr`（当前 daemon 的完整 loopback HTTP(S) URL）、
 `botId`、`targetBot`、`requestId`、`runId`、原始可见 `sessionKey`、可选 `agentId`，
 以及 `progressCommand` argv 前缀。该前缀最后是 `--message`，只需追加一句进展；
@@ -371,10 +378,11 @@ EOF、超限、无效 JSON/未知 frame、或建立连接后的传输中断均�
 # 原请求有 Agent 时另加 --agent "$CLAWSYNAPSE_AGENT_ID"
 ```
 
-本地 Codex（stdin，含 resume）、OpenCode、pi、omp（argv，含 resume）和 OpenClaw
-CLI 子进程均按本次调用覆盖上述 CLAWSYNAPSE_* 环境变量（另含 CLAWSYNAPSE_AGENT_ID）。
-相同的完整上下文也放在每次 prompt 中：OpenClaw Gateway 后端未必继承 CLI 环境，
-因此应使用 JSON 中的字面量 progressCommand，而非依赖环境或模型猜测参数。
+本地 Codex、OpenCode、pi、omp 和 OpenClaw CLI 子进程均按本次调用覆盖上述
+CLAWSYNAPSE_* 环境变量（另含 CLAWSYNAPSE_AGENT_ID）。版本化 topic 的进度工具
+使用这些当前值；私有 reader 能力 CLAWSYNAPSE_CONTEXT_TOKEN 只进入子进程环境
+和专用 HTTP header，不进入 prompt、argv 或 wire。普通 peer/Gateway 路径仍可携带
+完整 executionContext：Gateway 未必继承环境，使用其字面量 progressCommand。
 CLI 优先解析 daemon 同目录的 clawsynapse，然后查真实 PATH；未安装 CLI、
 不是 admitted 命令或上下文不完整时不提供 executionContext，任务仍正常执行。
 Harness 必须允许执行该真实 CLI 且能访问本机 endpoint；本功能不绕过工具沙箱或权限，

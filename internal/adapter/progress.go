@@ -11,15 +11,16 @@ import (
 // Command is an argv prefix: append one progress sentence after --message.
 // It is also in the prompt because a gateway need not inherit the CLI child's env.
 type ExecutionContext struct {
-	CLIPath    string   `json:"cliPath"`
-	APIAddr    string   `json:"apiAddr"`
-	BotID      string   `json:"botId"`
-	TargetBot  string   `json:"targetBot"`
-	RequestID  string   `json:"requestId"`
-	RunID      string   `json:"runId"`
-	SessionKey string   `json:"sessionKey"`
-	AgentID    string   `json:"agentId,omitempty"`
-	Command    []string `json:"progressCommand"`
+	CLIPath      string   `json:"cliPath"`
+	APIAddr      string   `json:"apiAddr"`
+	BotID        string   `json:"botId"`
+	TargetBot    string   `json:"targetBot"`
+	RequestID    string   `json:"requestId"`
+	RunID        string   `json:"runId"`
+	SessionKey   string   `json:"sessionKey"`
+	AgentID      string   `json:"agentId,omitempty"`
+	Command      []string `json:"progressCommand"`
+	ContextToken string   `json:"-"`
 }
 
 func NewExecutionContext(cliPath, apiAddr, botID, targetBot, requestID, runID, sessionKey, agentID string) *ExecutionContext {
@@ -35,7 +36,7 @@ func NewExecutionContext(cliPath, apiAddr, botID, targetBot, requestID, runID, s
 }
 
 func (c *ExecutionContext) environment() []string {
-	return []string{
+	values := []string{
 		"CLAWSYNAPSE_CLI=" + c.CLIPath,
 		"CLAWSYNAPSE_API_ADDR=" + c.APIAddr,
 		"CLAWSYNAPSE_BOT_ID=" + c.BotID,
@@ -45,6 +46,10 @@ func (c *ExecutionContext) environment() []string {
 		"CLAWSYNAPSE_SESSION_KEY=" + c.SessionKey,
 		"CLAWSYNAPSE_AGENT_ID=" + c.AgentID,
 	}
+	if c.ContextToken != "" {
+		values = append(values, "CLAWSYNAPSE_CONTEXT_TOKEN="+c.ContextToken)
+	}
+	return values
 }
 
 // ResolveCLIPath prefers the daemon's installed sibling, then the actual PATH.

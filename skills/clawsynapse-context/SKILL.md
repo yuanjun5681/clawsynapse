@@ -9,15 +9,15 @@ description: >
 compatibility: Requires readable context supplied inline, in explicitly accessible files, or through an authorized reader exposed by the Harness.
 metadata:
   author: yuanjun5681
-  version: "1.0"
+  version: "1.1"
 ---
 
 # ClawSynapse Context
 
-Read only the context needed for the current request, preserve its source and
-version, and make consequential gaps visible. This skill is harness-neutral and
-does not depend on or extend the ClawSynapse CLI. It guides consumption; it
-neither provides a reader nor grants access to material.
+Read the public context needed for the current request, preserve its source and
+fixed revision, and make consequential gaps visible. Inline material and the
+invocation-scoped reader below provide different access paths; neither grants
+access to another topic, another Bot's private session, or arbitrary files.
 
 ## 1. Resolve the available context
 
@@ -34,6 +34,34 @@ neither provides a reader nor grants access to material.
   access NATS buckets directly to bypass the reader.
 
 Completion: the usable sources and any unresolved references are known.
+
+### Native topic reader
+
+For a native topic invocation that advertises deferred public context, use:
+
+```bash
+"$CLAWSYNAPSE_CLI" --json context read --after 0 --limit 32
+```
+
+The CLI takes the endpoint, local Bot, sender, request, Run and reader capability
+from this invocation's `CLAWSYNAPSE_*` environment. Keep those values unchanged.
+The capability is passed in a local HTTP header, not a command argument or model
+message. A known request ID is not authorization.
+
+Read `data.page.events`, then continue with `--after data.page.nextRevision`
+until `data.page.complete` is true. Pages remain pinned to the request's public
+revision; they do not switch to a later topic version. Read all deferred
+required context before acting on the current instruction. A denied, expired,
+stalled or unavailable reader leaves the dependent action incomplete; report
+the missing material instead of guessing or searching private storage.
+
+The reader is available only while this exact request/Run is active. It returns
+public user messages and completed Bot replies, never native reasoning, tools
+or private transcripts. To re-check an older public source after native
+compaction, use `context read --history --after 0` with the same invocation
+capability. This view includes already-known public facts within the fixed cut;
+it does not replace or satisfy the requiredContext page sequence.
+
 
 ## 2. Read selectively and keep a stable version
 

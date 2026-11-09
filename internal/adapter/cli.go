@@ -81,7 +81,7 @@ func (a *cliAdapter) DeliverMessage(ctx context.Context, req DeliverMessageReque
 	if err != nil {
 		return nil, err
 	}
-	if a.product != "codex" && len(prompt) > maxArgvPromptBytes {
+	if a.product != "codex" && !a.isPiFamily() && len(prompt) > maxArgvPromptBytes {
 		return nil, &ExecutionError{Code: "prompt_limit", Stage: "validation", Err: errors.New("prompt exceeds native argv limit")}
 	}
 	sessionID, err := a.loadSession(req.SessionKey)
@@ -101,6 +101,10 @@ func (a *cliAdapter) DeliverMessage(ctx context.Context, req DeliverMessageReque
 	if sessionID != "" && !safeSessionID(sessionID) {
 		return nil, &ExecutionError{Code: "invalid_session", Stage: "validation", Err: errors.New("session ID is not a safe local identifier; create a new session explicitly")}
 	}
+	topic, err := a.prepareTopicInput(ctx, req, sessionID)
+	if err != nil {
+		return nil, err
+	}
 	nativeSession := sessionID
 	if a.isPiFamily() {
 		if sessionID != "" && !safePiSessionID(sessionID) {
@@ -112,6 +116,13 @@ func (a *cliAdapter) DeliverMessage(ctx context.Context, req DeliverMessageReque
 		}
 	}
 	args, stdin := a.deliveryArgs(prompt, nativeSession, req.AgentID)
+	var topicEnv []string
+	if topic != nil {
+		args, topicEnv, err = a.topicPolicy(args)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if a.log != nil {
 		a.log.Info("executing native CLI", slog.String("product", a.product))
 	}
@@ -124,9 +135,15 @@ func (a *cliAdapter) DeliverMessage(ctx context.Context, req DeliverMessageReque
 	var onLine func([]byte) error
 	if a.product != "openclaw" {
 		onLine = stream.consume
+		if topic != nil {
+			onLine = func(line []byte) error { return indeterminateTopicError(stream.consume(line)) }
+		}
 	}
 	command := func(ctx context.Context, args ...string) *exec.Cmd {
 		cmd := a.runCommand(ctx, args...)
+		if len(topicEnv) != 0 {
+			cmd.Env = append(cmd.Environ(), topicEnv...)
+		}
 		if req.ExecutionContext != nil {
 			cmd.Env = append(cmd.Environ(), req.ExecutionContext.environment()...)
 		}
@@ -147,7 +164,12 @@ func (a *cliAdapter) DeliverMessage(ctx context.Context, req DeliverMessageReque
 		// streamed assistant turn in native persisted state, not by exit code
 		// or the presence of answer text alone.
 		if a.product == "opencode" && !stream.completed && stream.sessionID != "" && stream.messageID != "" {
-			if err := a.confirmOpenCodeTurn(ctx, stream); err != nil {
+			if topic != nil {
+				err = a.confirmOpenCodeTopicTurn(ctx, stream, topic)
+			} else {
+				err = a.confirmOpenCodeTurn(ctx, stream)
+			}
+			if err != nil {
 				return nil, err
 			}
 		}
@@ -167,7 +189,12 @@ func (a *cliAdapter) DeliverMessage(ctx context.Context, req DeliverMessageReque
 	if result.SessionID == "" {
 		result.SessionID = sessionID
 	}
-	if err := a.saveSession(req.SessionKey, result.SessionID); err != nil {
+	if topic != nil {
+		result.TopicReceipt, err = a.confirmTopicInput(ctx, req, result.SessionID, prompt, topic, stream.messageID)
+	} else {
+		err = a.saveSession(req.SessionKey, result.SessionID)
+	}
+	if err != nil {
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
@@ -230,7 +257,7 @@ func (a *cliAdapter) deliveryArgs(prompt, sessionID, agentID string) ([]string, 
 			}
 			args = append(args, flag, sessionID)
 		}
-		return append(args, "--", prompt), ""
+		return args, prompt
 	default:
 		args = []string{"agent", "--json", "--session-id", sessionID}
 		if agentID != "" {
@@ -241,6 +268,9 @@ func (a *cliAdapter) deliveryArgs(prompt, sessionID, agentID string) ([]string, 
 }
 
 func formatDeliverMessage(localBotID string, req DeliverMessageRequest) (string, error) {
+	if req.TopicContext != nil {
+		return formatTopicInput(req)
+	}
 	payload := req.Payload
 	if payload.Text == "" && payload.Instruction == "" && len(payload.Input) == 0 {
 		payload.Text = req.Message

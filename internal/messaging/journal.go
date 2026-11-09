@@ -56,32 +56,42 @@ type publication struct {
 }
 
 type admittedWork struct {
-	Key     string                   `json:"key"`
-	Message protocol.MessageEnvelope `json:"message,omitzero"`
-	State   string                   `json:"state"`
-	RunID   string                   `json:"runId"`
-	Seq     uint64                   `json:"seq"`
+	Key           string                   `json:"key"`
+	Message       protocol.MessageEnvelope `json:"message,omitzero"`
+	State         string                   `json:"state"`
+	RunID         string                   `json:"runId"`
+	Seq           uint64                   `json:"seq"`
+	Topic         *topicBasis              `json:"topic,omitempty"`
+	TopicError    string                   `json:"topicError,omitempty"`
+	TerminalKind  string                   `json:"terminalKind,omitempty"`
+	Indeterminate bool                     `json:"indeterminate,omitempty"`
 }
 
 type journalRecord struct {
-	Publication *publication   `json:"publication,omitempty"`
-	Published   string         `json:"published,omitempty"`
-	Received    *StoredMessage `json:"received,omitempty"`
-	Work        *admittedWork  `json:"work,omitempty"`
+	Publication *publication      `json:"publication,omitempty"`
+	Published   string            `json:"published,omitempty"`
+	Received    *StoredMessage    `json:"received,omitempty"`
+	Work        *admittedWork     `json:"work,omitempty"`
+	Topic       *topicUpdate      `json:"topic,omitempty"`
+	TopicState  *topicNativeState `json:"topicState,omitempty"`
 }
 
 type messageJournal struct {
-	file            *os.File
-	publications    map[string]*publication
-	keys            map[string]string
-	inbox           []StoredMessage
-	received        map[string]bool
-	work            map[string]*admittedWork
-	pending         []string
-	workQueues      [workerCount][]string
-	workHeads       [workerCount]int
-	tails           map[string]string
-	pendingCommands int
+	file             *os.File
+	publications     map[string]*publication
+	keys             map[string]string
+	inbox            []StoredMessage
+	received         map[string]bool
+	work             map[string]*admittedWork
+	pending          []string
+	workQueues       [workerCount][]string
+	workHeads        [workerCount]int
+	tails            map[string]string
+	pendingCommands  int
+	receivedMessages map[string]protocol.MessageEnvelope
+	topics           map[string]*topicLedger
+	topicStates      map[string]*topicNativeState
+	topicTurns       map[string]string
 }
 
 func openMessageJournal(path string) (*messageJournal, error) {
@@ -104,6 +114,10 @@ func openMessageJournal(path string) (*messageJournal, error) {
 		return fail(fmt.Errorf("lock messaging journal: %w", err))
 	}
 	j := &messageJournal{file: f, publications: make(map[string]*publication), keys: make(map[string]string), received: make(map[string]bool), work: make(map[string]*admittedWork), tails: make(map[string]string)}
+	j.receivedMessages = make(map[string]protocol.MessageEnvelope)
+	j.topics = make(map[string]*topicLedger)
+	j.topicStates = make(map[string]*topicNativeState)
+	j.topicTurns = make(map[string]string)
 	r := bufio.NewReader(f)
 	var offset int64
 	for {
@@ -203,6 +217,7 @@ func (j *messageJournal) apply(record journalRecord) {
 	if m := record.Received; m != nil {
 		j.inbox = append(j.inbox, *m)
 		j.received[messageKey(m.MessageEnvelope)] = true
+		j.receivedMessages[messageKey(m.MessageEnvelope)] = m.MessageEnvelope
 	}
 	if w := record.Work; w != nil {
 		if w.Message.ID == "" {
@@ -226,6 +241,7 @@ func (j *messageJournal) apply(record journalRecord) {
 		}
 		j.work[w.Key] = w
 	}
+	j.applyTopic(record)
 }
 
 func eventKey(env protocol.MessageEnvelope) string {

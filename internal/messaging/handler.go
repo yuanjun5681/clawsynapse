@@ -14,26 +14,28 @@ import (
 )
 
 type IncomingMessage struct {
-	Context    context.Context
-	MessageID  string
-	Type       string
-	RequestID  string
-	RunID      string
-	Seq        uint64
-	AgentID    string
-	From       string
-	To         string
-	Message    string
-	Payload    protocol.MessagePayload
-	SessionKey string
-	Metadata   map[string]any
-	Emit       func(adapter.OutputEvent) error
+	Context      context.Context
+	MessageID    string
+	Type         string
+	RequestID    string
+	RunID        string
+	Seq          uint64
+	AgentID      string
+	From         string
+	To           string
+	Message      string
+	Payload      protocol.MessagePayload
+	SessionKey   string
+	Metadata     map[string]any
+	TopicContext *protocol.TopicExecution
+	Emit         func(adapter.OutputEvent) error
 }
 
 type HandlerResult struct {
-	Reply    string
-	RunID    string
-	Accepted bool
+	Reply        string
+	RunID        string
+	Accepted     bool
+	TopicReceipt *adapter.TopicInputReceipt
 }
 
 type MessageHandler interface {
@@ -94,6 +96,16 @@ func NewAdapterMessageHandler(agentAdapter adapter.AgentAdapter, timeout time.Du
 	return h
 }
 
+func (h *AdapterMessageHandler) TopicContextIdentity() string {
+	if h.acceptFeedback || h.apiAddr == "" || h.cliPath == "" {
+		return ""
+	}
+	if capable, ok := h.adapter.(interface{ TopicContextIdentity() string }); ok {
+		return capable.TopicContextIdentity()
+	}
+	return ""
+}
+
 func (h *AdapterMessageHandler) HandleMessage(msg IncomingMessage) (HandlerResult, error) {
 	if msg.Type == "chat.progress" || (!h.acceptFeedback && isFeedbackType(msg.Type)) {
 		return HandlerResult{}, nil
@@ -125,8 +137,11 @@ func (h *AdapterMessageHandler) HandleMessage(msg IncomingMessage) (HandlerResul
 	var execution *adapter.ExecutionContext
 	if !isFeedbackType(msg.Type) {
 		execution = adapter.NewExecutionContext(h.cliPath, h.apiAddr, msg.To, msg.From, msg.RequestID, msg.RunID, replySessionKey, msg.AgentID)
+		if msg.TopicContext != nil && execution != nil {
+			execution.ContextToken = msg.TopicContext.ReaderToken
+		}
 	}
-	result, err := h.adapter.DeliverMessage(ctx, adapter.DeliverMessageRequest{MessageID: msg.MessageID, RequestID: msg.RequestID, RunID: msg.RunID, Seq: msg.Seq, Type: msg.Type, AgentID: msg.AgentID, SessionKey: sessionKey, ReplySessionKey: replySessionKey, Message: msg.Message, Payload: msg.Payload, From: msg.From, Metadata: msg.Metadata, ExecutionContext: execution, Emit: msg.Emit})
+	result, err := h.adapter.DeliverMessage(ctx, adapter.DeliverMessageRequest{MessageID: msg.MessageID, RequestID: msg.RequestID, RunID: msg.RunID, Seq: msg.Seq, Type: msg.Type, AgentID: msg.AgentID, SessionKey: sessionKey, ReplySessionKey: replySessionKey, Message: msg.Message, Payload: msg.Payload, From: msg.From, Metadata: msg.Metadata, ExecutionContext: execution, TopicContext: msg.TopicContext, Emit: msg.Emit})
 	if err != nil {
 		return HandlerResult{}, err
 	}
@@ -139,7 +154,7 @@ func (h *AdapterMessageHandler) HandleMessage(msg IncomingMessage) (HandlerResul
 	if !result.Completed && !result.Accepted {
 		return HandlerResult{}, errors.New("adapter returned no execution state")
 	}
-	return HandlerResult{Reply: result.Reply, RunID: result.RunID, Accepted: !result.Completed}, nil
+	return HandlerResult{Reply: result.Reply, RunID: result.RunID, Accepted: !result.Completed, TopicReceipt: result.TopicReceipt}, nil
 }
 
 func isFeedbackType(t string) bool {

@@ -28,6 +28,7 @@ type DeliverMessageRequest struct {
 	Metadata         map[string]any
 	Payload          protocol.MessagePayload
 	ExecutionContext *ExecutionContext
+	TopicContext     *protocol.TopicExecution
 	// Emit applies synchronous backpressure; an error must stop execution.
 	Emit func(OutputEvent) error
 }
@@ -36,12 +37,27 @@ type DeliverMessageResult struct {
 	Success  bool
 	Accepted bool
 	// Completed distinguishes a terminal synchronous result from async acceptance.
-	Completed bool
-	RunID     string
-	SessionID string
+	Completed    bool
+	RunID        string
+	SessionID    string
+	TopicReceipt *TopicInputReceipt
 	// Reply is retained only when Emit is nil; streamed answers are not repeated.
 	Reply string
 	Error string
+}
+
+// TopicInputReceipt identifies input verified in native durable history.
+// Streamed user events and successful completion are not persistence evidence.
+type TopicInputReceipt struct {
+	NativeSessionID string
+	UserEntryID     string
+	ParentEntryID   string
+	InputDigest     string
+	LastEntryID     string
+	ThroughRevision uint64
+	// RequiredReadThrough is zero for inline input. Core must verify authenticated
+	// reader coverage before materializing a deferred input's revision.
+	RequiredReadThrough uint64
 }
 
 type AgentStatus struct {
@@ -86,6 +102,14 @@ func (e *ExecutionError) SafeMessage() string {
 		return "The connection to the model provider failed; execution may have started."
 	case "session_unavailable":
 		return "The native session is unavailable; create a new session explicitly."
+	case "session_changed":
+		return "The verified native topic history changed or is unavailable; create a new conversation explicitly."
+	case "context_capacity":
+		return "Required topic context exceeds native input capacity and cannot be read safely."
+	case "context_unsupported":
+		return "This Harness does not support verified incremental topic context."
+	case "context_policy":
+		return "The local native topic policy could not be installed safely."
 	case "native_failed":
 		return "The native Harness reported an execution failure."
 	default:

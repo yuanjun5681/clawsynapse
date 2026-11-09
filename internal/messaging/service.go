@@ -401,7 +401,12 @@ func (s *Service) enqueue(req PublishRequest, work *admittedWork) (publication, 
 	if env.RunID != "" {
 		pub.Previous = s.journal.tails[eventKey(env)]
 	}
-	if err := s.journal.append(journalRecord{Publication: &pub, Work: work}); err != nil {
+	s.mergeTopicReaderLocked(work)
+	record := journalRecord{Publication: &pub, Work: work}
+	if work != nil && work.Topic != nil && work.Topic.Paused {
+		record.TopicState = s.pauseTopicLocked(*work)
+	}
+	if err := s.journal.append(record); err != nil {
 		return publication{}, err
 	}
 	return pub, nil
@@ -669,6 +674,19 @@ func (s *Service) handleInbox(subject string, data []byte) bool {
 		return false
 	}
 	key := messageKey(env)
+	item := StoredMessage{MessageEnvelope: env, Cursor: uint64(len(s.journal.inbox)) + 1}
+	if handled, topicErr := s.processTopicLocked(env, item); handled {
+		s.mu.Unlock()
+		if topicErr != nil {
+			s.log.Error("persist topic context failed", "error", topicErr)
+			return false
+		}
+		select {
+		case s.wake[workShard(env)] <- struct{}{}:
+		default:
+		}
+		return true
+	}
 	if s.journal.received[key] {
 		s.mu.Unlock()
 		return true
@@ -678,7 +696,6 @@ func (s *Service) handleInbox(subject string, data []byte) bool {
 		s.mu.Unlock()
 		return false
 	}
-	item := StoredMessage{MessageEnvelope: env, Cursor: uint64(len(s.journal.inbox)) + 1}
 	record := journalRecord{Received: &item}
 	if env.Type == "transfer.available" || isDeliverableType(env.Type, s.deliverablePrefixes) || isFeedbackType(env.Type) {
 		record.Work = &admittedWork{Key: key, Message: env, State: "queued"}
@@ -686,6 +703,7 @@ func (s *Service) handleInbox(subject string, data []byte) bool {
 			record.Work.RunID = randID()
 		}
 	}
+	s.prepareTopicCommandLocked(env, &record)
 	err = s.journal.append(record)
 	s.mu.Unlock()
 	if err != nil {
@@ -710,14 +728,20 @@ func (s *Service) work(shard int) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
+		blocked := make(map[string]bool)
 		for s.ctx.Err() == nil {
 			s.mu.Lock()
 			var next *admittedWork
-			for s.journal.workHeads[shard] < len(s.journal.workQueues[shard]) {
-				key := s.journal.workQueues[shard][s.journal.workHeads[shard]]
+			for index := s.journal.workHeads[shard]; index < len(s.journal.workQueues[shard]); index++ {
+				key := s.journal.workQueues[shard][index]
 				work := s.journal.work[key]
 				if work.State == "done" {
-					s.journal.workHeads[shard]++
+					if index == s.journal.workHeads[shard] {
+						s.journal.workHeads[shard]++
+					}
+					continue
+				}
+				if blocked[topicScope(work.Message)] {
 					continue
 				}
 				copy := *work
@@ -739,7 +763,7 @@ func (s *Service) work(shard int) {
 				continue
 			}
 			if !s.deliver(*next) {
-				break
+				blocked[topicScope(next.Message)] = true
 			}
 		}
 		select {
@@ -818,6 +842,18 @@ func (s *Service) deliver(work admittedWork) bool {
 			return s.emit(&work, "run.failed", protocol.MessagePayload{Code: "unsupported_agent", Stage: "validation"}, "done") == nil
 		}
 	}
+	var topic *protocol.TopicExecution
+	if !feedback {
+		var waiting bool
+		var topicErr error
+		topic, waiting, topicErr = s.topicExecution(&work)
+		if waiting {
+			return false
+		}
+		if topicErr != nil {
+			return s.emit(&work, "run.failed", protocol.MessagePayload{Code: topicFailureCode(topicErr), Stage: "context"}, "done") == nil
+		}
+	}
 	ctx := s.ctx
 	cancel := func() {}
 	if !feedback {
@@ -848,6 +884,26 @@ func (s *Service) deliver(work admittedWork) bool {
 			return false
 		}
 	}
+	// Binding/cursor changes while admission was queued must not change the
+	// frozen request basis or accidentally target a different native context.
+	if topic != nil {
+		var waiting bool
+		var topicErr error
+		topic, waiting, topicErr = s.topicExecution(&work)
+		if waiting {
+			return false
+		}
+		if topicErr != nil {
+			return s.emit(&work, "run.failed", protocol.MessagePayload{Code: topicFailureCode(topicErr), Stage: "context"}, "done") == nil
+		}
+		if work.Topic.ReaderToken == "" {
+			copy := *work.Topic
+			copy.ReaderToken = randID()
+			copy.ReaderThrough = copy.MaterializedThrough
+			work.Topic = &copy
+		}
+		topic.ReaderToken = work.Topic.ReaderToken
+	}
 	if err := s.setWork(work, "admitted"); err != nil {
 		return false
 	}
@@ -861,7 +917,7 @@ func (s *Service) deliver(work admittedWork) bool {
 	if !feedback {
 		requestID, runID, sequence = env.ID, work.RunID, work.Seq
 	}
-	result, err := handler.HandleMessage(IncomingMessage{Context: ctx, MessageID: env.ID, RequestID: requestID, RunID: runID, Seq: sequence, Type: env.Type, AgentID: env.AgentID, From: env.From, To: env.To, Message: env.Payload.Text, Payload: env.Payload, SessionKey: env.SessionKey, Metadata: env.Metadata, Emit: func(event adapter.OutputEvent) error {
+	result, err := handler.HandleMessage(IncomingMessage{Context: ctx, MessageID: env.ID, RequestID: requestID, RunID: runID, Seq: sequence, Type: env.Type, AgentID: env.AgentID, From: env.From, To: env.To, Message: env.Payload.Text, Payload: env.Payload, SessionKey: env.SessionKey, Metadata: env.Metadata, TopicContext: topic, Emit: func(event adapter.OutputEvent) error {
 		if feedback {
 			return nil
 		}
@@ -916,6 +972,9 @@ func (s *Service) deliver(work admittedWork) bool {
 			rest = rest[size:]
 		}
 	}
+	if err := s.confirmTopicReceipt(&work, result); err != nil {
+		return s.emit(&work, "run.failed", protocol.MessagePayload{Code: topicFailureCode(err), Stage: "receipt", Indeterminate: true}, "done") == nil
+	}
 	kind := "run.completed"
 	if result.Accepted {
 		kind = "run.accepted"
@@ -927,6 +986,19 @@ func (s *Service) emit(work *admittedWork, kind string, payload protocol.Message
 	next := *work
 	next.Seq++
 	next.State = state
+	if state == "done" {
+		next.TerminalKind, next.Indeterminate = kind, payload.Indeterminate
+	}
+	if next.Topic != nil {
+		basis := *next.Topic
+		if payload.Indeterminate {
+			basis.Paused = true
+		}
+		if state == "done" {
+			basis.ReaderToken = ""
+		}
+		next.Topic = &basis
+	}
 	orig := work.Message
 	_, err := s.enqueue(PublishRequest{TargetBot: orig.From, AgentID: orig.AgentID, Type: kind, SessionKey: orig.SessionKey, RequestID: orig.ID, RunID: work.RunID, Seq: next.Seq, Payload: payload, Metadata: eventMetadata(orig.Metadata), IdempotencyKey: "run/" + orig.From + "/" + orig.ID + "/" + work.RunID + "/" + stringSeq(next.Seq)}, &next)
 	if err != nil {

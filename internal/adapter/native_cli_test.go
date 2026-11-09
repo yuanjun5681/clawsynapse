@@ -69,6 +69,10 @@ func TestNativeCLIHelperProcess(t *testing.T) {
 	}
 	product, mode := os.Getenv("CLI_PRODUCT"), os.Getenv("CLI_MODE")
 	args := fixtureArgs()
+	if strings.HasPrefix(mode, "topic") {
+		fixtureTopicProcess(t, product, mode, args)
+		os.Exit(0)
+	}
 	if mode == "confirmed-turn" || mode == "workspace-confirmed-turn" || mode == "stale-turn" || mode == "unfinished-turn" || mode == "failed-turn" {
 		if len(args) > 1 && args[0] == "session" && args[1] == "export" {
 			id, finish, outcome := "msg_current", "stop", "succeeded"
@@ -134,7 +138,7 @@ func TestNativeCLIHelperProcess(t *testing.T) {
 		os.Exit(0)
 	}
 	var prompt string
-	if product == "codex" {
+	if product == "codex" || product == "pi" || product == "omp" {
 		data, _ := io.ReadAll(os.Stdin)
 		prompt = string(data)
 	} else if product == "opencode" && len(args) > 0 {

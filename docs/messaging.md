@@ -86,6 +86,24 @@ Workspace `metadata.clawsynapseReplyMode="chat"` 的答案单独处理：native 
 原生会话持久化成功后发布；失败/不确定时不发布候选。普通 peer 请求的流式契约保持不变。
 工作过程只通过 chat.progress 更新，不进入中央会话或最终答案；此处不做关键词过滤。
 
+### Workspace 增量上下文
+
+新主题发送 `payload.text` 本轮指令和 `payload.input` 的 topic-turn/1 数据，
+不再将固定规则与全部 history 拼成字符串。发送方先以非执行 chat.context
+同步公开事实并核对持久收执，再发送执行；旧端无正确收执时不会收到 delta-only
+任务。事件追加版本包含旧问题后来完成的回复，未完成输出不进入公开事实。
+
+详细字段、摘要和恢复不变量见[主题公开上下文增量协议](protocol.md#主题公开上下文增量协议)。
+模型收到语义 `{instruction,publicContext,requiredContext?}`；接收端策略来自
+本地可信配置，运行标识留在调用环境。已有原生输入/自己的 completed 回复
+通过请求来源关联去重，不再次装入。延后必需范围通过当前请求 reader 分页。
+
+公开事实的 storedThrough 收执、原生装入账本和 Run 终态是不同证据；
+一个 stdout user 事件或相同 Session UUID 不代表上下文已经持久完整。
+不确定请求暂停该原生代际后续工作，直到对账或显式使用新上下文。
+策略和 reader 不增加工具权限；工具不可用、必需上下文未读完时不声称成功。
+
+
 
 
 ## 有界执行与会话

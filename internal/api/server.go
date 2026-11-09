@@ -62,6 +62,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /publish", s.handlePublish)
 	mux.HandleFunc("GET /messages", s.handleMessages)
 	mux.HandleFunc("GET /requests/{messageId}", s.handleRequest)
+	mux.HandleFunc("GET /requests/{messageId}/context", s.handleTopicContext)
 	mux.HandleFunc("POST /transfer/send", s.handleTransferSend)
 	mux.HandleFunc("POST /transfer/import", s.handleTransferImport)
 	mux.HandleFunc("GET /transfers", s.handleTransfers)

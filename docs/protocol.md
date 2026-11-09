@@ -494,7 +494,7 @@ Bot ID 与签名在此仅作结构示意，不能直接用于实际验签。
 
 - `event.forward` — 事件转发
 - `run.started`、`run.output.delta`、`run.completed`、`run.failed`、`run.accepted` — 执行反馈，不进入 LLM；Webhook 可消费，但不产生反馈回复
-- `chat.context` — 经授权共享的聊天历史／群成员观察数据；仅投递 Webhook 数据消费者，与 deliverablePrefixes 无关；不生成 run.started/output/completed，不对观察再发反馈，native Adapter 不执行
+- `chat.context` — 非执行上下文数据；识别的 topic-sync/topic-receipt schema 由 daemon 持久同步并收执，不进入 Harness、不生成 Run。其他授权观察数据仍仅投递 Webhook 消费者，不对观察生成反馈。
 - `chat.progress` — 原请求执行期间的一句可见工作进展；Agent 和 Console 仅持久收件，不调用任何 Harness（包括 Webhook）、不产生 run 反馈，与 deliverablePrefixes 无关
 
 可通过配置 `deliverablePrefixes` 扩展可投递前缀，详见环境变量 `DELIVERABLE_PREFIXES`。
@@ -561,6 +561,61 @@ Workspace 的 `metadata.clawsynapseReplyMode="chat"` 将答案限定为权威最
 消息。原生工具轮次的 assistant 叙述不属于 run.output.delta 答案，不拼接为完成结果；
 工作进展只使用 chat.progress。Adapter 在执行成功后可把最终消息按传输上限分段交付，
 这些段不是执行期间的草稿流。其他 peer/集成请求保持既有流式契约。
+
+### 主题公开上下文增量协议
+
+复用现有 v2 封套及 `payload.input`，不增加 wire 字段或更改签名算法。
+`payload.text` 仅是本轮用户输入，不拼接全历史或接收端策略。
+
+| 业务 schema | Envelope.type | 职责 |
+|---|---|---|
+| `clawsynapse.topic-sync/1` | `chat.context` | 同步固定范围的公开事实；空范围用于能力探测 |
+| `clawsynapse.topic-receipt/1` | `chat.context` | 原子持久同步后的签名收执，不是模型完成 |
+| `clawsynapse.topic-turn/1` | `chat.message` | 固定本轮指令、公开上下文截点与原生会话代际 |
+| `clawsynapse.topic-page/1` | 本地 reader 响应 | 当前 admitted 请求授权范围内的固定分页 |
+
+sync 包含 `turnId`、`baseRevision`、`throughRevision`、`digest`、`events`。
+events 精确覆盖 `(baseRevision, throughRevision]`，按 revision 连续升序，
+空数组必须编码为 `[]`。未知业务字段/schema、版本冲突、缺口或摘要不符拒绝。
+
+公开事件只有两种：`user.message` 包含 messageId/author/text；
+`bot.reply.completed` 包含 messageId/botId/requestId/runId/text。
+旧问题晚完成产生新的公开 revision，不修改原版本；草稿、progress、thinking、
+工具原文与私有 Session 不共享。转发签名证明转发者身份，不提升被引内容的权限。
+
+digest 为 `sha256:` 加十六进制 SHA-256，输入是 Go encoding/json 编码的
+`[]TopicEvent`；字段顺序固定为 revision、kind、messageId、author、botId、
+requestId、runId、text，空的可选身份字段省略，保持数组顺序及 Go 默认转义。
+单个事件必须可由有界 reader 返回，超限明确拒绝，不静默裁剪。
+
+turn 包含 `turnId`、`turnRevision`、`nativeSessionEpoch`、可选
+`previousRequestId` 和 `context:{baseRevision,throughRevision,digest,events}`。
+当前用户事件由 turnId、已验签发送者、payload.text 和 turnRevision 重建；
+`turnRevision=throughRevision+1`，不在历史 events 中再次复制当前正文。
+`seq` 仍只描述 Run/进度序列，不能代替 topic revision 或 inbox cursor。
+
+receipt 包含 `syncMessageId`、`storedThroughRevision`、
+`nativeSessionEpoch`、`policyVersion` 及可选 `error`；其 requestId 指回
+原 sync/command ID，收发双方、agentId 和 sessionKey 精确关联。
+发送方验证收执关联与冻结范围后才发送执行请求，旧端没有正确收执时不发送
+delta-only 指令，也不静默回退全历史。HTTP/NATS ACK 和 run.completed 均不能
+替代公开事实的持久接收收执。
+
+接收端将同步数据、引用索引与收执 outbox 持久提交；非执行同步不被等待缺口的
+命令阻塞。指令固定自己的公开截点，后续数据不会改变旧请求；缺口在 admission
+之前补齐。相同幂等键始终保持原内容；终结的失败请求不因补齐而重新执行。
+
+同一原生会话最多一个 admitted/running 请求；未对账的 indeterminate 请求
+暂停该代际后续执行。旧会话没有可核对装入账本、原生映射丢失或分支不匹配时，
+明确要求恢复/新对话，不自动重放或新建会话。原生装入账本由接收端根据
+session/代际、entry/leaf 和渲染摘要核对，不从 stdout 事件推断持久性。
+
+长上下文先作为非执行数据分批持久同步，模型只装入预算内的新事实及固定
+未读范围；需要更多时调用[当前请求 reader](api.md#当前请求公开上下文读取)。
+reader 需要当前调用的私有能力，按已授权 request/Run 的公开截点分页；
+不返回文件、其他主题或任何原生私有 transcript。没有可用 reader/工具且
+必需上下文超预算时明确失败；不以有损摘要或无提示窗口伪装完整上下文。
+
 
 
 ## PubSub

@@ -155,6 +155,33 @@ daemon 核对本 Bot 当前 admitted 且未过期/终结的原命令，独立生
 
 `GET B/requests/{messageId}` 查询本 Bot 发布记录，未知 ID 为 404 `msg.not_found`。`data` 包含完整 `message`, `publication: pending|published`, `status: sending|sent|running|accepted|completed|failed|indeterminate`, `events`。events 仅包含关联同一请求、对端、Agent 和会话的 run.*，不包含 chat.progress；进展从 messages cursor 消费。accepted 不是完成；indeterminate 不可自动重跑。执行事件语义及恢复见 [messaging.md](messaging.md)。
 
+### 当前请求公开上下文读取
+
+`GET B/requests/{messageId}/context?from=SOURCE_BOT&runId=RUN&after=REVISION&limit=32`
+读取当前 admitted 原生调用的公开事实。`from`、`runId` 必填；`after` 默认 0，
+`limit` 为 1..100，默认 32；每页还受 128 KiB 编码预算约束。
+
+除现有本地 Bot 选择/HTTP 约束外，必须提供
+`X-ClawSynapse-Context-Token`，值为 daemon 给这次原生子进程的私有调用能力。
+它绑定精确 Bot、发送方、request、Run、原生代际及固定公开截点；知道标识不是
+读取授权，不能凭任意其他 active 请求 ID 读取。能力不进入 wire、prompt、argv
+或 URL，终态后失效。正常调用使用下述 CLI 自动从执行环境传递 header。
+
+成功 code 为 `context.page`，`data.page` 包含 schema、throughRevision、
+events、nextRevision、complete。继续以 nextRevision 作为 after，直至 complete；
+原始消息和后续完成事件不会在读取途中偷换成 latest。接口只返回授权公开数据，
+不返回文件、thinking、工具原文或任何 Bot 私有 Session。响应禁止缓存。
+
+默认 `view=required` 只返回尚未装入的必需公开事实，并记录连续页交付范围。
+`view=history` 可在同一能力和固定截点内回读全部公开原文，包括原生记忆已经
+装入或后来压缩的事实；该视图不推进必需范围的读取凭据，也不暴露私有历史。
+
+参数非法为 400 `invalid_argument`；跨请求、无能力、过期、终态、撤权等统一
+403 `context.denied`，不泄露另一个请求是否存在；reader 不可用为 503
+`context.unavailable`。页已交付不等于模型理解；延后装入的必需范围还需连续读取，
+跳到最后一页不能伪装已经读过缺失内容。
+
+
 ### 文件：引用授权，不暴露全局 blob 路径
 
 文件字节按内容去重，但授权依据是所选 Bot 持久文件引用；知道 checksum、transferId 或其他 Bot 的记录不授予读取/转发权限。列表和详情不返回全局 blob 路径。所有操作必须走 Bot-qualified 路径：

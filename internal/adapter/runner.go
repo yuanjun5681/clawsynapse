@@ -28,6 +28,7 @@ type commandFactory func(context.Context, ...string) *exec.Cmd
 type outputBudget struct {
 	mu     sync.Mutex
 	total  int
+	limit  int
 	err    error
 	cancel context.CancelFunc
 }
@@ -46,7 +47,11 @@ func (b *outputBudget) fail(err error) error {
 func (b *outputBudget) consume(n int) error {
 	b.mu.Lock()
 	b.total += n
-	exceeded := b.total > maxOutputBytes
+	limit := b.limit
+	if limit == 0 {
+		limit = maxOutputBytes
+	}
+	exceeded := b.total > limit
 	b.mu.Unlock()
 	if exceeded {
 		return b.fail(&ExecutionError{Code: "output_limit", Stage: "stdout", Indeterminate: true})
@@ -125,6 +130,12 @@ func (w *boundedOutput) Write(p []byte) (int, error) {
 // runProcess owns cancellation, pipe draining, quotas and child-tree cleanup.
 // Neither argv, stderr nor native stdout is included in returned diagnostics.
 func runProcess(ctx context.Context, factory commandFactory, args []string, stdin string, onLine func([]byte) error, timeout time.Duration) ([]byte, error) {
+	return runProcessWithLimits(ctx, factory, args, stdin, onLine, timeout, maxOutputBytes, maxEventBytes)
+}
+
+// Read-only native export has a separate bounded history budget. Execution and
+// ordinary probes keep their existing, smaller output and event limits.
+func runProcessWithLimits(ctx context.Context, factory commandFactory, args []string, stdin string, onLine func([]byte) error, timeout time.Duration, totalLimit, captureLimit int) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, cancellationError(err, false)
 	}
@@ -143,9 +154,9 @@ func runProcess(ctx context.Context, factory commandFactory, args []string, stdi
 		return nil, &ExecutionError{Code: "process_setup", Stage: "start", Err: err}
 	}
 	defer cleanup()
-	budget := &outputBudget{cancel: cancel}
+	budget := &outputBudget{cancel: cancel, limit: totalLimit}
 	stderr := &boundedOutput{budget: budget, stage: "stderr", limit: maxStderrBytes}
-	stdout := &boundedOutput{budget: budget, stage: "stdout", limit: maxEventBytes, capture: true}
+	stdout := &boundedOutput{budget: budget, stage: "stdout", limit: captureLimit, capture: true}
 	var lines *lineOutput
 	if onLine != nil {
 		lines = &lineOutput{budget: budget, onLine: onLine}

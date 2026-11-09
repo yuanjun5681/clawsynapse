@@ -18,11 +18,12 @@ import (
 )
 
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
-	tokenPath  string
-	configErr  error
-	botID      string
+	baseURL      string
+	httpClient   *http.Client
+	tokenPath    string
+	configErr    error
+	botID        string
+	contextToken string
 }
 
 type ClientOption func(*Client)
@@ -35,6 +36,12 @@ func WithTokenFile(path string) ClientOption {
 // WithBot binds relative business requests to one explicit local Bot.
 func WithBot(botID string) ClientOption {
 	return func(c *Client) { c.botID = strings.TrimSpace(botID) }
+}
+
+// WithContextToken authenticates only the active invocation's context reader.
+// It is not a management credential and is never sent to other endpoints.
+func WithContextToken(token string) ClientOption {
+	return func(c *Client) { c.contextToken = token }
 }
 
 func NewClient(baseURL string, timeout time.Duration, options ...ClientOption) *Client {
@@ -151,6 +158,9 @@ func (c *Client) do(ctx context.Context, method, endpoint string, payload any) (
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
+	if c.contextToken != "" && method == http.MethodGet && contextReadEndpoint(parsed.Path) {
+		req.Header.Set("X-ClawSynapse-Context-Token", c.contextToken)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -182,4 +192,22 @@ func normalizeBaseURL(baseURL string) string {
 		trimmed = "http://" + trimmed
 	}
 	return strings.TrimRight(trimmed, "/")
+}
+
+func contextReadEndpoint(path string) bool {
+	if rest, ok := strings.CutPrefix(path, "/v2/bots/"); ok {
+		botID, operation, found := strings.Cut(rest, "/")
+		if !found || botID == "" {
+			return false
+		}
+		path = operation
+	} else {
+		path = strings.TrimPrefix(path, "/")
+	}
+	rest, ok := strings.CutPrefix(path, "requests/")
+	if !ok {
+		return false
+	}
+	requestID, operation, found := strings.Cut(rest, "/")
+	return found && requestID != "" && operation == "context"
 }

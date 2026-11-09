@@ -71,6 +71,18 @@ func run(args []string, stdout, stderr *os.File) int {
 		printUsage(stderr)
 		return 2
 	}
+	if rest[0] == "context" {
+		if *apiAddr == "" {
+			*apiAddr = os.Getenv("CLAWSYNAPSE_API_ADDR")
+		}
+		if *bot == "" {
+			*bot = os.Getenv("CLAWSYNAPSE_BOT_ID")
+		}
+		if *apiAddr == "" || *bot == "" {
+			fmt.Fprintln(stderr, "error: context read requires an explicit or invocation-provided daemon endpoint and Bot")
+			return 1
+		}
+	}
 	if rest[0] == "migrate" {
 		if err := runMigrate(rest[1:], stdout, stderr); err != nil {
 			fmt.Fprintf(stderr, "error: %v\n", err)
@@ -147,6 +159,9 @@ func run(args []string, stdout, stderr *os.File) int {
 	if *tokenFile != "" {
 		clientOptions = append(clientOptions, api.WithTokenFile(*tokenFile))
 	}
+	if rest[0] == "context" {
+		clientOptions = append(clientOptions, api.WithContextToken(os.Getenv("CLAWSYNAPSE_CONTEXT_TOKEN")))
+	}
 	client := api.NewClient(*apiAddr, *timeout, clientOptions...)
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
@@ -194,6 +209,8 @@ func dispatch(ctx context.Context, client localAPIClient, args []string) (types.
 		return client.Get(ctx, "/messages")
 	case "publish":
 		return runPublish(ctx, client, args[1:])
+	case "context":
+		return runContext(ctx, client, args[1:])
 	case "auth":
 		return runAuth(ctx, client, args[1:])
 	case "trust":
@@ -1033,6 +1050,7 @@ func printUsage(stderr *os.File) {
 	fmt.Fprintln(stderr, "  peer                 manage local peer remarks (alias|describe|label|unlabel)")
 	fmt.Fprintln(stderr, "  messages             list recent messages")
 	fmt.Fprintln(stderr, "  publish              publish a message to a peer")
+	fmt.Fprintln(stderr, "  context read         page fixed public context for an active invocation")
 	fmt.Fprintln(stderr, "  auth                 authentication commands")
 	fmt.Fprintln(stderr, "  trust                trust management commands")
 	fmt.Fprintln(stderr, "  transfer             file transfer commands")
